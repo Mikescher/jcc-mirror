@@ -263,11 +263,7 @@ func (a *App) pairEvent(ctx context.Context, p store.Pair, what string) {
 		})
 }
 
-func (a *App) respondPair(w http.ResponseWriter, r *http.Request, p store.Pair) {
-	if wantsHTML(r) {
-		a.redirectHome(w, r)
-		return
-	}
+func (a *App) respondPair(w http.ResponseWriter, _ *http.Request, p store.Pair) {
 	writeJSON(w, http.StatusOK, p)
 }
 

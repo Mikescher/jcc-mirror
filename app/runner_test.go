@@ -1,8 +1,11 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -273,47 +276,100 @@ func TestPairEditingThroughTheDashboard(t *testing.T) {
 	}
 }
 
-// TestSetupPageShowsTheMirror renders the page the operator actually looks at.
-func TestSetupPageShowsTheMirror(t *testing.T) {
+// TestPairsViewShowsTheMirror is what the Now view is drawn from: one request
+// that says, per pair, what the publisher has and what is here.
+func TestPairsViewShowsTheMirror(t *testing.T) {
 	m := newMirror(t)
 	m.write(t, "Filme/a.mkv", 1024)
 	m.run(t, RunScan)
 
-	rec := do(t, m.h, httptest.NewRequest(http.MethodGet, "/", nil))
+	rec := do(t, m.h, httptest.NewRequest(http.MethodGet, "/api/pairs", nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET / = %d", rec.Code)
+		t.Fatalf("GET /api/pairs = %d: %s", rec.Code, rec.Body)
 	}
 
-	body := rec.Body.String()
-	for _, want := range []string{"Mirror", "media", m.dst, `name="kind" value="adopt"`, "Recent runs"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the page does not mention %q", want)
-		}
+	var views []PairView
+	if err := json.Unmarshal(rec.Body.Bytes(), &views); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-	// Nothing is running, so the page must not ask the browser to reload itself.
-	if strings.Contains(body, `http-equiv="refresh"`) {
-		t.Error("the page refreshes itself while nothing is running")
+	if len(views) != 1 {
+		t.Fatalf("got %d pairs, want 1", len(views))
+	}
+
+	got := views[0]
+	if got.Name != "media" || got.LocalPath != m.dst {
+		t.Errorf("pair = %q at %q, want media at %q", got.Name, got.LocalPath, m.dst)
+	}
+	if got.RemoteFiles != 1 || got.RemoteBytes != 1024 {
+		t.Errorf("the walk is reported as %d files (%d bytes), want 1 (1024)", got.RemoteFiles, got.RemoteBytes)
+	}
+	if got.Behind() != 1 {
+		t.Errorf("behind = %d, want 1: nothing has been transferred yet", got.Behind())
+	}
+	if got.LastScan == nil {
+		t.Error("the completed walk is not reported")
 	}
 }
 
-// TestSetupPageRefreshesWhileBusy: the view has no script, so the meta refresh is
-// the only thing that makes a running transfer's progress move. Without it an
-// operator watches a frozen page for a day and a half.
-func TestSetupPageRefreshesWhileBusy(t *testing.T) {
+// TestStreamCarriesTheRunningOperation is what replaced the meta refresh of the
+// old setup page: without it an operator watches a frozen page for a day and a
+// half (DESIGN.md §4).
+func TestStreamCarriesTheRunningOperation(t *testing.T) {
 	m := newMirror(t)
 
-	started := time.Now()
 	m.app.runs.mu.Lock()
-	m.app.runs.current = &Run{Kind: RunSync, PairID: m.pair.ID, PairName: m.pair.Name, StartedAt: started}
+	m.app.runs.current = &Run{Kind: RunSync, PairID: m.pair.ID, PairName: m.pair.Name, StartedAt: time.Now()}
 	m.app.runs.mu.Unlock()
 
-	rec := do(t, m.h, httptest.NewRequest(http.MethodGet, "/", nil))
-	body := rec.Body.String()
-	if !strings.Contains(body, `http-equiv="refresh"`) {
-		t.Error("a running operation does not make the page refresh itself")
+	srv := httptest.NewServer(m.h)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/stream", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
 	}
-	if !strings.Contains(body, "Stop") {
-		t.Error("a running operation cannot be stopped from the page")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("open the stream: %v", err)
+	}
+	defer res.Body.Close()
+
+	if ct := res.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("content type = %q", ct)
+	}
+
+	frame := readFrame(t, res.Body)
+	if !strings.HasPrefix(frame, "event: state") {
+		t.Fatalf("the first frame is %q, want the state", frame)
+	}
+
+	var state StreamState
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(frame[strings.Index(frame, "data: ")+len("data: "):], "")), &state); err != nil {
+		t.Fatalf("decode the state frame: %v", err)
+	}
+	if state.Runs.Current == nil || state.Runs.Current.Kind != RunSync {
+		t.Fatalf("the state frame does not carry the running sync: %+v", state.Runs.Current)
+	}
+}
+
+// readFrame reads one server-sent event, which ends at the blank line.
+func readFrame(t *testing.T, body io.Reader) string {
+	t.Helper()
+
+	reader := bufio.NewReader(body)
+	var frame strings.Builder
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read the stream: %v", err)
+		}
+		if line == "\n" {
+			return frame.String()
+		}
+		frame.WriteString(line)
 	}
 }
 
@@ -359,9 +415,13 @@ func TestDashboardApprovesADeletion(t *testing.T) {
 
 	// And it says so where the operator is, not only in the event log: a mirror
 	// that has quietly stopped deleting is the failure this guard trades for.
-	page := do(t, m.h, httptest.NewRequest(http.MethodGet, "/", nil))
-	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "waiting to be deleted") {
-		t.Errorf("the setup page (%d) does not surface the held deletion", page.Code)
+	page := do(t, m.h, httptest.NewRequest(http.MethodGet, "/api/pairs", nil))
+	var shown []PairView
+	if err := json.Unmarshal(page.Body.Bytes(), &shown); err != nil {
+		t.Fatalf("decode /api/pairs: %v", err)
+	}
+	if len(shown) != 1 || shown[0].Approval == nil || !shown[0].Approval.Pending() {
+		t.Errorf("the pairs view does not surface the held deletion: %s", page.Body)
 	}
 
 	form := url.Values{"id": {strconv.FormatInt(m.pair.ID, 10)}, "decision": {store.ApprovalApproved}}

@@ -11,10 +11,16 @@ VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 BUILDSTAMP=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS=-X main.version=$(VERSION) -X main.buildStamp=$(BUILDSTAMP)
 
-.PHONY: build test vet run syno syno-arm docker push-docker clean
+.PHONY: build web test vet run syno syno-arm docker push-docker clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
+
+# The dashboard, into web/dist, which is checked in and embedded by the web
+# package. Run it after changing anything under web/src; `build` deliberately does
+# not, so a Go build needs no node toolchain.
+web:
+	cd web && npm ci && npx ng build
 
 test:
 	go test ./...

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#2f5d50"/>
+  <!-- One way, left to right: the publisher's tree into the subscriber's. -->
+  <path d="M7 9h7v14H7z" fill="#fbfbfa" opacity=".55"/>
+  <path d="M18 9h7v14h-7z" fill="#fbfbfa"/>
+  <path d="M14.5 16h4.5m-2-2.2 2.2 2.2-2.2 2.2" fill="none" stroke="#fbfbfa"
+        stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

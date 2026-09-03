@@ -1,0 +1,13 @@
+# The image is built from the checked-in web/dist, never from web/src, so the node
+# toolchain and its half a gigabyte of dependencies have no business in the build
+# context.
+web/node_modules
+web/.angular
+web/src
+
+.git
+deploy/data
+logs/*.ndjson
+jcc-mirror
+jcc-mirror-amd64
+jcc-mirror-arm64

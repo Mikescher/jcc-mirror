@@ -1,0 +1,45 @@
+/* Not .bar: that is the progress bar in the design system, and inheriting its
+   6px height collapses the whole header. */
+.topbar {
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.topbar .wrap {
+  padding-top: 0.75rem;
+  padding-bottom: 0.5rem;
+}
+
+nav {
+  display: flex;
+  gap: 1.1rem;
+  flex-wrap: wrap;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+nav a {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 0.35rem 0;
+  border-bottom: 2px solid transparent;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+nav a:hover {
+  color: var(--fg);
+}
+
+nav a.active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+
+main {
+  padding-top: 1.25rem;
+  padding-bottom: 3rem;
+}

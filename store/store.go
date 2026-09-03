@@ -40,7 +40,15 @@ func OpenFile(ctx context.Context, path string) (*Store, error) {
 	// connection; busy_timeout turns "database is locked" from an error the caller
 	// has to handle into a wait, which is what it should be for a single process
 	// with a handful of goroutines.
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+	//
+	// _txlock=immediate is the one that is not obvious. Every transaction here
+	// ends up writing, and a deferred one that starts by reading cannot be
+	// upgraded once another writer has the lock: sqlite answers SQLITE_BUSY
+	// immediately and busy_timeout does not apply. Taking the write lock at BEGIN
+	// makes the wait a wait again.
+	dsn := "file:" + path + "?_txlock=immediate" +
+		"&_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)" +
+		"&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

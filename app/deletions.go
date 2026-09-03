@@ -66,9 +66,5 @@ func (a *App) handleDecideDeletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if wantsHTML(r) {
-		a.redirectHome(w, r)
-		return
-	}
 	writeJSON(w, http.StatusOK, approval)
 }

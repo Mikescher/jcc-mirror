@@ -4,8 +4,8 @@
 //
 // Everything is driven from the config table, so there is nothing to know before
 // the process starts. The LAN dashboard does not depend on the tunnel, so a first
-// boot against an empty database serves the setup view and the tunnel comes up the
-// moment the peer entry is saved (DESIGN.md §6).
+// boot against an empty database answers with an empty Config view, and the
+// tunnel comes up the moment the peer entry is saved (DESIGN.md §6).
 package app
 
 import (
@@ -19,7 +19,9 @@ import (
 	"time"
 
 	"blackforestbytes.com/jcc-mirror/engine"
+	"blackforestbytes.com/jcc-mirror/format"
 	"blackforestbytes.com/jcc-mirror/logs"
+	"blackforestbytes.com/jcc-mirror/notify"
 	"blackforestbytes.com/jcc-mirror/store"
 	"blackforestbytes.com/jcc-mirror/webdav"
 	"blackforestbytes.com/jcc-mirror/wg"
@@ -44,6 +46,9 @@ type Options struct {
 	// of DESIGN.md S5, which live with the rest of the state rather than beside
 	// the pair.
 	DataDir string
+	// DevUI is a running `ng serve` to proxy the dashboard to instead of serving
+	// the build embedded in the binary. Empty in every deployment.
+	DevUI string
 }
 
 // App owns the daemon's mutable state. Every exported method is safe to call
@@ -68,6 +73,18 @@ type App struct {
 	sched   scheduler
 	limiter *engine.Limiter
 
+	// stream is the SSE fan-out the dashboard is drawn from, meter counts what
+	// crosses the wire for the bandwidth series, and notifier is the push channel
+	// that makes a stopped sync visible without anyone going to look.
+	stream   stream
+	meter    meter
+	notifier *notify.Client
+
+	// bg counts the goroutines that outlive the request or tick that started
+	// them - a run and the notifications it produces. Close waits on it, because
+	// the store is closed the moment Close returns and both of them write to it.
+	bg sync.WaitGroup
+
 	mu        sync.Mutex
 	baseCtx   context.Context // the daemon's lifetime, which a run's context hangs off
 	tunnel    *wg.Tunnel
@@ -76,9 +93,11 @@ type App struct {
 	tunnelLn  net.Listener
 	tunnelSrv *http.Server
 	remote    *webdav.Client
+	remoteTr  *http.Transport // held only so a replaced one can let its connections go
 	remoteErr error
 	wantTun   bool // the tunnel is configured, whether or not it is currently open
 	up        bool // last reported tunnel state, so events fire on the edge only
+	downSince time.Time
 	started   time.Time
 }
 
@@ -86,7 +105,10 @@ func New(st *store.Store, log *logs.Logger, opts Options) *App {
 	if opts.TunnelPort == 0 {
 		opts.TunnelPort = 8080
 	}
-	return &App{store: st, log: log, opts: opts, started: time.Now(), limiter: engine.NewLimiter(0)}
+	return &App{
+		store: st, log: log, opts: opts, started: time.Now(),
+		limiter: engine.NewLimiter(0), notifier: &notify.Client{},
+	}
 }
 
 // SetHandler installs the dashboard. The tunnel listener is opened and closed as
@@ -117,8 +139,9 @@ func (a *App) Start(ctx context.Context) error {
 		return err
 	}
 	// The token is printed rather than stored anywhere a human reads: it exists in
-	// exactly one place, and this is how it gets out of it (DESIGN.md §6).
-	a.log.Infof("dashboard: bearer token is %s", token)
+	// exactly one place, and this is how it gets out of it (DESIGN.md §6). Secretf
+	// keeps it out of the log ring, which the dashboard serves back.
+	a.log.Secretf("dashboard: bearer token is %s", token)
 
 	if pub, err := a.PublicKey(ctx); err == nil {
 		a.log.Infof("wg: our public key is %s - paste it into the rootserver's peer entry", pub)
@@ -132,6 +155,8 @@ func (a *App) Start(ctx context.Context) error {
 	a.Reload(ctx)
 	go a.reconcileLoop(ctx)
 	go a.schedulerLoop(ctx)
+	go a.feedLoop(ctx)
+	go a.maintenanceLoop(ctx)
 	return nil
 }
 
@@ -140,9 +165,8 @@ func (a *App) Close(ctx context.Context) {
 	// A run in flight is stopped rather than left to be killed with the process.
 	// Nothing is lost either way - a scan stays resumable and a transfer keeps its
 	// watermark - but stopping it means the run's own record gets written.
-	if err := a.CancelRun("stopped: the daemon is shutting down"); err == nil {
-		a.awaitRun(2 * time.Second)
-	}
+	_ = a.CancelRun("stopped: the daemon is shutting down")
+	a.awaitBackground(3 * time.Second)
 
 	a.Event(ctx, store.LevelInfo, store.KindShutdown, "jcc-mirror stopped", nil)
 
@@ -151,25 +175,31 @@ func (a *App) Close(ctx context.Context) {
 	a.closeTunnelLocked()
 }
 
-// awaitRun waits for the running operation to notice its cancelled context, so
-// its result is recorded before the process goes. It is a courtesy with a short
-// fuse: a transfer that will not stop must not hold up the shutdown.
-func (a *App) awaitRun(limit time.Duration) {
-	deadline := time.Now().Add(limit)
-	for time.Now().Before(deadline) {
-		a.runs.mu.Lock()
-		running := a.runs.current != nil
-		a.runs.mu.Unlock()
-		if !running {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+// awaitBackground waits for the run and the notifications it produced to finish
+// writing, so their records are in the database before it is closed. It is a
+// courtesy with a short fuse: a transfer that will not stop must not hold up the
+// shutdown.
+//
+// Waiting on the runner's state would not do it - a run clears itself before its
+// notifications are sent, and those are the writes that would land on a closed
+// database.
+func (a *App) awaitBackground(limit time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		a.bg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(limit):
+		a.log.Warnf("shutdown: something in the background did not finish in %s", limit)
 	}
 }
 
 // Reload applies the current configuration. It is called at startup and after
-// every configuration change; re-opening the tunnel in place is what makes the
-// setup view work with no restart.
+// every configuration change; re-opening the tunnel in place is what lets the
+// dashboard configure the tunnel it is not reachable through.
 func (a *App) Reload(ctx context.Context) {
 	values, err := a.store.Config(ctx)
 	if err != nil {
@@ -262,6 +292,13 @@ func (a *App) closeTunnelLocked() {
 // openRemoteLocked rebuilds the WebDAV client. It is rebuilt on every reload
 // because it carries the tunnel's transport, which a reconnect replaces.
 func (a *App) openRemoteLocked(values store.Values) {
+	// The transport about to be replaced holds idle connections to the publisher;
+	// without this they sit until IdleConnTimeout for nothing.
+	if a.remoteTr != nil {
+		a.remoteTr.CloseIdleConnections()
+		a.remoteTr = nil
+	}
+
 	url := strings.TrimSpace(values.Get(store.KeyRemoteURL))
 	if url == "" {
 		a.remote, a.remoteErr = nil, nil
@@ -274,9 +311,10 @@ func (a *App) openRemoteLocked(values store.Values) {
 		Password:  values.Get(store.KeyRemotePassword),
 		UserAgent: "jcc-mirror/" + a.opts.Version,
 	}
-	if a.tunnel != nil {
-		cfg.Transport = a.tunnel.Transport()
-	}
+	// Always a transport of ours, tunnel or not: it is what counts the bytes the
+	// Bandwidth view draws.
+	a.remoteTr = a.meteredTransportLocked()
+	cfg.Transport = a.remoteTr
 
 	client, err := webdav.New(cfg)
 	a.remote, a.remoteErr = client, err
@@ -358,13 +396,22 @@ func (a *App) reconcile(ctx context.Context) {
 	a.mu.Unlock()
 
 	if tun == nil {
-		if tunErr != nil {
-			a.Reload(ctx) // the endpoint may resolve now, or the rootserver may be back
+		if tunErr == nil {
+			// Unconfigured is not down: a first boot has no tunnel by definition,
+			// and a condition left raised here would never clear.
+			a.notifyTunnel(ctx, true, "no tunnel is configured")
+			return
 		}
+		a.notifyTunnel(ctx, false, tunErr.Error())
+		a.Reload(ctx) // the endpoint may resolve now, or the rootserver may be back
 		return
 	}
 
 	up, detail := tunnelUp(tun)
+	// The notification is raised every tick rather than only on the edge: what
+	// decides it is how long the tunnel has been down, which changes while the
+	// state does not.
+	a.notifyTunnel(ctx, up, detail)
 	if up == wasUp {
 		return
 	}
@@ -380,6 +427,34 @@ func (a *App) reconcile(ctx context.Context) {
 		a.log.Warnf("wg: %s", detail)
 		a.Event(ctx, store.LevelWarn, store.KindTunnelDown, "tunnel down: "+detail, nil)
 	}
+}
+
+// notifyTunnel raises the tunnel-down condition once it has been down longer than
+// the grace period. A rootserver rebooting should not wake anyone, and a link
+// that has been down since Tuesday should not say so every half minute
+// (DESIGN.md §4.1).
+func (a *App) notifyTunnel(ctx context.Context, up bool, detail string) {
+	a.mu.Lock()
+	switch {
+	case up:
+		a.downSince = time.Time{}
+	case a.downSince.IsZero():
+		a.downSince = time.Now()
+	}
+	since := a.downSince
+	a.mu.Unlock()
+
+	grace := 15 * time.Minute
+	if values, err := a.store.Config(ctx); err == nil {
+		grace = values.Duration(store.KeyNotifyTunnelGrace)
+	}
+
+	down := !up && time.Since(since) >= grace
+	onset := ""
+	if down {
+		onset = "The tunnel has been down for " + format.Duration(time.Since(since)) + " — " + detail
+	}
+	a.NotifyEdge(ctx, store.NotifyTunnelDown, 0, down, onset, "The tunnel is back")
 }
 
 // tunnelUp reports whether any peer has handshaked recently enough to call the
@@ -428,7 +503,7 @@ func tunnelSettingsOf(v store.Values) tunnelSettings {
 }
 
 // complete reports whether the tunnel can be opened at all. Everything blank is
-// the first-boot state the setup view exists for, not an error.
+// the first-boot state the Config view exists for, not an error.
 func (t tunnelSettings) complete() bool {
 	return t.privateKey != "" && t.peerKey != "" && t.endpoint != "" &&
 		t.addresses != "" && t.allowedIPs != ""

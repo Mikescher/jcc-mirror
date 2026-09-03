@@ -37,6 +37,7 @@ const (
 	KindDeleteBlocked = "delete.blocked"
 	KindDeleteDecided = "delete.decided"
 	KindTrashPruned   = "trash.pruned"
+	KindTrashRestored = "trash.restored"
 	KindDBReplaced    = "jcc.db.replaced"
 	KindDBSkipped     = "jcc.db.skipped"
 	KindDBRollback    = "jcc.db.rollback"
@@ -97,9 +98,16 @@ type EventFilter struct {
 	PairID *int64
 	Since  time.Time
 	Limit  int
+
+	// Forward reads oldest first from AfterID onward, rather than back from the
+	// newest. It is how the SSE feed picks up what it has not sent; the cursor is
+	// an id rather than a timestamp because two rows can share a millisecond.
+	Forward bool
+	AfterID int64
 }
 
-// Events returns matching events, newest first.
+// Events returns matching events, newest first - or oldest first when the filter
+// reads forward from an id.
 func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
 	var (
 		where []string
@@ -125,6 +133,10 @@ func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
 		where = append(where, "ts >= ?")
 		args = append(args, f.Since.UnixMilli())
 	}
+	if f.AfterID > 0 {
+		where = append(where, "id > ?")
+		args = append(args, f.AfterID)
+	}
 
 	limit := f.Limit
 	if limit <= 0 {
@@ -135,7 +147,7 @@ func (s *Store) Events(ctx context.Context, f EventFilter) ([]Event, error) {
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	q += " ORDER BY id DESC LIMIT ?"
+	q += " ORDER BY id " + order(f.Forward) + " LIMIT ?"
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -182,6 +194,13 @@ func (s *Store) PruneEvents(ctx context.Context, olderThan time.Time) (int64, er
 		return 0, fmt.Errorf("prune events: %w", err)
 	}
 	return n, nil
+}
+
+func order(forward bool) string {
+	if forward {
+		return "ASC"
+	}
+	return "DESC"
 }
 
 func placeholders(n int) string {

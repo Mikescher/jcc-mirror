@@ -111,6 +111,18 @@ func (a *App) scheduleConfig() scheduleSettings {
 	return a.sched.cfg
 }
 
+// location is the zone everything with an hour in it is expressed in: the
+// schedule grid, and the heatmap the bandwidth series is folded into. It is a
+// setting of its own rather than the container's TZ (DESIGN.md §6).
+func (a *App) location() *time.Location {
+	a.sched.mu.Lock()
+	defer a.sched.mu.Unlock()
+	if a.sched.cfg.loc == nil {
+		return time.Local
+	}
+	return a.sched.cfg.loc
+}
+
 // schedulerLoop is the daemon's clock. It sleeps until the next boundary rather
 // than on a fixed tick, so a cap that changes at 08:00 changes at 08:00.
 func (a *App) schedulerLoop(ctx context.Context) {

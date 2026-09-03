@@ -1,0 +1,98 @@
+@if (error()) {
+  <div class="banner">{{ error() }}</div>
+}
+
+<section class="panel stack">
+  <div class="spread">
+    <h2>Changes</h2>
+    @if (loading()) {
+      <span class="note">loading…</span>
+    }
+  </div>
+
+  <p class="note">
+    One line per file the mirror touched. A row keeps the pair it came from as an id, so history
+    written by a pair that has since been removed stays here with no name to show for it.
+  </p>
+
+  <div class="row">
+    <label class="check">
+      <span class="note">Pair</span>
+      <select [value]="pair()" (change)="pair.set(+$any($event.target).value)">
+        <option value="0">all pairs</option>
+        @for (p of pairs(); track p.id) {
+          <option [value]="p.id">{{ p.name }}</option>
+        }
+      </select>
+    </label>
+
+    @for (op of allOps; track op) {
+      <label class="check">
+        <input
+          type="checkbox"
+          [checked]="has(op)"
+          (change)="toggleOp(op, $any($event.target).checked)"
+        />
+        <span class="pill" [class]="opClass(op)">{{ op }}</span>
+      </label>
+    }
+
+    <label class="check">
+      <span class="note">Rows</span>
+      <select [value]="limit()" (change)="limit.set(+$any($event.target).value)">
+        <option value="100">100</option>
+        <option value="500">500</option>
+        <option value="2000">2000</option>
+      </select>
+    </label>
+  </div>
+</section>
+
+<section class="panel stack">
+  <p class="note">
+    {{ fmt.comma(totals().rows) }} rows · {{ fmt.bytes(totals().added) }} added ·
+    {{ fmt.bytes(totals().replaced) }} replaced
+    @if (fresh().length) {
+      · <span class="ok">{{ fmt.comma(fresh().length) }} new since this page opened</span>
+    }
+  </p>
+
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Pair</th>
+          <th>Op</th>
+          <th>Path</th>
+          <th class="num">Before</th>
+          <th class="num">After</th>
+          <th>Error</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (row of rows(); track row.id) {
+          <tr>
+            <td>{{ fmt.clock(row.ts) }}</td>
+            <td>{{ nameOf(row.pairId) }}</td>
+            <td>
+              <span class="pill" [class]="opClass(row.op)">{{ row.op }}</span>
+            </td>
+            <td class="path mono">{{ row.path }}</td>
+            <td class="num">{{ size(row.sizeBefore) }}</td>
+            <td class="num">{{ size(row.sizeAfter) }}</td>
+            <td>
+              @if (row.error) {
+                <span class="bad">{{ row.error }}</span>
+              }
+            </td>
+          </tr>
+        } @empty {
+          <tr class="quiet">
+            <td colspan="7">Nothing here for that filter.</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+</section>

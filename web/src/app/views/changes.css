@@ -1,0 +1,6 @@
+/* Paths are the one column allowed to wrap: a deep tree is long, and truncating
+   it hides the part that differs. */
+td.path {
+  overflow-wrap: anywhere;
+  min-width: 18rem;
+}

@@ -1,0 +1,526 @@
+@if (error()) {
+  <div class="banner">{{ error() }}</div>
+}
+
+<section class="panel">
+  <div class="spread">
+    <h2>Running</h2>
+    <button class="danger small" type="button" [disabled]="!authed() || !busy()" (click)="stop()">
+      Stop
+    </button>
+  </div>
+
+  @if (run(); as r) {
+    <div class="running">
+      <div class="spread">
+        <div class="row">
+          <strong>{{ r.kind }}</strong>
+          <span>{{ r.pair }}</span>
+          @if (r.auto) {
+            <span class="pill dim">scheduled</span>
+          } @else {
+            <span class="pill dim">started by hand</span>
+          }
+          @if (r.force) {
+            <span class="pill warn">lock gate overridden</span>
+          }
+        </div>
+        <span class="dim">running for {{ fmt.duration(elapsed(r)) }}</span>
+      </div>
+    </div>
+
+    @if (scan(); as sc) {
+      <!-- A walk reports through its scan row: it is one PROPFIND per directory
+           and there is no total to count towards until it has finished. -->
+      <div class="cards">
+        <div class="card">
+          <div class="k">Directories</div>
+          <div class="v">{{ fmt.comma(sc.dirs) }}</div>
+        </div>
+        <div class="card">
+          <div class="k">Files</div>
+          <div class="v">{{ fmt.comma(sc.files) }}</div>
+        </div>
+        <div class="card">
+          <div class="k">Bytes seen</div>
+          <div class="v">{{ fmt.bytes(sc.bytes) }}</div>
+        </div>
+        <div class="card">
+          <div class="k">Walking for</div>
+          <div class="v">{{ fmt.since(sc.startedAt) }}</div>
+        </div>
+      </div>
+      <p class="note">
+        A walk has no percentage: nothing knows how many directories the publisher has until it has
+        been asked for all of them. The counters above are what it has seen so far.
+      </p>
+    } @else if (progress(); as p) {
+      <div class="line">
+        <div class="spread">
+          <span class="mono path">{{ p.path || '—' }}</span>
+          <span class="dim">
+            {{ fmt.bytes(p.fileDone) }} of {{ fmt.bytes(p.fileTotal) }} ·
+            {{ fmt.percent(p.fileDone, p.fileTotal) }}%
+          </span>
+        </div>
+        <div class="bar"><span [style.width.%]="fmt.percent(p.fileDone, p.fileTotal)"></span></div>
+      </div>
+
+      <div class="line">
+        <div class="spread">
+          <span>{{ fmt.comma(p.files) }} of {{ fmt.comma(p.filesTotal) }} files</span>
+          <span class="dim">
+            {{ fmt.bytes(p.runBytes) }} of {{ fmt.bytes(p.runTotal) }} ·
+            {{ fmt.percent(p.runBytes, p.runTotal) }}%
+          </span>
+        </div>
+        <div class="bar"><span [style.width.%]="fmt.percent(p.runBytes, p.runTotal)"></span></div>
+      </div>
+
+      <div class="cards">
+        <div class="card">
+          <div class="k">Rate now</div>
+          <div class="v">{{ instant() }}</div>
+        </div>
+        <div class="card">
+          <div class="k">Average</div>
+          <div class="v">{{ average() }}</div>
+        </div>
+        <div class="card">
+          <div class="k">ETA</div>
+          <div class="v">{{ eta() }}</div>
+        </div>
+        <div class="card">
+          <div class="k">Still queued</div>
+          <div class="v">{{ fmt.bytes(p.runTotal - p.runBytes) }}</div>
+          <div class="note">{{ fmt.count(p.filesTotal - p.files, 'file') }}</div>
+        </div>
+      </div>
+    }
+
+    <p class="note">
+      Stopping is routine and safe. A walk is left resumable and a transfer keeps its watermark, so
+      the next run carries on from where this one got to rather than starting over.
+    </p>
+  } @else {
+    <p class="note">
+      Nothing is running. The scheduler starts a run of its own when the window opens, unless
+      unattended operation is off.
+    </p>
+  }
+</section>
+
+<section class="panel">
+  <div class="spread">
+    <h2>Window</h2>
+    @if (status()?.schedule; as s) {
+      <label class="check">
+        <input
+          type="checkbox"
+          [checked]="s.automatic"
+          [disabled]="!authed()"
+          (change)="setAutomatic($any($event.target).checked)"
+        />
+        <span>Unattended</span>
+      </label>
+    }
+  </div>
+
+  @if (status()?.schedule; as s) {
+    @if (s.error) {
+      <div class="banner">{{ s.error }}</div>
+    }
+
+    <div class="cards">
+      <div class="card">
+        <div class="k">Transfers</div>
+        <div class="v" [class.ok]="s.transfer.open" [class.dim]="!s.transfer.open">
+          {{ s.transfer.open ? 'open' : 'closed' }}
+        </div>
+        <div class="note">until {{ fmt.timeOnly(s.transfer.until) }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Cap</div>
+        <div class="v">{{ fmt.cap(s.transfer.limit) }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Walks</div>
+        <div class="v" [class.ok]="s.scan.open" [class.dim]="!s.scan.open">
+          {{ s.scan.open ? 'open' : 'closed' }}
+        </div>
+        <div class="note">every {{ s.scanEvery }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Local time</div>
+        <div class="v">{{ fmt.timeOnly(s.now) }}</div>
+        <div class="note">{{ s.timezone }}</div>
+      </div>
+      @if (!s.transfer.open && s.nextOpen) {
+        <div class="card">
+          <div class="k">Next open</div>
+          <div class="v">{{ fmt.clock(s.nextOpen) }}</div>
+          <div class="note">in {{ fmt.duration(until(s.nextOpen)) }}</div>
+        </div>
+      }
+    </div>
+
+    <p class="note">
+      Unattended off is the pause: it stops the scheduler from starting anything by itself and
+      changes nothing else. Every button on this page keeps working.
+    </p>
+  } @else {
+    <p class="note">Waiting for the first frame of the live stream.</p>
+  }
+</section>
+
+<section class="panel">
+  <div class="spread">
+    <h2>Pairs</h2>
+    @if (loading()) {
+      <span class="note">reading…</span>
+    }
+  </div>
+
+  @if (pairs().length === 0 && !loading()) {
+    <p class="note">No pairs are configured. They are added in Config.</p>
+  }
+
+  <div class="stack">
+    @for (p of pairs(); track p.id) {
+      <div class="card tight">
+        <div class="spread">
+          <div class="row">
+            <h3>{{ p.name }}</h3>
+            <span class="pill">{{ p.type }}</span>
+            <span class="pill">{{ p.mode }}</span>
+            @if (!p.enabled) {
+              <span class="pill dim">disabled</span>
+            }
+            @if (behind(p) > 0) {
+              <span class="pill warn">{{ fmt.count(behind(p), 'file') }} behind</span>
+            } @else {
+              <span class="pill ok">level with the publisher</span>
+            }
+          </div>
+          <span class="note mono path">{{ p.remotePath }} → {{ p.localPath }}</span>
+        </div>
+
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr>
+                <th class="num">Remote</th>
+                <th class="num">Here</th>
+                <th class="num">Behind</th>
+                <th class="num">Pending</th>
+                <th>Last scan</th>
+                <th class="num">Free</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="num">
+                  {{ fmt.comma(p.RemoteFiles) }}
+                  <div class="dim">{{ fmt.bytes(p.RemoteBytes) }}</div>
+                </td>
+                <td class="num">
+                  {{ fmt.comma(p.LocalFiles) }}
+                  <div class="dim">{{ fmt.bytes(p.LocalBytes) }}</div>
+                </td>
+                <td class="num">{{ fmt.comma(behind(p)) }}</td>
+                <td class="num">
+                  {{ fmt.bytes(p.Queue.pendingBytes) }}
+                  @if (p.Queue.nextAttempt) {
+                    <div class="dim">retry {{ fmt.clock(p.Queue.nextAttempt) }}</div>
+                  }
+                </td>
+                <td>
+                  {{ fmt.clock(p.LastScan) }}
+                  @if (p.LastScan) {
+                    <div class="dim">{{ fmt.since(p.LastScan) }} ago</div>
+                  }
+                </td>
+                <td class="num">
+                  {{ fmt.bytes(p.Space.free) }}
+                  <div class="dim">of {{ fmt.bytes(p.Space.total) }}</div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="row">
+          @for (q of queue(p); track q.state) {
+            <span class="pill" [class.bad]="q.state === 'failed'">
+              {{ fmt.comma(q.count) }} {{ q.state }}
+            </span>
+          } @empty {
+            <span class="note">The queue is empty.</span>
+          }
+        </div>
+
+        @if (p.Approval; as ap) {
+          @if (ap.state === 'pending') {
+            <div class="hold">
+              <div>
+                <strong>{{ fmt.count(ap.files, 'file') }} ({{ fmt.bytes(ap.bytes) }})</strong>
+                {{ ap.files === 1 ? 'is' : 'are' }} waiting to be deleted here.
+              </div>
+              <div class="note">{{ ap.reason }} — held since {{ fmt.clock(ap.createdAt) }}.</div>
+              <div class="note">
+                Approving covers this walk and this count only, so a set that grows before the next
+                sync is held again. Rejecting holds until the next walk.
+              </div>
+              <div class="row">
+                <button
+                  class="danger small"
+                  type="button"
+                  [disabled]="!authed()"
+                  (click)="decide(p, 'approved')"
+                >
+                  Approve
+                </button>
+                <button
+                  class="ghost small"
+                  type="button"
+                  [disabled]="!authed()"
+                  (click)="decide(p, 'rejected')"
+                >
+                  Reject
+                </button>
+              </div>
+            </div>
+          }
+        }
+
+        <div class="row">
+          <button
+            class="ghost small"
+            type="button"
+            [disabled]="!authed() || busy()"
+            (click)="start('plan', p)"
+          >
+            Plan
+          </button>
+          <button
+            class="ghost small"
+            type="button"
+            [disabled]="!authed() || busy()"
+            (click)="start('scan', p)"
+          >
+            Scan
+          </button>
+          <button
+            class="ghost small"
+            type="button"
+            [disabled]="!authed() || busy()"
+            (click)="start('adopt', p)"
+          >
+            Adopt
+          </button>
+          <button
+            class="small"
+            type="button"
+            [disabled]="!authed() || busy()"
+            (click)="start('sync', p)"
+          >
+            Sync
+          </button>
+          <button
+            class="danger small"
+            type="button"
+            [disabled]="!authed() || busy()"
+            (click)="start('delete', p)"
+          >
+            Delete
+          </button>
+          @if (p.type === 'jcc') {
+            <button
+              class="ghost small"
+              type="button"
+              [disabled]="!authed() || busy()"
+              (click)="start('db', p)"
+            >
+              Database
+            </button>
+            <label class="check">
+              <input
+                type="checkbox"
+                [checked]="forced(p.id)"
+                [disabled]="!authed()"
+                (change)="setForced(p.id, $any($event.target).checked)"
+              />
+              <span class="note">force past the lock</span>
+            </label>
+          }
+        </div>
+
+        @if (p.type === 'jcc' && forced(p.id)) {
+          <p class="note warn">
+            Forcing copies ClipCornDB.db even though a <span class="mono">.~lock</span> is out
+            beside it. That is only ever right for a lock left behind by a crash: if jClipCorn is
+            actually running over there, the copy can be of a database mid-write.
+          </p>
+        }
+
+        @if (backups(p).length > 0) {
+          <div class="scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Database backup</th>
+                  <th class="num">Size</th>
+                  <th>Reason</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (b of backups(p); track b.id) {
+                  <tr>
+                    <td>{{ fmt.clock(b.ts) }}</td>
+                    <td class="num">{{ fmt.bytes(b.size) }}</td>
+                    <td>{{ b.reason }}</td>
+                    <td class="num">
+                      <button
+                        class="ghost small"
+                        type="button"
+                        [disabled]="!authed()"
+                        (click)="rollback(p, b)"
+                      >
+                        Roll back
+                      </button>
+                    </td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <p class="note">
+            A rollback puts a kept copy back in place. It asks the publisher nothing, so it works
+            while the tunnel is down — which is one of the reasons to want it.
+          </p>
+        }
+      </div>
+    }
+  </div>
+
+  <p class="note">
+    One operation runs at a time by design: the engine moves one file at a time and the scheduler
+    walks the pairs in priority order, so the buttons are disabled while anything is in flight. Plan
+    counts what a sync would do and changes nothing. Adopt matches what is already on disk against
+    the publisher by size, which is what the USB bootstrap needs before the first sync.
+  </p>
+</section>
+
+<section class="panel">
+  <h2>Recent runs</h2>
+
+  @if (history().length === 0) {
+    <p class="note">Nothing has finished since the daemon started. The durable record is Events.</p>
+  }
+
+  <div class="stack">
+    @for (r of history(); track r.kind + r.startedAt) {
+      <div class="card tight">
+        <div class="spread">
+          <div class="row">
+            <strong>{{ r.kind }}</strong>
+            <span>{{ r.pair }}</span>
+            @if (r.auto) {
+              <span class="pill dim">scheduled</span>
+            }
+            @if (r.force) {
+              <span class="pill warn">lock gate overridden</span>
+            }
+            @if (r.error) {
+              <span class="pill bad">failed</span>
+            } @else {
+              <span class="pill ok">finished</span>
+            }
+          </div>
+          <span class="dim">
+            {{ fmt.clock(r.startedAt) }} · took {{ fmt.duration(elapsed(r)) }}
+          </span>
+        </div>
+
+        @if (r.error) {
+          <div class="banner">{{ r.error }}</div>
+        }
+        @if (r.summary) {
+          <p class="note">{{ r.summary }}</p>
+        }
+
+        @if (r.plan; as plan) {
+          <div class="cards">
+            <div class="card">
+              <div class="k">Add</div>
+              <div class="v">{{ fmt.comma(plan.add) }}</div>
+              <div class="note">{{ fmt.bytes(plan.addBytes) }}</div>
+            </div>
+            <div class="card">
+              <div class="k">Replace</div>
+              <div class="v">{{ fmt.comma(plan.replace) }}</div>
+              <div class="note">{{ fmt.bytes(plan.replaceBytes) }}</div>
+            </div>
+            <div class="card">
+              <div class="k">Vanished</div>
+              <div class="v">{{ fmt.comma(plan.vanished) }}</div>
+              <div class="note">{{ fmt.bytes(plan.vanishedBytes) }} · {{ plan.mode }}</div>
+            </div>
+            <div class="card">
+              <div class="k">Free</div>
+              <div class="v">{{ fmt.bytes(plan.free) }}</div>
+              <div class="note">reserve {{ fmt.bytes(plan.reserve) }}</div>
+            </div>
+          </div>
+
+          @if (plan.shortfall > 0) {
+            <div class="banner">
+              It does not fit: {{ fmt.bytes(plan.shortfall) }} short of the free-space reserve. A
+              sync would be refused before it moved anything.
+            </div>
+          }
+          @if (plan.guard) {
+            <div class="hold">{{ plan.guard }}</div>
+          }
+          @if (plan.excluded > 0) {
+            <p class="note">
+              {{ fmt.comma(plan.excluded) }} differences were dropped rather than acted on — the
+              pair's globs no longer cover them, or they are the hard exclusions of a jcc pair.
+            </p>
+          }
+
+          @if (plan.entries?.length) {
+            <div class="scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Path</th>
+                    <th>Op</th>
+                    <th class="num">Size</th>
+                    <th class="num">Was</th>
+                    <th>Modified</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (e of plan.entries; track e.path) {
+                    <tr>
+                      <td class="mono path">{{ e.path }}</td>
+                      <td>{{ e.op }}</td>
+                      <td class="num">{{ fmt.bytes(e.size) }}</td>
+                      <td class="num">{{ e.sizeBefore ? fmt.bytes(e.sizeBefore) : '—' }}</td>
+                      <td>{{ fmt.clock(e.mtime) }}</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+            @if (plan.truncated) {
+              <p class="note">A sample. The full list is what a sync would queue.</p>
+            }
+          }
+        }
+      </div>
+    }
+  </div>
+</section>

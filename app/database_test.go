@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -151,17 +152,15 @@ func TestDashboardRollsTheDatabaseBack(t *testing.T) {
 		t.Fatalf("%d copies kept, want the one the replacement displaced", len(views[0].Backups))
 	}
 
-	// The page is where the buttons live, so they have to be on it - and the
-	// markup after them has to render too, which a template error would swallow.
-	page := do(t, m.h, httptest.NewRequest(http.MethodGet, "/", nil)).Body.String()
-	for _, want := range []string{
-		"/api/pairs/database/rollback",
-		"Copy it although a lock is held",
-		"Edit this pair",
-	} {
-		if !strings.Contains(page, want) {
-			t.Errorf("the page does not carry %q", want)
-		}
+	// The copies are on the pairs view, because a rollback nobody can find is
+	// not a recovery story.
+	rec := do(t, m.h, httptest.NewRequest(http.MethodGet, "/api/pairs", nil))
+	var shown []PairView
+	if err := json.Unmarshal(rec.Body.Bytes(), &shown); err != nil {
+		t.Fatalf("decode /api/pairs: %v", err)
+	}
+	if len(shown) != 1 || len(shown[0].Backups) != 1 {
+		t.Fatalf("the pairs view does not carry the kept copy: %s", rec.Body)
 	}
 
 	form := url.Values{

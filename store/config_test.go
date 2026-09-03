@@ -175,7 +175,7 @@ func TestEnsureGeneratedRunsOnce(t *testing.T) {
 func TestEveryKeyIsInAGroup(t *testing.T) {
 	for _, d := range Keys() {
 		if d.Group == "" || d.Label == "" {
-			t.Errorf("%s has no group or label, so the setup view cannot render it", d.Name)
+			t.Errorf("%s has no group or label, so the Config view cannot render it", d.Name)
 		}
 	}
 }
@@ -255,7 +255,7 @@ func TestConfigDefaultsAreUsable(t *testing.T) {
 }
 
 // A default the registry itself would reject is a setting that cannot be saved
-// from the setup view without being changed first.
+// from the Config view without being changed first.
 func TestKeyDefaultsPassTheirOwnValidator(t *testing.T) {
 	for _, d := range Keys() {
 		if d.Default == "" || d.Validate == nil {
@@ -285,7 +285,7 @@ func TestTunablesHaveDefaults(t *testing.T) {
 			t.Errorf("%s has no default", name)
 		}
 		if d.Validate == nil {
-			t.Errorf("%s has no validator, so the setup view accepts anything", name)
+			t.Errorf("%s has no validator, so the Config view accepts anything", name)
 		}
 	}
 }

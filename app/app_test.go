@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -122,8 +123,8 @@ func TestLoginCookieAuthorizes(t *testing.T) {
 	_, h, token := newApp(t)
 
 	rec := postForm(t, h, "/api/login", "", url.Values{"token": {token}})
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("login = %d, want 303", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login = %d, want 200: %s", rec.Code, rec.Body)
 	}
 	cookies := rec.Result().Cookies()
 	if len(cookies) != 1 || cookies[0].Name != tokenCookie {
@@ -143,6 +144,15 @@ func TestLoginCookieAuthorizes(t *testing.T) {
 	if rec := postForm(t, h, "/api/login", "", url.Values{"token": {"wrong"}}); rec.Code != http.StatusUnauthorized {
 		t.Errorf("login with a wrong token = %d, want 401", rec.Code)
 	}
+
+	// The dashboard posts JSON, not a form. Reading only the form body is a login
+	// that always fails from the browser and always works from curl.
+	body := strings.NewReader(`{"token":` + strconv.Quote(token) + `}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/login", body)
+	req.Header.Set("Content-Type", "application/json")
+	if rec := do(t, h, req); rec.Code != http.StatusOK {
+		t.Errorf("login with a JSON body = %d: %s", rec.Code, rec.Body)
+	}
 }
 
 func TestBlankSecretKeepsTheStoredOne(t *testing.T) {
@@ -153,7 +163,7 @@ func TestBlankSecretKeepsTheStoredOne(t *testing.T) {
 		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
 	}
 
-	// The setup view cannot render a stored password, so an untouched field comes
+	// The dashboard is never sent a stored password, so an untouched field comes
 	// back blank - and must not wipe it.
 	if rec := postForm(t, h, "/api/config", token, url.Values{
 		store.KeyRemotePassword: {""},

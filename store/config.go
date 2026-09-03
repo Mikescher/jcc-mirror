@@ -56,15 +56,51 @@ const (
 	KeyJCCLockStale = "jcc.lock_stale"
 	KeyJCCBackups   = "jcc.backups"
 
+	KeyNotifyUserID  = "notify.user_id"
+	KeyNotifyUserKey = "notify.user_key"
+	KeyNotifyChannel = "notify.channel"
+	KeyNotifySender  = "notify.sender"
+
+	KeyNotifySyncFailed    = "notify.on_sync_failed"
+	KeyNotifySyncOK        = "notify.on_sync_ok"
+	KeyNotifyDeleteBlocked = "notify.on_delete_blocked"
+	KeyNotifySpaceLow      = "notify.on_space_low"
+	KeyNotifyLockStale     = "notify.on_lock_stale"
+	KeyNotifyTunnelDown    = "notify.on_tunnel_down"
+	KeyNotifyDBReplaced    = "notify.on_db_replaced"
+	KeyNotifyTunnelGrace   = "notify.tunnel_grace"
+
+	KeyRetainEvents  = "retention.events"
+	KeyRetainChanges = "retention.changes"
+
 	KeyDashboardToken = "dashboard.token"
 	KeyTimezone       = "general.timezone"
 )
+
+// NotifyToggle is the setting that decides whether one notification kind is sent
+// at all. Every kind of DESIGN.md §4.1 has one, and a kind with no toggle is
+// never sent - which is what keeps the table below and the notifier's switch from
+// drifting apart.
+func NotifyToggle(kind string) (string, bool) {
+	key, ok := notifyToggles[kind]
+	return key, ok
+}
+
+var notifyToggles = map[string]string{
+	NotifySyncFailed:    KeyNotifySyncFailed,
+	NotifySyncOK:        KeyNotifySyncOK,
+	NotifyDeleteBlocked: KeyNotifyDeleteBlocked,
+	NotifySpaceLow:      KeyNotifySpaceLow,
+	NotifyLockStale:     KeyNotifyLockStale,
+	NotifyTunnelDown:    KeyNotifyTunnelDown,
+	NotifyDBReplaced:    KeyNotifyDBReplaced,
+}
 
 // SecretMask replaces a secret's value wherever one is shown or recorded. The
 // audit trail says that a password changed, never what it changed to.
 const SecretMask = "••••••••"
 
-// KeyDef describes one setting. The setup view is generated from this table, so a
+// KeyDef describes one setting. The Config view is generated from this table, so a
 // key added in a later milestone costs no HTML.
 type KeyDef struct {
 	Name      string
@@ -251,6 +287,87 @@ var keyDefs = []KeyDef{
 	},
 
 	{
+		Name: KeyNotifyUserID, Group: "Notifications", Label: "SCN user id",
+		Help:     "The numeric half of the SimpleCloudNotifier credentials. Leave it empty to send no notifications at all.",
+		Validate: validateOptionalInt,
+	},
+	{
+		Name: KeyNotifyUserKey, Group: "Notifications", Label: "SCN user key",
+		Help:   "The other half. It is a pair, not a single key.",
+		Secret: true,
+	},
+	{
+		Name: KeyNotifyChannel, Group: "Notifications", Label: "Channel",
+		Help: "Optional SCN channel, so the mirror's messages can be muted separately from everything else on the account.",
+	},
+	{
+		Name: KeyNotifySender, Group: "Notifications", Label: "Sender name",
+		Help:    "Optional. Which machine the message came from, when more than one thing sends to the same account.",
+		Default: "jcc-mirror",
+	},
+	{
+		Name: KeyNotifySyncFailed, Group: "Notifications", Label: "Notify: sync failed",
+		Help:     "A run that failed, or finished with files it could not transfer. One message per run, never one per file.",
+		Default:  "true",
+		Validate: validateBool,
+	},
+	{
+		Name: KeyNotifySyncOK, Group: "Notifications", Label: "Notify: sync finished cleanly",
+		Help:     "Off by default: a mirror that works is not news, and the daily quota is finite.",
+		Default:  "false",
+		Validate: validateBool,
+	},
+	{
+		Name: KeyNotifyDeleteBlocked, Group: "Notifications", Label: "Notify: deletion awaiting approval",
+		Help:     "A guard stopped a deletion and it is waiting for a person. Until someone answers, the mirror stops shrinking.",
+		Default:  "true",
+		Validate: validateBool,
+	},
+	{
+		Name: KeyNotifySpaceLow, Group: "Notifications", Label: "Notify: free space below the reserve",
+		Help:     "The destination volume no longer has room for what is queued.",
+		Default:  "true",
+		Validate: validateBool,
+	},
+	{
+		Name: KeyNotifyLockStale, Group: "Notifications", Label: "Notify: source lock stale",
+		Help:     "The publisher's lock file has sat unchanged past the jCC threshold, so the database is silently not syncing.",
+		Default:  "true",
+		Validate: validateBool,
+	},
+	{
+		Name: KeyNotifyTunnelDown, Group: "Notifications", Label: "Notify: tunnel down",
+		Help:     "No WireGuard handshake for longer than the grace period below.",
+		Default:  "true",
+		Validate: validateBool,
+	},
+	{
+		Name: KeyNotifyDBReplaced, Group: "Notifications", Label: "Notify: database replaced",
+		Help:     "ClipCornDB.db was copied over. Low priority, but it is the one file whose replacement is worth seeing.",
+		Default:  "true",
+		Validate: validateBool,
+	},
+	{
+		Name: KeyNotifyTunnelGrace, Group: "Notifications", Label: "Tunnel down grace",
+		Help:     "How long the tunnel may be down before it is worth a message. A rootserver reboot should not wake anyone.",
+		Default:  "15m",
+		Validate: validateDuration,
+	},
+
+	{
+		Name: KeyRetainEvents, Group: "Retention", Label: "Keep events for",
+		Help:     "How long the event log is kept. Older rows are deleted once an hour.",
+		Default:  "8760h",
+		Validate: validateDuration,
+	},
+	{
+		Name: KeyRetainChanges, Group: "Retention", Label: "Keep per-file changes for",
+		Help:     "How long the per-file history is kept, and with it the finished transfer jobs it duplicates. Failed jobs are never pruned - they are what waits for someone to look at them.",
+		Default:  "8760h",
+		Validate: validateDuration,
+	},
+
+	{
 		Name: KeyDashboardToken, Group: "Dashboard", Label: "Bearer token",
 		Help:      "Generated at first start and printed to the container log. Required for every non-GET request.",
 		Secret:    true,
@@ -273,7 +390,7 @@ var keyByName = func() map[string]KeyDef {
 	return m
 }()
 
-// Keys returns every defined setting, in the order the setup view renders them.
+// Keys returns every defined setting, in the order the Config view renders them.
 func Keys() []KeyDef { return append([]KeyDef(nil), keyDefs...) }
 
 // Key looks one setting up by name.
@@ -610,6 +727,12 @@ func validateHTTPURL(s string) error {
 	if u.Host == "" {
 		return errors.New("no host")
 	}
+	// The username and password are settings of their own. In the URL they would
+	// be echoed by /healthz, by every status read and by the PROPFIND explorer,
+	// none of which mask anything.
+	if u.User != nil {
+		return errors.New("put the credentials in their own settings, not in the URL")
+	}
 	return nil
 }
 
@@ -622,6 +745,15 @@ func validatePositiveInt(s string) error {
 		return errors.New("must be at least 1")
 	}
 	return nil
+}
+
+// validateOptionalInt is for a setting whose absence turns a feature off rather
+// than leaving it half-configured.
+func validateOptionalInt(s string) error {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return validatePositiveInt(s)
 }
 
 func validatePercent(s string) error {

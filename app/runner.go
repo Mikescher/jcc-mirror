@@ -83,8 +83,16 @@ type RunState struct {
 }
 
 // Busy reports whether an operation is in flight, which is what the page uses to
-// decide whether to refresh itself.
+// decide how much of itself to redraw.
 func (s RunState) Busy() bool { return s.Current != nil }
+
+// busy is the same question without collecting the rest of the state, for the
+// paths that only need to know whether something is moving.
+func (a *App) busy() bool {
+	a.runs.mu.Lock()
+	defer a.runs.mu.Unlock()
+	return a.runs.current != nil
+}
 
 // StartRun begins one operation in the background and returns as soon as it has
 // started. The HTTP request that started it is long gone by the time a sync
@@ -134,7 +142,11 @@ func (a *App) startRun(ctx context.Context, kind string, pair store.Pair, auto, 
 	if !auto {
 		a.log.Infof("run: %s of %q started from the dashboard", kind, pair.Name)
 	}
-	go a.execute(runCtx, eng, pair, run)
+	a.bg.Add(1)
+	go func() {
+		defer a.bg.Done()
+		a.execute(runCtx, eng, pair, run)
+	}()
 
 	return *run, nil
 }
@@ -172,7 +184,18 @@ func (a *App) runContext() context.Context {
 
 func (a *App) execute(ctx context.Context, eng *engine.Engine, pair store.Pair, run *Run) {
 	out := runOperation(ctx, eng, pair, run.Kind, run.Force)
+	a.finishRun(run, out)
 
+	// The push channel last, and outside the runner's lock: a notification reads
+	// the settings and writes the edge it was raised on, and none of that may
+	// stand between one run and the next. The context is detached because a run
+	// that was cancelled still gets to say what became of it (DESIGN.md §4.1).
+	notifyCtx := context.WithoutCancel(ctx)
+	a.notifyRun(notifyCtx, run, out)
+	a.notifyOutcome(notifyCtx, run, out)
+}
+
+func (a *App) finishRun(run *Run, out outcome) {
 	a.runs.mu.Lock()
 	defer a.runs.mu.Unlock()
 
@@ -211,10 +234,12 @@ func (a *App) execute(ctx context.Context, eng *engine.Engine, pair store.Pair, 
 }
 
 // outcome is what a run leaves behind: a line to read, and the structured halves
-// the page and the scheduler go on to use.
+// the page, the scheduler and the notifications go on to use.
 type outcome struct {
 	summary  string
 	plan     *engine.Plan
+	sync     *engine.SyncResult
+	reap     *engine.ReapResult
 	database *engine.DBResult
 	err      error
 }
@@ -257,7 +282,7 @@ func runOperation(ctx context.Context, eng *engine.Engine, pair store.Pair, kind
 			return failed(err)
 		}
 		res, syncErr := eng.Sync(ctx, pair)
-		out := outcome{summary: fmt.Sprintf("%s queued; %s files transferred (%s), %s already here, %s failed, %s still queued",
+		out := outcome{sync: &res, summary: fmt.Sprintf("%s queued; %s files transferred (%s), %s already here, %s failed, %s still queued",
 			format.Comma(int64(p.Queued)), format.Comma(int64(res.Files)), format.Bytes(res.Bytes),
 			format.Comma(int64(res.InPlace)), format.Comma(int64(res.Failed)), format.Comma(res.Pending))}
 		if syncErr != nil {
@@ -282,7 +307,7 @@ func runOperation(ctx context.Context, eng *engine.Engine, pair store.Pair, kind
 		// once the additions have landed, never before (DESIGN.md §2.5).
 		reaped, err := eng.Reap(ctx, pair)
 		out.summary += "; " + reapSummary(reaped)
-		out.err = err
+		out.reap, out.err = &reaped, err
 		return out
 
 	case RunDatabase:
@@ -297,7 +322,7 @@ func runOperation(ctx context.Context, eng *engine.Engine, pair store.Pair, kind
 		if err != nil {
 			return failed(err)
 		}
-		return outcome{summary: reapSummary(res)}
+		return outcome{summary: reapSummary(res), reap: &res}
 	}
 	return failed(fmt.Errorf("unknown operation %q", kind))
 }

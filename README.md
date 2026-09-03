@@ -4,27 +4,27 @@ One-way replication of a jClipCorn collection from the publisher's NAS to the
 subscriber's Synology. See `DESIGN.md` for the design; this README covers what is
 built so far.
 
-**Status: M5.** It mirrors, on a schedule, at a rate you choose; it can shrink as
-well as grow; and it now handles the jClipCorn database itself. On top of M1's
-skeleton — sqlite state, a config table with an audit trail, a setup view, the
-`Remote` interface with a WebDAV implementation and a local fake, an event log
-and `/healthz` — M2's engine — a resumable walk that builds the manifest the
-publisher does not have, a differ, a transfer with ranged GETs, `.part` files,
-verification, an atomic rename and a per-file job queue with retries, plus adopt
-mode for the USB bootstrap — M3's scheduler — one 7×24 grid that says both when
-bytes may move and how fast, a shared limiter that a window boundary adjusts
-mid-transfer, and a free-space preflight — and M4's deletion, behind every guard
-of `DESIGN.md` §2.5 — mirror mode per pair, two thresholds that hold a large
-deletion for one approval, a dated quarantine with a retention instead of an
-unlink, and the assertion that an empty manifest is a publisher who is not there
-— there is now the **jCC pair**: hard exclusions that never copy the per-user
-databases, a lock gate on the shared one that is re-checked after the copy, and a
-numbered backup of every database it replaces, with a rollback that works even
-with the tunnel down.
+**Status: M6.** It mirrors, on a schedule, at a rate you choose; it can shrink as
+well as grow; it handles the jClipCorn database itself; and there is now a
+dashboard to watch all of it from. On top of M1's skeleton — sqlite state, a
+config table with an audit trail, the `Remote` interface with a WebDAV
+implementation and a local fake, an event log and `/healthz` — M2's engine — a
+resumable walk that builds the manifest the publisher does not have, a differ, a
+transfer with ranged GETs, `.part` files, verification, an atomic rename and a
+per-file job queue with retries, plus adopt mode for the USB bootstrap — M3's
+scheduler — one 7×24 grid that says both when bytes may move and how fast, a
+shared limiter that a window boundary adjusts mid-transfer, and a free-space
+preflight — M4's deletion behind every guard of `DESIGN.md` §2.5 — and M5's jCC
+pair — hard exclusions that never copy the per-user databases, a lock gate on the
+shared one that is re-checked after the copy, and a numbered backup of every
+database it replaces — there is now the **dashboard**: an Angular build compiled
+into the binary, six views fed by one Server-Sent Events stream, a per-minute
+bandwidth series that rolls itself up rather than growing without bound, every
+action behind the bearer token, and push notifications over SCN coalesced hard
+enough to live inside a daily quota.
 
 A pair is additive until it is told otherwise, which is the point: run
-additive-only until the diff is trusted. The dashboard is M6 and self-update is
-M7.
+additive-only until the diff is trusted. Self-update is M7.
 
 ## Running it
 
@@ -34,20 +34,20 @@ cd deploy && docker compose up -d && docker compose logs -f
 
 Nothing has to be known before the process starts. The LAN dashboard does not
 depend on the tunnel, so a first boot against an empty database answers on
-`:8080` with the setup view:
+`:8080` with the dashboard and an empty Config view:
 
 1. The container log prints the **dashboard token** and this container's
    **WireGuard public key**. Both are generated on first start; the private half
    of the key never leaves the data volume.
 2. Paste that public key into the rootserver's peer entry.
-3. Open `http://<synology>:8080`, unlock with the token, and fill in the
-   rootserver's public key, its endpoint, this container's tunnel address, the
+3. Open `http://<synology>:8080`, unlock with the token, and on **Config** fill in
+   the rootserver's public key, its endpoint, this container's tunnel address, the
    allowed IPs, and the WebDAV URL and credentials.
 4. Save. The tunnel comes up in place — no restart — and the same dashboard also
    starts answering on `http://<our-tunnel-address>:8080`, which is how the
    publisher reaches it with no port forward.
-5. **List the remote root** proves the whole path end to end. Its answer lands in
-   the event log.
+5. **Test the remote** proves the whole path end to end. Its answer lands in the
+   event log.
 
 Reading the dashboard needs no token. Changing anything does, including from
 `curl`:
@@ -58,35 +58,44 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
      http://<synology>:8080/api/config
 ```
 
+The browser holds the token as a `SameSite=Strict`, `HttpOnly` cookie the daemon
+sets, so it is never in a place a script can read; there is no CORS and no
+cross-site request that could carry it.
+
 | Endpoint | |
 |---|---|
-| `GET /` | Setup view |
+| `GET /` and every route under it | The dashboard. Unknown paths answer with the shell, because the router is on the client |
 | `GET /healthz` | Status as JSON; 503 only when the database has stopped answering |
-| `GET /api/status` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/pairs` · `/api/runs` | Read views. Secrets are never returned; `status` carries the current window and cap |
-| `POST /api/config` · `/api/remote/probe` · `/api/login` | Token required |
+| `GET /api/stream` | Server-Sent Events: `state` frames with the status and the running operation, plus `events` and `changes` as they happen. `log` frames go only to a connection that held the token when it opened |
+| `GET /api/status` · `/api/session` · `/api/schedule` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/changes` · `/api/pairs` · `/api/jobs` · `/api/scans` · `/api/trash` · `/api/runs` · `/api/bandwidth` · `/api/diagnostics` · `/api/remote/list` | Read views. Secrets are never returned; `status` carries the current window and cap |
+| `POST /api/login` · `/api/logout` | Exchanges the token for the cookie, and back |
+| `POST /api/config` · `/api/remote/probe` | Token required |
 | `POST /api/pairs` · `/api/pairs/update` · `/api/pairs/delete` | Token required. JSON or a form; a JSON body may carry one key and changes only that |
+| `POST /api/pairs/deletions` (`id`, `decision`) | Token required. The one click a held deletion waits for |
 | `POST /api/pairs/database/rollback` (`id`, optional `backup`) | Token required. Puts a kept copy of a jcc pair's database back; answers when it is done |
+| `POST /api/trash/restore` (`id`, `path`, optional `day`) | Token required. Takes one file back out of the quarantine |
 | `POST /api/runs` (`kind`, `pair`, optional `force`) | Token required. Answers as soon as the run has started, never when it has finished. `force` is the lock-gate override |
+| `POST /api/runs/cancel` | Token required. Stopping is routine: a walk stays resumable and every transfer keeps its watermark |
+| `POST /api/diagnostics/ping` · `/api/diagnostics/throughput` | Token required. The M0 measurements, from the page rather than a shell |
+| `POST /api/notify/test` | Token required. Sends one message, ignoring the per-event toggles, and answers with what SCN said |
 
 ## The mirror
 
 Two ways in, on the same state: the dashboard and the CLI.
 
-**From the dashboard.** The setup view has a Mirror section: the pairs with how
-far behind each one is, an editor for them, and a Plan / Scan / Adopt / Delete /
-Database / Sync button each — plus, when a deletion is over a threshold, the two
-buttons that answer it, and for a jcc pair the copies of its database with a
-rollback beside each one. A run happens in the background and the page refreshes
-itself while one is going, so a sync that takes a day and a half is watchable
-from a phone.
+**From the dashboard.** The **Now** view lists the pairs with how far behind each
+one is and a Plan / Scan / Adopt / Sync / Delete / Database button beside each —
+plus, when a deletion is over a threshold, the two buttons that answer it, and for
+a jcc pair the copies of its database with a rollback beside each one. A run
+happens in the background and the page follows it over the event stream, so a
+sync that takes a day and a half is watchable from a phone.
 One runs at a time — the transfer engine moves one file at a time by design, and
 the scheduler walks the pairs in priority order for the same reason. Stop is
 always safe: a walk stays resumable and every transfer keeps its place in the
 file.
 
 This is the route to use if the container's shell is awkward to reach, which on a
-Synology it usually is. It is throwaway UI — M6 replaces it with the real
-dashboard — but the bootstrap has to be reachable long before M6.
+Synology it usually is.
 
 **From the CLI.** Every command takes `-data`, so they all work on the same sqlite
 state the daemon runs on, and `-remote-dir` points any of them at a local
@@ -186,7 +195,7 @@ mirror` quarantines what the publisher dropped. Four guards stand in front of it
 
 - **Two thresholds.** A deletion of more than the pair's `-guard` files, or of
   more than `delete.max_percent` of what the pair holds, is not carried out. It
-  becomes one request per pair, which the setup view surfaces with a button and
+  becomes one request per pair, which the Now view surfaces with a button and
   `jcc-mirror delete -approve` answers from a shell. Over the line, *nothing*
   goes — not the first N and then a stop.
 - **An approval covers what was looked at.** It is bound to the walk it was
@@ -295,7 +304,7 @@ likelier than a collection that lost it.
 | | |
 |---|---|
 | **An additive pair is still never shrunk.** | `additive` is the default and means what it says: files the publisher no longer has are counted by `plan` and kept. Deletion is opt-in per pair, with `-mode mirror`. |
-| **No real dashboard.** | The setup view can now start and watch the operations, answer a held deletion, override a stale lock, roll a database back, edit the pairs and draw the schedule, which is enough to run the mirror without a shell. The six views, the SSE stream, the bandwidth charts and the notifications are still M6. |
+| **No self-update.** | The binary is replaced by rebuilding the image and restarting the container. Fetching a newer one from the share, smoke-testing it and re-execing in place is M7, and it is deliberately last: a broken updater is the one bug that is hard to recover from remotely. |
 
 ## The schedule
 
@@ -349,6 +358,63 @@ volume is full, and `plan` says so first:
 => this does not fit: 3.60 TiB short. A sync would be refused before it started;
    narrow the pair with excludes, or lower the reserve.
 ```
+
+## The dashboard
+
+Angular, built into `web/dist` and compiled into the binary with `go:embed`, so
+the deployment stays one file and one volume. Six views, all fed by a single
+Server-Sent Events stream on `/api/stream` — one way, reconnects for free, and it
+survives whatever proxy is in front of it. The frames it carries are the same rows
+that were written to the `events` and `changes` tables, so the live view and the
+history view share a schema rather than agreeing by accident.
+
+| View | |
+|---|---|
+| **Now** | What is running: pair, file, both progress bars, instantaneous and average rate, ETA, queue depth, the active window and its cap. Under it, every pair with its buttons, a held deletion with the two that answer it, and the recent runs. |
+| **Changes** | Per-file history — added, replaced, deleted, failed — filterable by pair and operation. It is the only place one file's fate is recorded. |
+| **Events** | Scans and syncs with their durations, the database replaced or skipped for a lock, deletion guards, tunnel edges, configuration changes, errors. Each row can be expanded into the JSON it carries. |
+| **Bandwidth** | The per-minute series drawn as inline SVG, plus the 7×24 heatmap that makes the weekday/weekend shape visible. Minutes are rolled up to hours after a week and to days after a quarter — a per-minute series kept forever is half a million rows a year. |
+| **Config** | Every setting there is, generated from the key registry so a key added later costs no HTML, with the pairs editor, both schedule grids and the audit trail. |
+| **Diagnostics** | Handshake age and endpoint, RTT through the tunnel, a throughput probe, remote reachability, a raw PROPFIND explorer, free space per pair, "explain plan", the notification state and a live log tail. |
+
+Reading is open; every action needs the token. The one exception is the log tail
+— on `GET /api/diagnostics` and as `log` frames on the stream — which needs it
+too: it is the container's log, and the container's log is where the token itself
+is printed. The bandwidth series is sampled off the WebDAV
+transport's own connections rather than off the transfer engine, so what the graph
+shows is what the link actually carried — the walk's thousands of PROPFINDs
+included.
+
+## Notifications
+
+The dashboard is pull-only, so without a push channel a stale source lock or a
+dead tunnel is invisible until someone goes and looks. **SCN**
+(`simplecloudnotifier.de`) closes that. Fill in the user id and user key under
+**Notifications** in Config; leave them empty and nothing is ever sent.
+
+Two properties of that API shape the whole thing. A `403` means the daily quota is
+exhausted, so notifications are a finite resource and jcc-mirror must never emit
+one per file: everything is coalesced to at most one message per *sync run* or per
+*state transition*. And `msg_id` is an idempotency key, so it is a hash of
+`(kind, pair, day)` rather than sent-state tracked here — a retry after a network
+blip is free, and an alert that recurs all day collapses on the server side.
+
+| Event | Default | Priority | |
+|---|---|---|---|
+| Sync run failed, or finished with failures | on | 1 | One message per run: "412 files, 2 failed", never two |
+| Deletion guard tripped, awaiting approval | on | 2 | On the edge, and again when it is answered |
+| Free space below the reserve | on | 2 | On the edge; only a sync can raise or clear it, because only a sync looks |
+| Source lock stale past the threshold | on | 1 | On the edge. Until someone overrides it the database silently never syncs |
+| Tunnel down longer than the grace period | on | 1 | On the edge, after `notify.tunnel_grace` — a rootserver rebooting should not wake anyone |
+| `ClipCornDB.db` replaced | on | 0 | |
+| Sync run finished cleanly | off | 0 | A mirror that works is not news |
+
+"On the edge" is the discipline the quota forces: a condition that is true for
+hours is announced when it starts and once more when it clears, and never in
+between. The state that decides it lives in sqlite rather than in memory, so a
+container that crash-loops does not spend the day's allowance re-announcing the
+same thing. A notification that fails is written to `events` and never fails the
+run that produced it — it is telemetry, not a step.
 
 ## The M0 diagnostics
 
@@ -413,16 +479,19 @@ Two settings are generated at first start and never typed by hand: the WireGuard
 private key and the dashboard token. The private key therefore exists in exactly
 one place and never passes through a compose file, a shell history or `ps`.
 
-The engine's settings live in the same table and appear in the same setup view,
-because the key registry is what the form is generated from: the two grids, the
-unattended switch and the scan interval under **Schedule**, walk concurrency and
-the mtime tolerance under **Scan**, and streams per file, chunk size, attempts,
-retry backoff, post-copy hashing and the free-space reserve under **Transfer**,
-the deletion threshold and quarantine retention under **Deletion**, and the
-database's name and directory, the stale-lock threshold and how many copies to
-keep under **jCC**. The pairs themselves are the exception — they are rows of
-their own, edited with `jcc-mirror pairs` until the dashboard grows an editor in
-M6.
+The engine's settings live in the same table and appear in the same form, because
+the key registry is what the Config view is generated from — a setting added in a
+later milestone costs no HTML. The two grids, the unattended switch and the scan
+interval are under **Schedule**; walk concurrency and the mtime tolerance under
+**Scan**; streams per file, chunk size, attempts, retry backoff, post-copy hashing
+and the free-space reserve under **Transfer**; the deletion threshold and
+quarantine retention under **Deletion**; the database's name and directory, the
+stale-lock threshold and how many copies to keep under **jCC**; the SCN
+credentials, the per-event toggles and the tunnel-down grace under
+**Notifications**; and how long the event log and the per-file history are kept
+under **Retention**, a year each by default, swept once an hour. The pairs
+themselves are the exception — they are rows of their own, edited in the Config
+view or with `jcc-mirror pairs`.
 
 ## Publisher-side setup
 
@@ -437,7 +506,24 @@ faster through netstack.
 make test        # unit tests plus end-to-end runs against a local WebDAV server
 make vet
 make build
+make web         # rebuild the dashboard into web/dist after changing web/src
 ./jcc-mirror serve -data ./data -lan 127.0.0.1:8080
+```
+
+`web/dist` is checked in, which is what keeps `make build`, `make syno` and the
+Dockerfile free of a node toolchain: a Go build never needs one. `make web` is
+what regenerates it, and it has to be run before committing a change to the
+dashboard or the binary still carries the old one.
+
+For working on the dashboard itself, point the daemon at a running `ng serve`
+instead of the embedded build. One port then answers both halves, so there is no
+CORS and no second origin — the API, the event stream and the UI all come from
+`:8080`. `localhost` rather than `127.0.0.1` in the target: `ng serve` binds to
+the name, which resolves to `::1`.
+
+```bash
+cd web && npx ng serve &                                   # :4200, rebuilds on save
+./jcc-mirror serve -data ./data -lan 127.0.0.1:8080 -dev-ui http://localhost:4200
 ```
 
 Nothing in the test suite needs a network, a tunnel or a NAS. The WebDAV client
@@ -465,8 +551,9 @@ static.go      the settings that are compiled in, and why
 cmd_serve.go   the daemon
 cmd_engine.go  what the mirror commands share: store, remote, engine
 cmd_*.go       one file per command, mirror and diagnostic alike
-app/           the running daemon: tunnel lifecycle, scheduler, dashboard,
-               setup view
+app/           the running daemon: tunnel lifecycle, scheduler, the dashboard's
+               API, the SSE stream, the bandwidth meter and rollups, the
+               notification policy, and the embedded UI with its dev proxy
 schedule/      the 7x24 grid: parsing, rendering, and when the answer next
                changes
 engine/        the mirror: scan.go walks, diff.go plans, transfer.go moves
@@ -477,12 +564,18 @@ engine/        the mirror: scan.go walks, diff.go plans, transfer.go moves
                the free-space preflight
 store/         sqlite state: migrations, config with audit, events, and the
                engine's tables - pairs, manifest, scans, files, jobs, changes,
-               delete_approvals, db_backups
+               delete_approvals, db_backups - plus the dashboard's bw_samples
+               and the notifications' notify_state
 wg/            wireguard-go + netstack: the tunnel, ping and device status
 webdav/        PROPFIND, HEAD and ranged GET; propfind.go is the pure decoder
 remote/        the three-method interface the engine talks to, plus the ranged
                read it needs on top of it
 remote/localfs/  a local directory as a Remote, for tests and development
-logs/ format/  the leveled logger and the number formatting everything shares
+notify/        the SimpleCloudNotifier client; the coalescing above it is app/
+web/           the Angular dashboard: src/ is the source, dist/ is the checked-in
+               build the binary embeds
+logs/ format/  the leveled logger - which also keeps the last few hundred lines
+               for the dashboard's tail - and the number formatting everything
+               shares
 deploy/        Dockerfile and compose for running it on the Synology
 ```

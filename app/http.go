@@ -14,39 +14,64 @@ import (
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
-// tokenCookie carries the bearer token for the browser, so the setup view works
-// as plain HTML forms with no script. SameSite=Strict is the CSRF story: there is
-// no CORS and no cross-site request that could carry it (DESIGN.md §4).
+// tokenCookie carries the bearer token for the browser, so the dashboard holds it
+// nowhere a script can read it. SameSite=Strict is the CSRF story: there is no
+// CORS and no cross-site request that could carry it (DESIGN.md §4).
 const tokenCookie = "jccmirror_token"
 
-// Handler builds the dashboard. Both listeners - the LAN one and the one inside
-// the tunnel - serve this same handler.
+// Handler builds the dashboard: the JSON API, the live stream and the built
+// Angular app. Both listeners - the LAN one and the one inside the tunnel - serve
+// this same handler.
 func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", a.handleHealth)
+	mux.HandleFunc("GET /api/session", a.handleSession)
 	mux.HandleFunc("GET /api/status", a.handleStatus)
+	mux.HandleFunc("GET /api/schedule", a.handleGetSchedule)
 	mux.HandleFunc("GET /api/config", a.handleGetConfig)
 	mux.HandleFunc("GET /api/config/audit", a.handleGetAudit)
 	mux.HandleFunc("GET /api/events", a.handleGetEvents)
+	mux.HandleFunc("GET /api/changes", a.handleGetChanges)
+	mux.HandleFunc("GET /api/bandwidth", a.handleGetBandwidth)
 	mux.HandleFunc("GET /api/pairs", a.handleGetPairs)
+	mux.HandleFunc("GET /api/jobs", a.handleGetJobs)
+	mux.HandleFunc("GET /api/scans", a.handleGetScans)
+	mux.HandleFunc("GET /api/trash", a.handleGetTrash)
 	mux.HandleFunc("GET /api/runs", a.handleGetRuns)
-	mux.HandleFunc("GET /{$}", a.handleSetupPage)
+	mux.HandleFunc("GET /api/diagnostics", a.handleGetDiagnostics)
+	mux.HandleFunc("GET /api/remote/list", a.handleRemoteList)
+	mux.HandleFunc("GET /api/stream", a.handleStream)
 
 	mux.HandleFunc("POST /api/login", a.handleLogin)
 	mux.HandleFunc("POST /api/logout", a.handleLogout)
 	mux.HandleFunc("POST /api/config", a.requireToken(a.handleSetConfig))
 	mux.HandleFunc("POST /api/remote/probe", a.requireToken(a.handleProbe))
+	mux.HandleFunc("POST /api/diagnostics/ping", a.requireToken(a.handlePing))
+	mux.HandleFunc("POST /api/diagnostics/throughput", a.requireToken(a.handleThroughput))
+	mux.HandleFunc("POST /api/notify/test", a.requireToken(a.handleTestNotification))
 
 	mux.HandleFunc("POST /api/pairs", a.requireToken(a.handleCreatePair))
 	mux.HandleFunc("POST /api/pairs/update", a.requireToken(a.handleUpdatePair))
 	mux.HandleFunc("POST /api/pairs/delete", a.requireToken(a.handleDeletePair))
 	mux.HandleFunc("POST /api/pairs/deletions", a.requireToken(a.handleDecideDeletion))
 	mux.HandleFunc("POST /api/pairs/database/rollback", a.requireToken(a.handleRollbackDatabase))
+	mux.HandleFunc("POST /api/trash/restore", a.requireToken(a.handleRestoreTrash))
 	mux.HandleFunc("POST /api/runs", a.requireToken(a.handleStartRun))
 	mux.HandleFunc("POST /api/runs/cancel", a.requireToken(a.handleCancelRun))
 
+	// Everything else is the single-page app, including the deep links it routes
+	// itself. It is registered last so no API path can be shadowed by it.
+	mux.Handle("GET /", a.uiHandler())
+
 	return noStore(mux)
+}
+
+// handleSession says whether this browser holds the token. The dashboard uses it
+// to draw a lock rather than to decide anything: what actually enforces the token
+// is requireToken on every mutating route (DESIGN.md §4, S3).
+func (a *App) handleSession(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{"authed": a.authenticated(r)})
 }
 
 // requireToken guards everything that changes something. An unauthenticated
@@ -82,8 +107,10 @@ func (a *App) authenticated(r *http.Request) bool {
 	return got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
-// noStore keeps the dashboard out of every cache. The whole page is live state,
-// and a stale tunnel status is worse than a slow one.
+// noStore keeps the API out of every cache: it is all live state, and a stale
+// tunnel status is worse than a slow one. The static handler overwrites the
+// header for the files it serves, which do not change without their bundle name
+// changing with them.
 func noStore(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -162,13 +189,17 @@ func (a *App) handleGetEvents(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query()["level"]; len(v) > 0 {
 		f.Levels = v
 	}
-	if v := r.URL.Query().Get("since"); v != "" {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			a.fail(w, r, http.StatusBadRequest, errors.New("since must be RFC3339"))
-			return
-		}
-		f.Since = t
+	if id, ok, err := pairParam(r); err != nil {
+		a.fail(w, r, http.StatusBadRequest, err)
+		return
+	} else if ok {
+		f.PairID = &id
+	}
+	if since, ok, err := sinceParam(r); err != nil {
+		a.fail(w, r, http.StatusBadRequest, err)
+		return
+	} else if ok {
+		f.Since = since
 	}
 
 	events, err := a.store.Events(r.Context(), f)
@@ -179,11 +210,20 @@ func (a *App) handleGetEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, events)
 }
 
-// handleLogin exchanges the token for a cookie, so the setup view can be plain
-// HTML forms. It is not a session: the cookie holds the token itself, and there
-// is nothing to invalidate but the cookie.
+// handleLogin exchanges the token for a cookie. It is not a session: the cookie
+// holds the token itself, and there is nothing to invalidate but the cookie. A
+// cookie rather than a header because the dashboard then never has to keep the
+// token anywhere a script can read it.
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimSpace(r.FormValue("token"))
+	// readFields rather than FormValue: the dashboard posts JSON and curl posts a
+	// form, and both have to work.
+	fields, err := readFields(w, r)
+	if err != nil {
+		a.fail(w, r, http.StatusBadRequest, err)
+		return
+	}
+
+	token := strings.TrimSpace(fields["token"])
 	want, err := a.store.ConfigGet(r.Context(), store.KeyDashboardToken)
 	if err != nil {
 		a.fail(w, r, http.StatusInternalServerError, err)
@@ -202,16 +242,16 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int((30 * 24 * time.Hour).Seconds()),
 	})
-	a.redirectHome(w, r)
+	writeJSON(w, http.StatusOK, map[string]bool{"authed": true})
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: tokenCookie, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	a.redirectHome(w, r)
+	writeJSON(w, http.StatusOK, map[string]bool{"authed": false})
 }
 
 // handleSetConfig writes settings and re-applies them. Accepts a JSON object or
-// a form body, so the same endpoint serves the setup view and curl.
+// a form body, so the same endpoint serves the dashboard and curl.
 func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 	values, err := readSettings(w, r)
 	if err != nil {
@@ -242,10 +282,6 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		a.Reload(r.Context())
 	}
 
-	if wantsHTML(r) {
-		a.redirectHome(w, r)
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"changed": changed, "status": a.Status(r.Context())})
 }
 
@@ -257,10 +293,6 @@ func (a *App) handleProbe(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	result := a.probeRemote(ctx)
-	if wantsHTML(r) {
-		a.redirectHome(w, r)
-		return
-	}
 	code := http.StatusOK
 	if result["error"] != nil {
 		code = http.StatusBadGateway
@@ -336,10 +368,6 @@ func (a *App) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, code, err)
 		return
 	}
-	if wantsHTML(r) {
-		a.redirectHome(w, r)
-		return
-	}
 	writeJSON(w, http.StatusAccepted, run)
 }
 
@@ -348,16 +376,12 @@ func (a *App) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, http.StatusConflict, err)
 		return
 	}
-	if wantsHTML(r) {
-		a.redirectHome(w, r)
-		return
-	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "stopping"})
 }
 
 // readSettings pulls the settings out of a JSON or form body. A blank secret
-// means "leave it alone": the setup view cannot render a stored password, so an
-// untouched field must not wipe one.
+// means "leave it alone": the dashboard is never sent a stored password, so an
+// untouched field comes back empty and must not wipe one.
 func readSettings(w http.ResponseWriter, r *http.Request) (map[string]string, error) {
 	out := map[string]string{}
 
@@ -400,30 +424,13 @@ func actorOf(r *http.Request) string {
 	return "dashboard@" + host
 }
 
-// redirectHome answers a form post. Everything the setup view can do is on the
-// one page, so there is nowhere else to go back to.
-func (a *App) redirectHome(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-// fail answers in the caller's language: a page for a browser, JSON for anything
-// else.
+// fail answers an error the way everything here answers: as JSON with a message
+// meant to be read, since the dashboard shows it verbatim.
 func (a *App) fail(w http.ResponseWriter, r *http.Request, code int, err error) {
 	if code >= 500 {
 		a.log.Errorf("dashboard: %s %s: %v", r.Method, r.URL.Path, err)
 	}
-	if wantsHTML(r) {
-		a.renderSetupPage(w, r, code, err.Error())
-		return
-	}
 	writeJSON(w, code, map[string]string{"error": err.Error()})
-}
-
-func wantsHTML(r *http.Request) bool {
-	if strings.HasPrefix(r.URL.Path, "/api/") && !strings.Contains(r.Header.Get("Accept"), "text/html") {
-		return false
-	}
-	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -434,6 +441,9 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = enc.Encode(v)
 }
 
+// intParam reads a positive query parameter, falling back to def for anything
+// missing or unreadable. Zero is not a row limit anyone means, so it falls back
+// too.
 func intParam(r *http.Request, name string, def int) int {
 	v := r.URL.Query().Get(name)
 	if v == "" {
@@ -441,6 +451,20 @@ func intParam(r *http.Request, name string, def int) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+// intParam64 is intParam for a cursor rather than a limit, so zero is a legal
+// value: it means "everything the ring still holds".
+func intParam64(r *http.Request, name string, def int64) int64 {
+	v := r.URL.Query().Get(name)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 {
 		return def
 	}
 	return n

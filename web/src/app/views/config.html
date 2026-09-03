@@ -1,0 +1,680 @@
+<section class="panel">
+  <div class="spread">
+    <h2>Configuration</h2>
+    <div class="row">
+      @if (loading()) {
+        <span class="note">loading…</span>
+      }
+      <button class="ghost small" type="button" (click)="load()">Refresh</button>
+    </div>
+  </div>
+
+  <p class="note">
+    Everything jcc-mirror can be told is on this page. There is no config file and nothing is read
+    from the environment: every setting lives in the database, takes effect the moment it is saved,
+    and is recorded in the trail at the bottom. The two generated settings are not fields — the
+    WireGuard private key never leaves the data volume, and the dashboard token is printed to the
+    container log.
+  </p>
+
+  @if (error()) {
+    <div class="banner">{{ error() }}</div>
+  }
+  @if (saved().length) {
+    <p class="note">
+      Saved <span class="mono">{{ saved().join(', ') }}</span
+      >. Anything not listed already had that value.
+    </p>
+  }
+</section>
+
+<section class="panel">
+  <h2>Settings</h2>
+  <p class="note">
+    Only the fields you change are sent. A password is never sent back to the browser, so its field
+    starts empty and leaving it empty keeps what is stored — this form can set a secret, not clear
+    one. Required settings are marked <span class="bad">*</span>.
+  </p>
+
+  <div class="grid2">
+    @for (group of groups(); track group.name) {
+      <div>
+        <h3>{{ group.name }}</h3>
+
+        @if (group.name === 'Tunnel') {
+          <div class="card">
+            <div class="k">Our public key</div>
+            <div class="v mono break">{{ live.status()?.publicKey || 'not generated yet' }}</div>
+            <p class="note">
+              Paste this into the rootserver's peer entry. The private half is generated at first
+              start and never leaves the data volume, which is why there is no field for it.
+            </p>
+          </div>
+        }
+
+        @for (entry of group.entries; track entry.key) {
+          <label class="field">
+            <span class="name"
+              >{{ entry.label }}
+              @if (entry.required) {
+                <span class="bad" title="required">*</span>
+              }
+            </span>
+            @if (entry.help) {
+              <span class="help">{{ entry.help }}</span>
+            }
+
+            @if (isBoolean(entry)) {
+              <span class="row">
+                <input
+                  type="checkbox"
+                  [checked]="checked(entry)"
+                  [disabled]="!authed()"
+                  (change)="edit(entry.key, $any($event.target).checked ? 'true' : 'false')"
+                />
+                <span class="note">{{ checked(entry) ? 'on' : 'off' }}</span>
+              </span>
+            } @else if (entry.secret) {
+              <input
+                type="password"
+                autocomplete="new-password"
+                [placeholder]="entry.set ? 'stored — leave blank to keep it' : 'not set'"
+                [value]="draft()[entry.key] ?? ''"
+                [disabled]="!authed()"
+                (input)="edit(entry.key, $any($event.target).value)"
+              />
+            } @else {
+              <input
+                type="text"
+                autocomplete="off"
+                [value]="value(entry)"
+                [disabled]="!authed()"
+                (input)="edit(entry.key, $any($event.target).value)"
+              />
+            }
+          </label>
+        }
+      </div>
+    }
+  </div>
+
+  <div class="row">
+    <button type="button" [disabled]="!authed() || saving() || !pending()" (click)="save()">
+      Save
+    </button>
+    <button class="ghost" type="button" [disabled]="!pending()" (click)="revert()">Revert</button>
+    @if (pending()) {
+      <span class="note">
+        {{ fmt.comma(pending()) }} unsaved {{ pending() === 1 ? 'change' : 'changes' }}
+      </span>
+    }
+    @if (!authed()) {
+      <span class="note">Unlock with the token to save.</span>
+    }
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Schedule</h2>
+
+  @if (now(); as n) {
+    @if (n.error) {
+      <div class="banner">
+        {{ n.error }}
+        <div class="note">
+          A schedule that will not parse closes the transfer window rather than being ignored, so
+          nothing moves until the rules below read.
+        </div>
+      </div>
+    }
+
+    <div class="cards">
+      <div class="card">
+        <div class="k">Transfers now</div>
+        <div class="v">
+          @if (n.transfer.open) {
+            <span class="pill ok">{{ fmt.cap(n.transfer.limit) }}</span>
+          } @else {
+            <span class="pill">closed</span>
+          }
+        </div>
+        <div class="note">
+          until {{ fmt.clock(n.transfer.until) }}
+          @if (!n.transfer.open && n.nextOpen) {
+            · opens {{ fmt.clock(n.nextOpen) }}
+          }
+        </div>
+      </div>
+      <div class="card">
+        <div class="k">Scans now</div>
+        <div class="v">
+          @if (n.scan.open) {
+            <span class="pill ok">open</span>
+          } @else {
+            <span class="pill">closed</span>
+          }
+        </div>
+        <div class="note">every {{ n.scanEvery }} · until {{ fmt.clock(n.scan.until) }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Unattended</div>
+        <div class="v">
+          @if (n.automatic) {
+            <span class="pill ok">on</span>
+          } @else {
+            <span class="pill warn">off</span>
+          }
+        </div>
+        <div class="note">
+          @if (n.automatic) {
+            The scheduler starts scans and syncs by itself inside the windows.
+          } @else {
+            Runs only start when someone presses a button. The caps apply either way.
+          }
+        </div>
+      </div>
+      <div class="card">
+        <div class="k">Timezone</div>
+        <div class="v mono">{{ n.timezone }}</div>
+        <div class="note">{{ nowHere()?.text }} — the grids are drawn in this zone</div>
+      </div>
+    </div>
+  }
+
+  @if (schedule(); as s) {
+    <h3>Transfer window</h3>
+    <div class="scroll">
+      <table class="grid">
+        <thead>
+          <tr>
+            <th></th>
+            @for (hour of hours; track hour) {
+              <th>{{ hour }}</th>
+            }
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of s.transfer.cells; track $index; let day = $index) {
+            <tr>
+              <th class="day">{{ s.transfer.days[day] }}</th>
+              @for (cell of row; track $index; let hour = $index) {
+                <td
+                  [class]="cellClass(cell, day, hour)"
+                  [title]="cellTitle(s.transfer.days, day, hour, cell)"
+                ></td>
+              }
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    <div class="legend">
+      <span><i class="cell-full"></i>no limit</span>
+      <span><i class="cell-cap"></i>capped</span>
+      <span><i class="cell-off"></i>closed</span>
+      <span><i class="cell-now"></i>this hour</span>
+    </div>
+
+    <label class="field">
+      <span class="name">Transfer rules</span>
+      <span class="help">
+        <span class="mono">* * = 5MiB; * 2-8 = full</span> is 5 MiB/s everywhere and unlimited from
+        02:00 to 08:00. Later rules win, so the first is the base and the rest are the exceptions.
+        Empty means always, at full speed. Same setting as <em>Transfer window</em> in the Schedule
+        group above.
+      </span>
+      <input
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        [value]="rules(transferKey, s.transfer.rules)"
+        [disabled]="!authed()"
+        (input)="edit(transferKey, $any($event.target).value)"
+      />
+    </label>
+
+    <h3>Scan window</h3>
+    <div class="scroll">
+      <table class="grid">
+        <thead>
+          <tr>
+            <th></th>
+            @for (hour of hours; track hour) {
+              <th>{{ hour }}</th>
+            }
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of s.scan.cells; track $index; let day = $index) {
+            <tr>
+              <th class="day">{{ s.scan.days[day] }}</th>
+              @for (cell of row; track $index; let hour = $index) {
+                <td
+                  [class]="cellClass(cell, day, hour)"
+                  [title]="cellTitle(s.scan.days, day, hour, cell, true)"
+                ></td>
+              }
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    <div class="legend">
+      <span><i class="cell-full"></i>open</span>
+      <span><i class="cell-off"></i>closed</span>
+      <span><i class="cell-now"></i>this hour</span>
+    </div>
+
+    <label class="field">
+      <span class="name">Scan rules</span>
+      <span class="help">
+        <span class="mono">* 3-6 = on; * 6-3 = off</span> — this grid only opens and closes, so a
+        rate is refused here rather than quietly ignored. A walk costs real time but no bandwidth
+        worth capping. Same setting as <em>Scan window</em> in the Schedule group above.
+      </span>
+      <input
+        type="text"
+        autocomplete="off"
+        spellcheck="false"
+        [value]="rules(scanKey, s.scan.rules)"
+        [disabled]="!authed()"
+        (input)="edit(scanKey, $any($event.target).value)"
+      />
+    </label>
+
+    <div class="row">
+      <button type="button" [disabled]="!authed() || saving() || !pending()" (click)="save()">
+        Save
+      </button>
+      <button class="ghost" type="button" [disabled]="!pending()" (click)="revert()">Revert</button>
+      <span class="note">The grids redraw once the daemon has re-read the rules.</span>
+    </div>
+  }
+</section>
+
+<section class="panel">
+  <h2>Pairs</h2>
+  <p class="note">
+    A pair is one directory of the publisher's share mapped onto one directory here; nothing is
+    mirrored until one exists. In <strong>additive</strong> mode the tree here only ever grows —
+    what the publisher no longer has is kept. In <strong>mirror</strong> mode it is quarantined here
+    too, behind the deletion guards. A pair is additive until it is told otherwise, which is the
+    point: run additive-only until the diff is trusted.
+  </p>
+
+  @for (p of pairs(); track p.id) {
+    <div class="card pair">
+      <div class="spread">
+        <h3>
+          {{ p.name }}
+          <span class="pill">{{ p.type }}</span>
+          <span class="pill">{{ p.mode }}</span>
+          @if (!p.enabled) {
+            <span class="pill warn">disabled</span>
+          }
+        </h3>
+        <span class="note">priority {{ p.priority }} — lower runs first</span>
+      </div>
+
+      <dl class="facts">
+        <dt>publisher</dt>
+        <dd class="mono">{{ p.remotePath || '(the remote root)' }}</dd>
+        <dt>here</dt>
+        <dd class="mono">{{ p.localPath }}</dd>
+        <dt>deletions</dt>
+        <dd>
+          @if (p.mode === 'mirror') {
+            @if (p.deleteGuard) {
+              more than {{ fmt.comma(p.deleteGuard) }} files in one run wait for approval
+            } @else {
+              no per-pair count limit; only the percentage guard applies
+            }
+          } @else {
+            none — this pair is additive
+          }
+        </dd>
+        @if (p.includes.length) {
+          <dt>includes</dt>
+          <dd class="mono">{{ p.includes.join(', ') }}</dd>
+        }
+        @if (p.excludes.length) {
+          <dt>excludes</dt>
+          <dd class="mono">{{ p.excludes.join(', ') }}</dd>
+        }
+      </dl>
+
+      <details>
+        <summary>Edit this pair</summary>
+        <div class="grid2">
+          <label class="field">
+            <span class="name">Name</span>
+            <input
+              type="text"
+              autocomplete="off"
+              [value]="pairField(p, 'name')"
+              [disabled]="!authed()"
+              (input)="editPair(p.id, 'name', $any($event.target).value)"
+            />
+          </label>
+          <label class="field">
+            <span class="name">Type</span>
+            <span class="help">
+              A jcc pair is the ClipCornDB directory: its database goes through the lock gate and
+              the per-user databases beside it are never copied.
+            </span>
+            <select
+              [disabled]="!authed()"
+              (change)="editPair(p.id, 'type', $any($event.target).value)"
+            >
+              <option value="raw" [selected]="pairField(p, 'type') === 'raw'">raw</option>
+              <option value="jcc" [selected]="pairField(p, 'type') === 'jcc'">jcc</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="name">Publisher directory</span>
+            <span class="help">Relative to the WebDAV base URL. Empty means its root.</span>
+            <input
+              type="text"
+              autocomplete="off"
+              [value]="pairField(p, 'remotePath')"
+              [disabled]="!authed()"
+              (input)="editPair(p.id, 'remotePath', $any($event.target).value)"
+            />
+          </label>
+          <label class="field">
+            <span class="name">Directory here</span>
+            <span class="help">Absolute, inside the container — the volume mount.</span>
+            <input
+              type="text"
+              autocomplete="off"
+              [value]="pairField(p, 'localPath')"
+              [disabled]="!authed()"
+              (input)="editPair(p.id, 'localPath', $any($event.target).value)"
+            />
+          </label>
+          <label class="field">
+            <span class="name">Mode</span>
+            <select
+              [disabled]="!authed()"
+              (change)="editPair(p.id, 'mode', $any($event.target).value)"
+            >
+              <option value="additive" [selected]="pairField(p, 'mode') === 'additive'">
+                additive
+              </option>
+              <option value="mirror" [selected]="pairField(p, 'mode') === 'mirror'">
+                mirror (quarantines what the publisher drops)
+              </option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="name">Delete guard</span>
+            <span class="help">
+              Deletions above this many files wait for approval; 0 leaves only the percentage guard.
+            </span>
+            <input
+              type="text"
+              autocomplete="off"
+              [value]="pairField(p, 'deleteGuard')"
+              [disabled]="!authed()"
+              (input)="editPair(p.id, 'deleteGuard', $any($event.target).value)"
+            />
+          </label>
+          <label class="field">
+            <span class="name">Excludes</span>
+            <span class="help">
+              Globs, comma separated. A directory glob drops its whole subtree and the walk never
+              lists it.
+            </span>
+            <input
+              type="text"
+              autocomplete="off"
+              [value]="pairField(p, 'excludes')"
+              [disabled]="!authed()"
+              (input)="editPair(p.id, 'excludes', $any($event.target).value)"
+            />
+          </label>
+          <label class="field">
+            <span class="name">Includes</span>
+            <span class="help">Empty mirrors everything the excludes did not drop.</span>
+            <input
+              type="text"
+              autocomplete="off"
+              [value]="pairField(p, 'includes')"
+              [disabled]="!authed()"
+              (input)="editPair(p.id, 'includes', $any($event.target).value)"
+            />
+          </label>
+          <label class="field">
+            <span class="name">Priority</span>
+            <span class="help">Lower runs first.</span>
+            <input
+              type="text"
+              autocomplete="off"
+              [value]="pairField(p, 'priority')"
+              [disabled]="!authed()"
+              (input)="editPair(p.id, 'priority', $any($event.target).value)"
+            />
+          </label>
+        </div>
+
+        <div class="row">
+          <label class="check">
+            <input
+              type="checkbox"
+              [checked]="pairField(p, 'enabled') === 'true'"
+              [disabled]="!authed()"
+              (change)="editPair(p.id, 'enabled', $any($event.target).checked ? 'true' : 'false')"
+            />
+            <span>Enabled</span>
+          </label>
+          <button
+            type="button"
+            [disabled]="!authed() || savingPair() === p.id || !pairDirty(p.id)"
+            (click)="savePair(p)"
+          >
+            Save
+          </button>
+          <button
+            class="ghost"
+            type="button"
+            [disabled]="!pairDirty(p.id)"
+            (click)="revertPair(p.id)"
+          >
+            Revert
+          </button>
+        </div>
+
+        @if (removing() === p.id) {
+          <div class="hold">
+            <strong>Remove {{ p.name }}?</strong>
+            <div class="note">
+              This forgets what was recorded about the pair — its manifest, its queue and its scan
+              history. Nothing under <span class="mono">{{ p.localPath }}</span> is touched.
+            </div>
+            <div class="row">
+              <button
+                class="danger small"
+                type="button"
+                [disabled]="!authed()"
+                (click)="removePair(p)"
+              >
+                Yes, remove it
+              </button>
+              <button class="ghost small" type="button" (click)="removing.set(0)">Cancel</button>
+            </div>
+          </div>
+        } @else {
+          <div class="row">
+            <button
+              class="danger small"
+              type="button"
+              [disabled]="!authed()"
+              (click)="removing.set(p.id)"
+            >
+              Remove this pair
+            </button>
+            <span class="note">Nothing under its local path is touched.</span>
+          </div>
+        }
+      </details>
+    </div>
+  } @empty {
+    <p class="note">No pairs yet. Add one, then scan to find out what the publisher has.</p>
+  }
+
+  <details>
+    <summary>Add a pair</summary>
+    <div class="grid2">
+      <label class="field">
+        <span class="name">Name</span>
+        <input
+          type="text"
+          autocomplete="off"
+          placeholder="media"
+          [value]="newPair()['name']"
+          [disabled]="!authed()"
+          (input)="editNew('name', $any($event.target).value)"
+        />
+      </label>
+      <label class="field">
+        <span class="name">Type</span>
+        <select [disabled]="!authed()" (change)="editNew('type', $any($event.target).value)">
+          <option value="raw" [selected]="newPair()['type'] === 'raw'">raw</option>
+          <option value="jcc" [selected]="newPair()['type'] === 'jcc'">
+            jcc (the ClipCornDB directory)
+          </option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="name">Publisher directory</span>
+        <span class="help">Relative to the WebDAV base URL. Empty means its root.</span>
+        <input
+          type="text"
+          autocomplete="off"
+          placeholder="Filme"
+          [value]="newPair()['remotePath']"
+          [disabled]="!authed()"
+          (input)="editNew('remotePath', $any($event.target).value)"
+        />
+      </label>
+      <label class="field">
+        <span class="name">Directory here</span>
+        <span class="help">
+          Absolute, inside the container — the volume mount, not the path on the NAS.
+        </span>
+        <input
+          type="text"
+          autocomplete="off"
+          placeholder="/mnt/media/Filme"
+          [value]="newPair()['localPath']"
+          [disabled]="!authed()"
+          (input)="editNew('localPath', $any($event.target).value)"
+        />
+      </label>
+      <label class="field">
+        <span class="name">Mode</span>
+        <select [disabled]="!authed()" (change)="editNew('mode', $any($event.target).value)">
+          <option value="additive" [selected]="newPair()['mode'] === 'additive'">additive</option>
+          <option value="mirror" [selected]="newPair()['mode'] === 'mirror'">mirror</option>
+        </select>
+      </label>
+      <label class="field">
+        <span class="name">Excludes</span>
+        <span class="help">Globs, comma separated. Optional.</span>
+        <input
+          type="text"
+          autocomplete="off"
+          placeholder="**/*.tmp, Serien/Trash/**"
+          [value]="newPair()['excludes']"
+          [disabled]="!authed()"
+          (input)="editNew('excludes', $any($event.target).value)"
+        />
+      </label>
+    </div>
+
+    <div class="row">
+      <label class="check">
+        <input
+          type="checkbox"
+          [checked]="newPair()['enabled'] === 'true'"
+          [disabled]="!authed()"
+          (change)="editNew('enabled', $any($event.target).checked ? 'true' : 'false')"
+        />
+        <span>Enabled</span>
+      </label>
+      <button type="button" [disabled]="!authed() || adding()" (click)="createPair()">Add</button>
+      <span class="note">
+        It starts at priority 100 with no delete guard; both are editable once it exists.
+      </span>
+    </div>
+  </details>
+</section>
+
+<section class="panel">
+  <h2>Remote</h2>
+  <div class="row">
+    <button type="button" [disabled]="!authed() || probing()" (click)="testRemote()">
+      Test the remote
+    </button>
+    <span class="note">
+      One PROPFIND of the remote root through the tunnel. The answer also lands in the event log.
+    </span>
+  </div>
+
+  <dl class="facts">
+    <dt>base URL</dt>
+    <dd class="mono">{{ live.status()?.remote.url || 'not configured' }}</dd>
+    @if (live.status()?.remote.error; as remoteError) {
+      <dt>last error</dt>
+      <dd class="bad">{{ remoteError }}</dd>
+    }
+  </dl>
+
+  @if (probeError()) {
+    <div class="banner">{{ probeError() }}</div>
+  }
+  @if (probe(); as result) {
+    <p class="note">
+      {{ fmt.comma(result.dirs) }} directories and {{ fmt.comma(result.files) }} files in
+      <span class="mono">{{ result.url }}</span
+      >, in {{ result.millis }} ms.
+    </p>
+  }
+</section>
+
+<section class="panel">
+  <h2>What was changed</h2>
+  <p class="note">
+    The last 50 configuration changes. A secret's values are recorded masked, so the trail says a
+    password changed and never what it changed to.
+  </p>
+
+  @if (audit().length) {
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>when</th>
+            <th>key</th>
+            <th>from</th>
+            <th>to</th>
+            <th>by</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of audit(); track row.id) {
+            <tr>
+              <td class="mono">{{ fmt.clock(row.ts) }}</td>
+              <td class="mono">{{ row.key }}</td>
+              <td class="mono dim">{{ row.old || '(unset)' }}</td>
+              <td class="mono">{{ row.new }}</td>
+              <td class="mono dim">{{ row.actor }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  } @else {
+    <p class="note">Nothing has been changed yet.</p>
+  }
+</section>

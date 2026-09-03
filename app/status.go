@@ -127,12 +127,14 @@ func (a *App) Status(ctx context.Context) Status {
 }
 
 // ScheduleStatus answers the grid at this moment. It is separate from Status so
-// the setup view can render the grid without collecting the tunnel's counters.
+// the schedule view can be drawn without collecting the tunnel's counters.
 func (a *App) ScheduleStatus() ScheduleStatus {
 	a.sched.mu.Lock()
 	cfg, cfgErr := a.sched.cfg, a.sched.cfgErr
 	a.sched.mu.Unlock()
 
+	// cfg is already in hand, so the zone comes from it rather than from a second
+	// acquisition that could straddle a reload and answer for a different config.
 	loc := cfg.loc
 	if loc == nil {
 		loc = time.Local

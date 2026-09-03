@@ -1,0 +1,19 @@
+p {
+  margin: 0.5rem 0 0;
+}
+
+/* Inside a card the rhythm is tighter than .stack's, and a card holds mixed
+   content that does not want to be a grid. */
+.tight > * + * {
+  margin-top: 0.6rem;
+}
+
+.line + .line {
+  margin-top: 0.5rem;
+}
+
+/* Remote paths are long and have no spaces in the places a browser would break
+   them, so a single title can push the whole panel sideways. */
+.path {
+  overflow-wrap: anywhere;
+}

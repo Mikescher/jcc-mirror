@@ -1,0 +1,155 @@
+@if (error()) {
+  <div class="banner">{{ error() }}</div>
+}
+
+<section class="panel stack">
+  <div class="spread">
+    <h2>Bandwidth</h2>
+    <div class="row">
+      @if (loading()) {
+        <span class="note">loading…</span>
+      }
+      <button class="ghost small" type="button" (click)="reload()">Refresh</button>
+    </div>
+  </div>
+
+  <p class="note">
+    What crossed the tunnel, headers and PROPFIND bodies included. Minutes are folded into hours
+    after a week and into days after 90, because a per-minute series kept forever grows without
+    bound; the three spans below are those three resolutions.
+  </p>
+
+  <label class="check">
+    <span class="note">Span</span>
+    <select [value]="span()" (change)="span.set($any($event.target).value)">
+      <option value="minute">per minute · the last 7 days</option>
+      <option value="hour">hourly · the last 90 days</option>
+      <option value="day">daily · everything kept</option>
+    </select>
+  </label>
+
+  @if (view(); as v) {
+    <div class="cards">
+      <div class="card">
+        <div class="k">In</div>
+        <div class="v">{{ fmt.bytes(v.totalIn) }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Out</div>
+        <div class="v">{{ fmt.bytes(v.totalOut) }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Average in</div>
+        <div class="v">{{ fmt.rate(v.totalIn, windowSeconds()) }}</div>
+        <div class="note">over {{ fmt.duration(windowSeconds()) }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Last bucket</div>
+        <div class="v">{{ fmt.rate(v.live.in, bucket()) }}</div>
+        <div class="note">{{ fmt.bytes(v.live.in) }} in, {{ fmt.bytes(v.live.out) }} out</div>
+      </div>
+    </div>
+  }
+</section>
+
+<section class="panel stack">
+  <h2>Series</h2>
+
+  @if (chart(); as c) {
+    <div class="chart">
+      <svg [attr.viewBox]="'0 0 ' + c.width + ' ' + chartHeight" preserveAspectRatio="none">
+        @for (g of c.gridlines; track g.y) {
+          <line
+            x1="0"
+            [attr.y1]="g.y"
+            [attr.x2]="c.width"
+            [attr.y2]="g.y"
+            vector-effect="non-scaling-stroke"
+          />
+        }
+        @for (bar of c.bars; track bar.x) {
+          <rect [attr.x]="bar.x" [attr.y]="bar.y" [attr.width]="barWidth" [attr.height]="bar.h">
+            <title>{{ bar.title }}</title>
+          </rect>
+        }
+        <line
+          class="axis"
+          x1="0"
+          [attr.y1]="chartHeight"
+          [attr.x2]="c.width"
+          [attr.y2]="chartHeight"
+          vector-effect="non-scaling-stroke"
+        />
+      </svg>
+      @for (g of c.gridlines; track g.y) {
+        <span class="y note" [style.top.%]="g.y">{{ fmt.bytes(g.value) }}</span>
+      }
+    </div>
+
+    <p class="note">
+      Bars are bytes in; bytes out are in the totals above rather than the chart, being small by
+      construction - this is a mirror, not a conversation. Hovering a bar gives its time and its
+      bytes.
+      @if (c.fold > 1) {
+        {{ fmt.comma(c.buckets) }} buckets are folded {{ c.fold }} to a column to fit the width, so
+        a column covers the range its label names.
+      }
+    </p>
+  } @else if (!loading()) {
+    <p class="note">Nothing recorded yet at this resolution.</p>
+  }
+</section>
+
+<section class="panel stack">
+  <div class="spread">
+    <h2>Hour of day</h2>
+    @if (view(); as v) {
+      <span class="note">times in {{ v.timezone }}</span>
+    }
+  </div>
+
+  @if (hasHeatmap()) {
+    <p class="note">
+      Bytes in per weekday and hour across the whole window, so the shape of a week is visible. The
+      hour a sample falls in is decided in the configured timezone, not the container's.
+    </p>
+
+    <div class="scroll">
+      <table class="grid">
+        <thead>
+          <tr>
+            <th></th>
+            @for (h of hours; track h) {
+              <th>{{ h }}</th>
+            }
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of heatmap(); track $index; let d = $index) {
+            <tr>
+              <th class="day">{{ days[d] }}</th>
+              @for (cell of row; track $index; let h = $index) {
+                <td [style.background-color]="shade(cell)" [title]="cellTitle(d, h, cell)"></td>
+              }
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+
+    <div class="legend">
+      <span>none</span>
+      @for (step of legendSteps; track step) {
+        <i [style.background-color]="legendShade(step)"></i>
+      }
+      <span>{{ fmt.bytes(heatMax()) }} in the busiest hour</span>
+    </div>
+  } @else if (view()?.span === 'day') {
+    <p class="note">
+      A daily bucket has no hour of day left in it, so the daemon sends this grid empty. Pick the
+      minute or hour span to see the weekly shape.
+    </p>
+  } @else if (!loading()) {
+    <p class="note">Nothing recorded yet at this resolution.</p>
+  }
+</section>

@@ -169,9 +169,15 @@ type ChangeFilter struct {
 	Ops    []string
 	Since  time.Time
 	Limit  int
+
+	// Forward and AfterID read oldest first from a row already seen, the way
+	// EventFilter does.
+	Forward bool
+	AfterID int64
 }
 
-// Changes returns matching changes, newest first.
+// Changes returns matching changes, newest first - or oldest first when the
+// filter reads forward from an id.
 func (s *Store) Changes(ctx context.Context, f ChangeFilter) ([]Change, error) {
 	var (
 		where []string
@@ -191,6 +197,10 @@ func (s *Store) Changes(ctx context.Context, f ChangeFilter) ([]Change, error) {
 		where = append(where, "ts >= ?")
 		args = append(args, f.Since.UnixMilli())
 	}
+	if f.AfterID > 0 {
+		where = append(where, "id > ?")
+		args = append(args, f.AfterID)
+	}
 
 	limit := f.Limit
 	if limit <= 0 {
@@ -201,7 +211,7 @@ func (s *Store) Changes(ctx context.Context, f ChangeFilter) ([]Change, error) {
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	q += " ORDER BY id DESC LIMIT ?"
+	q += " ORDER BY id " + order(f.Forward) + " LIMIT ?"
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)

@@ -19,13 +19,14 @@ import (
 //
 // The LAN listener does not depend on the tunnel, which is what closes the
 // bootstrap loop: a first boot against an empty database answers on :8080 with the
-// setup view, and the tunnel comes up the moment the peer entry is saved. Nothing
+// dashboard, and the tunnel comes up the moment the peer entry is saved. Nothing
 // has to be known before the process starts (DESIGN.md §6).
 func cmdServe(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	dataDir := fs.String("data", staticDataDir, "data directory: sqlite state, the WireGuard identity, backups")
 	lan := fs.String("lan", staticLANListen, "dashboard address on the host network")
 	tunnelPort := fs.Int("tunnel-port", staticTunnelPort, "dashboard port inside the tunnel")
+	devUI := fs.String("dev-ui", "", "proxy the dashboard to a running `ng serve` instead of the build in the binary, e.g. http://localhost:4200")
 	verbose := fs.Bool("v", false, "verbose output, including the wireguard-go device log")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -41,7 +42,8 @@ func cmdServe(ctx context.Context, args []string) error {
 	defer st.Close()
 
 	a := app.New(st, logger, app.Options{
-		Version: version, BuildStamp: buildStamp, TunnelPort: *tunnelPort, DataDir: *dataDir,
+		Version: version, BuildStamp: buildStamp, TunnelPort: *tunnelPort,
+		DataDir: *dataDir, DevUI: *devUI,
 	})
 	handler := a.Handler()
 	a.SetHandler(handler)

@@ -1,0 +1,112 @@
+@if (error()) {
+  <div class="banner">{{ error() }}</div>
+}
+
+<section class="panel stack">
+  <div class="spread">
+    <h2>Events</h2>
+    @if (loading()) {
+      <span class="note">loading…</span>
+    }
+  </div>
+
+  <p class="note">
+    The event log is the durable record the rest of the dashboard leans on: the live feed and this
+    history are the same rows out of the same table, so anything that streamed past here is still
+    here tomorrow. Rows carrying detail expand on click.
+  </p>
+
+  <div class="row">
+    @for (level of allLevels; track level) {
+      <label class="check">
+        <input
+          type="checkbox"
+          [checked]="has(level)"
+          (change)="toggleLevel(level, $any($event.target).checked)"
+        />
+        <span class="pill" [class]="levelClass(level)">{{ level }}</span>
+      </label>
+    }
+
+    <label class="check">
+      <span class="note">Kind</span>
+      <select [value]="kind()" (change)="kind.set($any($event.target).value)">
+        <option value="">all kinds</option>
+        @for (k of allKinds; track k.kind) {
+          <option [value]="k.kind">{{ k.label }}</option>
+        }
+      </select>
+    </label>
+
+    <label class="check">
+      <span class="note">Pair</span>
+      <select [value]="pair()" (change)="pair.set(+$any($event.target).value)">
+        <option value="0">all pairs</option>
+        @for (p of pairs(); track p.id) {
+          <option [value]="p.id">{{ p.name }}</option>
+        }
+      </select>
+    </label>
+
+    <label class="check">
+      <span class="note">Rows</span>
+      <select [value]="limit()" (change)="limit.set(+$any($event.target).value)">
+        <option value="100">100</option>
+        <option value="200">200</option>
+        <option value="1000">1000</option>
+      </select>
+    </label>
+  </div>
+</section>
+
+<section class="panel stack">
+  <p class="note">
+    {{ fmt.comma(rows().length) }} rows
+    @if (fresh().length) {
+      · <span class="ok">{{ fmt.comma(fresh().length) }} new since this page opened</span>
+    }
+  </p>
+
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Level</th>
+          <th>Kind</th>
+          <th>Pair</th>
+          <th>Message</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (row of rows(); track row.id) {
+          <tr [class.detailed]="!!row.data" (click)="toggle(row)">
+            <td>{{ fmt.clock(row.ts) }}</td>
+            <td>
+              <span class="pill" [class]="levelClass(row.level)">{{ row.level }}</span>
+            </td>
+            <td class="mono">{{ row.kind }}</td>
+            <td>{{ nameOf(row.pairId) }}</td>
+            <td>
+              {{ row.message }}
+              @if (row.data) {
+                <span class="note">{{ expanded().has(row.id) ? '▾' : '▸' }}</span>
+              }
+            </td>
+          </tr>
+          @if (expanded().has(row.id) && row.data; as data) {
+            <tr>
+              <td colspan="5">
+                <pre class="mono">{{ json(data) }}</pre>
+              </td>
+            </tr>
+          }
+        } @empty {
+          <tr class="quiet">
+            <td colspan="5">Nothing here for that filter.</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+</section>

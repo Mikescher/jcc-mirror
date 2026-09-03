@@ -1,0 +1,36 @@
+/* The chart is stretched to the box (preserveAspectRatio="none"), so nothing
+   inside it may carry text or a scaled stroke: the axis labels are HTML on top,
+   and the lines keep their width with vector-effect. */
+.chart {
+  position: relative;
+  height: 14rem;
+}
+
+.chart svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.chart rect {
+  fill: var(--accent);
+}
+
+.chart line {
+  stroke: var(--line);
+}
+
+.chart line.axis {
+  stroke: var(--muted);
+}
+
+.chart .y {
+  position: absolute;
+  left: 0;
+  padding: 0 0.25rem;
+  background: var(--card);
+}
+
+.legend i {
+  outline: 1px solid var(--line);
+}

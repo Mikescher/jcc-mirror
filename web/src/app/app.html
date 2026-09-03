@@ -1,0 +1,67 @@
+<header class="topbar">
+  <div class="wrap spread">
+    <div class="row">
+      <h1>jcc-mirror</h1>
+      @if (status(); as s) {
+        <span class="note mono">{{ s.version }}</span>
+        <span class="pill" [class]="tunnel().klass">{{ tunnel().label }}</span>
+        @if (s.remote.error) {
+          <span class="pill bad" [title]="s.remote.error">remote unreachable</span>
+        }
+        @if (!s.schedule.automatic) {
+          <span class="pill warn">unattended off</span>
+        }
+        @if (busy()) {
+          <span class="pill ok">running</span>
+        }
+      }
+      @if (!live.connected()) {
+        <span class="pill warn">live feed reconnecting</span>
+      }
+    </div>
+
+    <div class="row">
+      @if (authed()) {
+        <button class="ghost small" type="button" (click)="lock()">Forget token</button>
+      } @else {
+        <form class="row" (submit)="unlock($event)">
+          <input
+            type="password"
+            placeholder="dashboard token"
+            autocomplete="off"
+            [value]="token()"
+            (input)="token.set($any($event.target).value)"
+          />
+          <button class="small" type="submit" [disabled]="unlocking()">Unlock</button>
+        </form>
+      }
+    </div>
+  </div>
+
+  <nav class="wrap">
+    <a routerLink="/now" routerLinkActive="active">Now</a>
+    <a routerLink="/changes" routerLinkActive="active">Changes</a>
+    <a routerLink="/events" routerLinkActive="active">Events</a>
+    <a routerLink="/bandwidth" routerLinkActive="active">Bandwidth</a>
+    <a routerLink="/config" routerLinkActive="active">Config</a>
+    <a routerLink="/diagnostics" routerLinkActive="active">Diagnostics</a>
+  </nav>
+</header>
+
+@if (error()) {
+  <div class="wrap">
+    <div class="banner">{{ error() }}</div>
+  </div>
+}
+@if (!authed()) {
+  <div class="wrap">
+    <p class="note">
+      Reading is open. Changing anything needs the bearer token printed to the container log at
+      startup.
+    </p>
+  </div>
+}
+
+<main class="wrap stack">
+  <router-outlet />
+</main>

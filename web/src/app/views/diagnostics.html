@@ -1,0 +1,527 @@
+@if (error()) {
+  <div class="banner">{{ error() }}</div>
+}
+
+<section class="panel">
+  <div class="spread">
+    <h2>Tunnel</h2>
+    <div class="row">
+      @if (status(); as s) {
+        <span
+          class="pill"
+          [class.ok]="s.tunnel.state === 'up'"
+          [class.warn]="s.tunnel.state === 'connecting'"
+          [class.bad]="s.tunnel.state === 'failed'"
+          [class.dim]="s.tunnel.state === 'unconfigured'"
+        >
+          {{ s.tunnel.state }}
+        </span>
+      }
+      <button class="ghost small" type="button" [disabled]="loading()" (click)="load()">
+        Reload
+      </button>
+    </div>
+  </div>
+
+  @if (status(); as s) {
+    @if (s.tunnel.error) {
+      <div class="banner">{{ s.tunnel.error }}</div>
+    }
+
+    <div class="cards">
+      <div class="card">
+        <div class="k">Endpoint</div>
+        <div class="v mono">{{ s.tunnel.endpoint || '—' }}</div>
+        <div class="note">the rootserver, not the publisher</div>
+      </div>
+      <div class="card">
+        <div class="k">Our addresses</div>
+        <div class="v mono">{{ (s.tunnel.addresses || []).join(', ') || '—' }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Listen port</div>
+        <div class="v mono">{{ s.tunnel.listenPort || '—' }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Uptime</div>
+        <div class="v">{{ fmt.duration(s.uptimeSeconds) }}</div>
+        <div class="note">{{ s.version }}</div>
+      </div>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Peer</th>
+            <th>Endpoint</th>
+            <th class="num">Handshake</th>
+            <th class="num">Tx</th>
+            <th class="num">Rx</th>
+            <th>Allowed IPs</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (p of s.tunnel.peers || []; track p.publicKey) {
+            <tr>
+              <td class="mono path">{{ p.publicKey }}</td>
+              <td class="mono">{{ p.endpoint || '—' }}</td>
+              <td class="num">
+                @if (p.handshakeAgeSeconds == null) {
+                  <span class="bad">never</span>
+                } @else {
+                  {{ fmt.duration(p.handshakeAgeSeconds) }} ago
+                }
+              </td>
+              <td class="num">{{ fmt.bytes(p.txBytes) }}</td>
+              <td class="num">{{ fmt.bytes(p.rxBytes) }}</td>
+              <td class="mono">{{ (p.allowedIps || []).join(', ') }}</td>
+            </tr>
+          } @empty {
+            <tr class="quiet">
+              <td colspan="6">No peers are configured.</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card line">
+      <div class="k">Our public key</div>
+      <div class="mono path">
+        {{ s.publicKey || 'none yet — the private key is generated at first start' }}
+      </div>
+      <p class="note">
+        This is the one thing setup needs on the other side: paste it into the rootserver's peer
+        entry for this container. Nothing here can reach anything until it is there.
+      </p>
+    </div>
+  }
+</section>
+
+<section class="panel">
+  <div class="spread">
+    <h2>Round trip</h2>
+    <div class="row">
+      <input
+        type="text"
+        placeholder="10.0.0.2 (empty: the publisher)"
+        [value]="pingTarget()"
+        (input)="pingTarget.set($any($event.target).value)"
+      />
+      <button class="small" type="button" [disabled]="!authed() || pinging()" (click)="ping()">
+        Ping
+      </button>
+    </div>
+  </div>
+
+  @if (pingError()) {
+    <div class="banner">{{ pingError() }}</div>
+  }
+  @if (pingResult(); as r) {
+    <div class="cards">
+      <div class="card">
+        <div class="k">Target</div>
+        <div class="v mono">{{ r.target }}</div>
+      </div>
+      <div class="card">
+        <div class="k">RTT</div>
+        <div class="v">{{ r.millis }} ms</div>
+      </div>
+    </div>
+  }
+
+  <p class="note">
+    An empty target is the publisher's address, taken from the WebDAV URL. A reply proves the
+    rootserver forwards between spokes, which is the single most likely reason for the whole thing
+    to fail and is not a jcc-mirror bug: the server's peer entries have to cover each client's
+    address, and it has to have IP forwarding on.
+  </p>
+</section>
+
+<section class="panel">
+  <div class="spread">
+    <h2>Throughput</h2>
+    <div class="row">
+      <input
+        type="text"
+        placeholder="a remote path"
+        [value]="probePath()"
+        (input)="probePath.set($any($event.target).value)"
+      />
+      <input
+        type="number"
+        placeholder="bytes (default 16 MiB)"
+        [value]="probeBytes()"
+        (input)="probeBytes.set($any($event.target).value)"
+      />
+      <button
+        class="small"
+        type="button"
+        [disabled]="!authed() || throughputBusy()"
+        (click)="measure()"
+      >
+        Measure
+      </button>
+    </div>
+  </div>
+
+  @if (throughputError()) {
+    <div class="banner">{{ throughputError() }}</div>
+  }
+  @if (throughput(); as t) {
+    <div class="cards">
+      <div class="card">
+        <div class="k">Read</div>
+        <div class="v">{{ fmt.bytes(t.bytes) }}</div>
+        <div class="note mono path">{{ t.path }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Took</div>
+        <div class="v">{{ t.millis }} ms</div>
+      </div>
+      <div class="card">
+        <div class="k">Rate</div>
+        <div class="v">{{ fmt.rate(t.bytes, t.millis / 1000) }}</div>
+      </div>
+    </div>
+  }
+
+  <p class="note">
+    A ranged GET, timed end to end and then discarded. It is capped at 256 MiB, and the bandwidth
+    schedule applies to it like any other transfer — a probe inside a capped window measures the
+    cap, not the link.
+  </p>
+</section>
+
+<section class="panel">
+  <div class="spread">
+    <h2>Remote</h2>
+    <button class="small" type="button" [disabled]="!authed() || reaching()" (click)="probe()">
+      Probe
+    </button>
+  </div>
+
+  @if (status()?.remote; as remote) {
+    <div class="cards">
+      <div class="card">
+        <div class="k">URL</div>
+        <div class="v mono path">{{ remote.url || 'not configured' }}</div>
+      </div>
+      @if (remote.error) {
+        <div class="card">
+          <div class="k">Error</div>
+          <div class="v bad">{{ remote.error }}</div>
+        </div>
+      }
+    </div>
+  }
+
+  @if (reachError()) {
+    <div class="banner">{{ reachError() }}</div>
+  }
+  @if (reach(); as r) {
+    <div class="cards">
+      <div class="card">
+        <div class="k">Directories</div>
+        <div class="v">{{ fmt.comma(r.dirs) }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Files</div>
+        <div class="v">{{ fmt.comma(r.files) }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Took</div>
+        <div class="v">{{ r.millis }} ms</div>
+      </div>
+    </div>
+  }
+
+  <p class="note">
+    One PROPFIND of the remote root. The answer is written to the event log as well, so it is still
+    there after the page is reloaded.
+  </p>
+</section>
+
+<section class="panel">
+  <div class="spread">
+    <h2>Remote tree</h2>
+    <div class="row">
+      <input
+        type="text"
+        placeholder="path from the remote root"
+        [value]="path()"
+        (input)="path.set($any($event.target).value)"
+      />
+      <button class="small" type="button" [disabled]="listBusy()" (click)="open(path())">
+        List
+      </button>
+    </div>
+  </div>
+
+  <div class="row crumbs">
+    <button class="link" type="button" (click)="open('')">root</button>
+    @for (c of crumbs(); track c.path) {
+      <span class="dim">/</span>
+      <button class="link" type="button" (click)="open(c.path)">{{ c.name }}</button>
+    }
+  </div>
+
+  @if (listError()) {
+    <div class="banner">{{ listError() }}</div>
+  }
+
+  @if (listing(); as l) {
+    <p class="note mono path">{{ l.url }} · {{ l.millis }} ms</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th class="num">Size</th>
+            <th>Modified</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (e of l.entries; track e.path) {
+            <tr>
+              <td>
+                @if (e.isDir) {
+                  <button class="link" type="button" (click)="open(e.path)">{{ e.name }}/</button>
+                } @else {
+                  <span class="mono path">{{ e.name }}</span>
+                }
+              </td>
+              <td class="num">{{ e.isDir ? '—' : fmt.bytes(e.size) }}</td>
+              <td>{{ fmt.clock(e.mtime) }}</td>
+            </tr>
+          } @empty {
+            <tr class="quiet">
+              <td colspan="3">The directory is empty.</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  }
+
+  <p class="note">
+    Each step is exactly one PROPFIND, which is what a walk costs per directory — so the round trip
+    above multiplied by the number of directories is roughly what a scan takes, and it is what the
+    scan schedule should be set from.
+  </p>
+</section>
+
+<section class="panel">
+  <h2>Free space</h2>
+
+  @for (p of pairs(); track p.id) {
+    <div class="line">
+      <div class="spread">
+        <div class="row">
+          <strong>{{ p.name }}</strong>
+          <span class="pill">{{ p.type }}</span>
+          <span class="note mono path">{{ p.localPath }}</span>
+        </div>
+        @if (p.spaceError) {
+          <span class="bad">{{ p.spaceError }}</span>
+        } @else {
+          <span class="dim">
+            {{ fmt.bytes(p.space.free) }} free of {{ fmt.bytes(p.space.total) }} ·
+            {{ used(p.space) }}% used
+          </span>
+        }
+      </div>
+      @if (!p.spaceError) {
+        <div class="bar"><span [style.width.%]="used(p.space)"></span></div>
+      }
+    </div>
+  } @empty {
+    <p class="note">No pairs are configured.</p>
+  }
+
+  <p class="note">
+    The volume, not the directory: a plan is refused when finishing it would drop the free space
+    below the reserve, and it is checked again per file because a sync can run for days.
+  </p>
+</section>
+
+<section class="panel">
+  <div class="spread">
+    <h2>Explain plan</h2>
+    <div class="row">
+      <select [value]="explainPair()" (change)="explainPair.set($any($event.target).value)">
+        <option value="">choose a pair</option>
+        @for (p of pairs(); track p.id) {
+          <option [value]="p.id">{{ p.name }}</option>
+        }
+      </select>
+      <button class="small" type="button" [disabled]="!authed()" (click)="explain()">
+        Explain
+      </button>
+    </div>
+  </div>
+
+  @if (explainError()) {
+    <div class="banner">{{ explainError() }}</div>
+  }
+
+  @if (lastPlan(); as run) {
+    <div class="spread">
+      <div class="row">
+        <strong>{{ run.pair }}</strong>
+        @if (run.error) {
+          <span class="pill bad">failed</span>
+        }
+      </div>
+      <span class="dim">{{ fmt.clock(run.startedAt) }}</span>
+    </div>
+
+    @if (run.error) {
+      <div class="banner">{{ run.error }}</div>
+    }
+
+    @if (run.plan; as plan) {
+      <div class="cards">
+        <div class="card">
+          <div class="k">Add</div>
+          <div class="v">{{ fmt.comma(plan.add) }}</div>
+          <div class="note">{{ fmt.bytes(plan.addBytes) }}</div>
+        </div>
+        <div class="card">
+          <div class="k">Replace</div>
+          <div class="v">{{ fmt.comma(plan.replace) }}</div>
+          <div class="note">{{ fmt.bytes(plan.replaceBytes) }}</div>
+        </div>
+        <div class="card">
+          <div class="k">Vanished</div>
+          <div class="v">{{ fmt.comma(plan.vanished) }}</div>
+          <div class="note">{{ fmt.bytes(plan.vanishedBytes) }} · {{ plan.mode }}</div>
+        </div>
+        <div class="card">
+          <div class="k">Excluded</div>
+          <div class="v">{{ fmt.comma(plan.excluded) }}</div>
+          <div class="note">dropped, not acted on</div>
+        </div>
+        <div class="card">
+          <div class="k">Free</div>
+          <div class="v">{{ fmt.bytes(plan.free) }}</div>
+          <div class="note">reserve {{ fmt.bytes(plan.reserve) }}</div>
+        </div>
+      </div>
+
+      @if (plan.shortfall > 0) {
+        <div class="banner">
+          It does not fit: {{ fmt.bytes(plan.shortfall) }} short of the reserve.
+        </div>
+      }
+      @if (plan.guard) {
+        <div class="hold">{{ plan.guard }}</div>
+      }
+      <p class="note">
+        Walked {{ fmt.clock(plan.scannedAt) }}. A plan is the difference between that walk and what
+        is on disk here, counted — it changes nothing and moves nothing.
+      </p>
+    } @else if (!run.error) {
+      <p class="note">The plan is still running.</p>
+    }
+  } @else {
+    <p class="note">Nothing has been planned since the daemon started.</p>
+  }
+</section>
+
+<section class="panel">
+  <h2>Notifications</h2>
+
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Condition</th>
+          <th>Pair</th>
+          <th>State</th>
+          <th>Since</th>
+          <th>Last pushed</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (n of notify(); track n.kind + n.pairId) {
+          <tr>
+            <td>{{ n.kind }}</td>
+            <td>{{ n.pairId ? pairName(n.pairId) : '—' }}</td>
+            <td>
+              @if (n.active) {
+                <span class="pill warn">active</span>
+              } @else {
+                <span class="pill ok">clear</span>
+              }
+            </td>
+            <td>{{ fmt.clock(n.since) }}</td>
+            <td>{{ n.notifiedAt ? fmt.clock(n.notifiedAt) : 'never' }}</td>
+            <td>{{ n.detail || '—' }}</td>
+          </tr>
+        } @empty {
+          <tr class="quiet">
+            <td colspan="6">Nothing has been raised yet.</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+
+  <p class="note">
+    A condition pushes on the edge — once when it starts being true, once when it clears — because
+    the daily quota is finite. A row that is active with no last-pushed time is one the push channel
+    could not deliver, which is written to the events table and never fails a sync.
+  </p>
+</section>
+
+<section class="panel">
+  <div class="spread">
+    <h2>Log</h2>
+    <label class="check">
+      <input
+        type="checkbox"
+        [checked]="autoScroll()"
+        (change)="autoScroll.set($any($event.target).checked)"
+      />
+      <span>Follow</span>
+    </label>
+  </div>
+
+  <div class="mono log" #tail>
+    @for (l of lines(); track l.seq) {
+      <div [class]="level(l)">{{ fmt.timeOnly(l.ts) }} {{ l.level }} {{ l.text }}</div>
+    } @empty {
+      @if (view()?.logLocked) {
+        <div class="dim">
+          The tail needs the token. It is the container's log, and the container's log is where the
+          token itself is printed.
+        </div>
+      } @else {
+        <div class="dim">Nothing has been logged since the daemon started.</div>
+      }
+    }
+  </div>
+
+  @if (view(); as v) {
+    <div class="cards">
+      <div class="card">
+        <div class="k">Data directory</div>
+        <div class="v mono path">{{ v.dataDir }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Names normalized</div>
+        <div class="v" [class.warn]="v.nonNfcNames > 0">{{ fmt.comma(v.nonNfcNames) }}</div>
+      </div>
+    </div>
+    @if (v.nonNfcNames > 0) {
+      <p class="note">
+        Names the walk had to normalize to NFC. A non-zero count means part of the tree went past
+        macOS and came back decomposed; without the normalization every title with an umlaut would
+        look new on every scan, and the whole collection would transfer again.
+      </p>
+    }
+  }
+</section>
