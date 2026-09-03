@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"blackforestbytes.com/jcc-mirror/format"
+	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/remote"
 	"blackforestbytes.com/jcc-mirror/webdav"
 )
@@ -30,8 +32,8 @@ func cmdWalk(ctx context.Context, args []string) error {
 		return fmt.Errorf("-workers must be at least 1")
 	}
 
-	logger := &Logger{Verbose: cfg.verbose}
-	client, _, closeFn, err := cfg.openBoth(logger)
+	logger := &logs.Logger{Verbose: cfg.verbose}
+	client, _, closeFn, err := cfg.openBoth(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -62,7 +64,7 @@ func cmdWalk(ctx context.Context, args []string) error {
 
 	w.summarize(*root, elapsed, *out)
 	if ctx.Err() != nil {
-		return fmt.Errorf("walk interrupted after %s", humanDuration(elapsed))
+		return fmt.Errorf("walk interrupted after %s", format.Duration(elapsed))
 	}
 	if w.errors > 0 {
 		return fmt.Errorf("%d directory listing(s) failed", w.errors)
@@ -74,7 +76,7 @@ func cmdWalk(ctx context.Context, args []string) error {
 // lock is never the bottleneck and one lock is simpler than five atomics.
 type walker struct {
 	client   *webdav.Client
-	log      *Logger
+	log      *logs.Logger
 	workers  int
 	manifest *json.Encoder
 
@@ -104,7 +106,7 @@ func (w *walker) walk(ctx context.Context, root string, maxDepth int) {
 
 		next := w.listLevel(ctx, level)
 		if maxDepth > 0 && depth >= maxDepth {
-			w.log.Infof("walk: stopping at -max-depth %d with %s directories unvisited", maxDepth, comma(int64(len(next))))
+			w.log.Infof("walk: stopping at -max-depth %d with %s directories unvisited", maxDepth, format.Comma(int64(len(next))))
 			return
 		}
 		level = next
@@ -227,7 +229,7 @@ func (w *walker) reportProgress(ctx context.Context, interval time.Duration) fun
 
 				elapsed := time.Since(start)
 				w.log.Infof("walk: %s dirs, %s files, %s, level %d, %.1f req/s",
-					comma(dirs), comma(files), humanBytes(bytes), depth, float64(reqs)/elapsed.Seconds())
+					format.Comma(dirs), format.Comma(files), format.Bytes(bytes), depth, float64(reqs)/elapsed.Seconds())
 			}
 		}
 	}()
@@ -239,18 +241,18 @@ func (w *walker) summarize(root string, elapsed time.Duration, manifestPath stri
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	fmt.Printf("\nwalk of %q finished in %s\n", root, humanDuration(elapsed))
-	fmt.Printf("  directories    %s\n", comma(w.dirs))
-	fmt.Printf("  files          %s\n", comma(w.files))
-	fmt.Printf("  bytes          %s\n", humanBytes(w.bytes))
-	fmt.Printf("  PROPFINDs      %s (%.1f req/s across %d workers)\n", comma(w.requests), float64(w.requests)/elapsed.Seconds(), w.workers)
+	fmt.Printf("\nwalk of %q finished in %s\n", root, format.Duration(elapsed))
+	fmt.Printf("  directories    %s\n", format.Comma(w.dirs))
+	fmt.Printf("  files          %s\n", format.Comma(w.files))
+	fmt.Printf("  bytes          %s\n", format.Bytes(w.bytes))
+	fmt.Printf("  PROPFINDs      %s (%.1f req/s across %d workers)\n", format.Comma(w.requests), float64(w.requests)/elapsed.Seconds(), w.workers)
 	fmt.Printf("  deepest level  %d\n", w.depth)
-	fmt.Printf("  widest dir     %q with %s entries\n", w.widestDir, comma(int64(w.widestCount)))
-	fmt.Printf("  slowest dir    %q at %s\n", w.slowestDir, humanDuration(w.slowest))
-	fmt.Printf("  errors         %s\n", comma(w.errors))
-	fmt.Printf("  non-NFC names  %s\n", comma(w.client.NonNFCNames()))
+	fmt.Printf("  widest dir     %q with %s entries\n", w.widestDir, format.Comma(int64(w.widestCount)))
+	fmt.Printf("  slowest dir    %q at %s\n", w.slowestDir, format.Duration(w.slowest))
+	fmt.Printf("  errors         %s\n", format.Comma(w.errors))
+	fmt.Printf("  non-NFC names  %s\n", format.Comma(w.client.NonNFCNames()))
 	if manifestPath != "" {
 		fmt.Printf("  manifest       %s\n", manifestPath)
 	}
-	fmt.Printf("\n=> one full scan costs %s; that is the floor for the scan schedule (DESIGN.md §6, §10.4)\n", humanDuration(elapsed))
+	fmt.Printf("\n=> one full scan costs %s; that is the floor for the scan schedule (DESIGN.md §6, §10.4)\n", format.Duration(elapsed))
 }

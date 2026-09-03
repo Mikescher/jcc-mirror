@@ -8,6 +8,8 @@ import (
 	"os"
 	"time"
 
+	"blackforestbytes.com/jcc-mirror/format"
+	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/remote"
 	"blackforestbytes.com/jcc-mirror/webdav"
 )
@@ -25,8 +27,8 @@ func cmdPropfind(ctx context.Context, args []string) error {
 		return err
 	}
 
-	logger := &Logger{Verbose: cfg.verbose}
-	client, _, closeFn, err := cfg.openBoth(logger)
+	logger := &logs.Logger{Verbose: cfg.verbose}
+	client, _, closeFn, err := cfg.openBoth(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -52,7 +54,7 @@ func cmdPropfind(ctx context.Context, args []string) error {
 	}
 
 	printEntries(entries, *dir, *limit)
-	logger.Infof("propfind depth=%s %q: %d entries in %s", *depth, *dir, len(entries), humanDuration(elapsed))
+	logger.Infof("propfind depth=%s %q: %d entries in %s", *depth, *dir, len(entries), format.Duration(elapsed))
 	if n := client.NonNFCNames(); n > 0 {
 		logger.Infof("note: %d name(s) were not NFC - the diff must normalize (DESIGN.md §2.3)", n)
 	}
@@ -78,7 +80,7 @@ func printEntries(entries []remote.Entry, self string, limit int) {
 			continue
 		}
 
-		kind, size := "file", humanBytes(e.Size)
+		kind, size := "file", format.Bytes(e.Size)
 		if e.IsDir {
 			kind, size = "dir", "-"
 		}
@@ -92,5 +94,5 @@ func printEntries(entries []remote.Entry, self string, limit int) {
 	if limit > 0 && len(entries) > limit {
 		fmt.Printf("... %d more (raise -limit)\n", len(entries)-limit)
 	}
-	fmt.Printf("\n%d dirs, %d files, %s\n", dirs, files, humanBytes(bytesTotal))
+	fmt.Printf("\n%d dirs, %d files, %s\n", dirs, files, format.Bytes(bytesTotal))
 }

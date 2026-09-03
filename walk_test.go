@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"blackforestbytes.com/jcc-mirror/webdav"
 	xwebdav "golang.org/x/net/webdav"
+
+	"blackforestbytes.com/jcc-mirror/logs"
+	"blackforestbytes.com/jcc-mirror/webdav"
 )
 
 // TestWalker exercises the breadth-first walk against a real WebDAV server over a
@@ -36,7 +38,7 @@ func TestWalker(t *testing.T) {
 
 	for _, workers := range []int{1, 4} {
 		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
-			w := &walker{client: client, log: &Logger{}, workers: workers}
+			w := &walker{client: client, log: &logs.Logger{}, workers: workers}
 			w.walk(context.Background(), "", 0)
 
 			if w.errors != 0 {
@@ -70,7 +72,7 @@ func TestWalkerMaxDepth(t *testing.T) {
 		t.Fatalf("webdav.New: %v", err)
 	}
 
-	w := &walker{client: client, log: &Logger{}, workers: 2}
+	w := &walker{client: client, log: &logs.Logger{}, workers: 2}
 	w.walk(context.Background(), "", 1)
 
 	// One level means the root only: one PROPFIND, and its files.

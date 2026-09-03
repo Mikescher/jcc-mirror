@@ -1,7 +1,11 @@
-// jcc-mirror M0 spike: everything that could invalidate the design, in one
-// afternoon (DESIGN.md §9). The commands are the M0 checklist and are meant to be
-// run in the order `jcc-mirror help` prints them - the spoke-to-spoke route has
-// to work before a PROPFIND can, and the walk time is what sets the scan schedule.
+// jcc-mirror replicates a jClipCorn collection one way, from the publisher's NAS
+// to the subscriber's Synology, over a WireGuard tunnel that exists only inside
+// this process (DESIGN.md).
+//
+// `serve` is the program: it is what the container runs and what the dashboard
+// configures. The remaining commands are the M0 spike, kept because they are the
+// diagnostics - each one answers a question the design rests on, and they run in
+// the order `jcc-mirror help` prints them.
 //
 // Nothing here writes to the publisher, and nothing here runs on the publisher.
 package main
@@ -13,8 +17,11 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
+	"blackforestbytes.com/jcc-mirror/logs"
+	"blackforestbytes.com/jcc-mirror/store"
 	"blackforestbytes.com/jcc-mirror/webdav"
 	"blackforestbytes.com/jcc-mirror/wg"
 )
@@ -26,6 +33,8 @@ type command struct {
 }
 
 var commands = []command{
+	{"serve", "run the daemon: sqlite state, tunnel, dashboard", cmdServe},
+	{"version", "print the version and build timestamp", cmdVersion},
 	{"pubkey", "derive the public key of -wg-key, for the rootserver peer entry", cmdPubkey},
 	{"ping", "ICMP-ping a WireGuard address through the tunnel (M0 step 1)", cmdPing},
 	{"status", "bring the tunnel up and report handshake, endpoint and counters (M0 step 2)", cmdStatus},
@@ -35,8 +44,10 @@ var commands = []command{
 	{"get", "ranged GET, optionally in parallel chunks (M0 step 5)", cmdGet},
 	{"resume", "abort a GET mid-file and prove the resume is byte-identical (M0 step 5)", cmdResume},
 	{"soak", "stream for hours and report stalls, errors and throughput (M0 step 5)", cmdSoak},
-	{"serve", "listen on the tunnel so the publisher can confirm reachability (M0 step 6)", cmdServe},
 }
+
+// diagnostics is where the M0 checklist starts in commands, for the usage text.
+const diagnostics = 2
 
 func main() {
 	log.SetFlags(log.Ltime)
@@ -53,9 +64,12 @@ func run() error {
 	}
 
 	name := os.Args[1]
-	if name == "help" || name == "-h" || name == "--help" {
+	switch name {
+	case "help", "-h", "--help":
 		usage()
 		return nil
+	case "-version", "--version":
+		name = "version"
 	}
 
 	for _, c := range commands {
@@ -74,11 +88,20 @@ func run() error {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "jcc-mirror - M0 spike\n\nusage: jcc-mirror <command> [flags]\n\ncommands, in the order they are meant to be run:\n\n")
-	for _, c := range commands {
+	fmt.Fprintf(os.Stderr, "jcc-mirror %s\n\nusage: jcc-mirror <command> [flags]\n\n", version)
+	for _, c := range commands[:diagnostics] {
 		fmt.Fprintf(os.Stderr, "  %-9s %s\n", c.name, c.brief)
 	}
-	fmt.Fprintf(os.Stderr, "\nEvery command takes -h and is configured by flags alone; see README.md.\n")
+	fmt.Fprintf(os.Stderr, "\ndiagnostics, in the order they are meant to be run:\n\n")
+	for _, c := range commands[diagnostics:] {
+		fmt.Fprintf(os.Stderr, "  %-9s %s\n", c.name, c.brief)
+	}
+	fmt.Fprintf(os.Stderr, "\nEvery command takes -h. The daemon is configured in the dashboard; the\ndiagnostics take flags, or -data to reuse what the daemon is running on.\n")
+}
+
+func cmdVersion(context.Context, []string) error {
+	fmt.Printf("jcc-mirror %s (built %s)\n", version, buildStamp)
+	return nil
 }
 
 // config holds the settings every command shares, filled from the common flags.
@@ -99,12 +122,17 @@ type config struct {
 	davUser string
 	davPass string
 
+	dataDir string
 	verbose bool
+
+	stored     store.Values
+	storedOnce sync.Once
+	storedErr  error
 }
 
-// newFlagSet builds a command's flag set with the shared flags already
-// registered. Flags are the only source: the spike predates the sqlite config
-// the dashboard writes (DESIGN.md §6), and reads nothing from the environment.
+// newFlagSet builds a diagnostic command's flag set with the shared flags already
+// registered. Nothing is read from the environment: a setting comes from a flag,
+// or - with -data - from the same sqlite config the daemon runs on (DESIGN.md §6).
 func newFlagSet(name string) (*flag.FlagSet, *config) {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	cfg := &config{}
@@ -125,13 +153,59 @@ func newFlagSet(name string) (*flag.FlagSet, *config) {
 	fs.StringVar(&cfg.davUser, "user", "", "WebDAV user")
 	fs.StringVar(&cfg.davPass, "pass", "", "WebDAV password")
 
+	fs.StringVar(&cfg.dataDir, "data", "", "take the settings left unset from the store in this data directory, e.g. "+staticDataDir)
 	fs.BoolVar(&cfg.verbose, "v", false, "verbose output")
 
 	return fs, cfg
 }
 
+// fromStore fills the settings left unset from the daemon's sqlite config. A flag
+// always wins: trying something other than the stored value is the whole point of
+// the diagnostic commands.
+func (cfg *config) fromStore(ctx context.Context) error {
+	if cfg.dataDir == "" {
+		return nil
+	}
+	cfg.storedOnce.Do(func() {
+		st, err := store.Open(ctx, cfg.dataDir)
+		if err != nil {
+			cfg.storedErr = err
+			return
+		}
+		defer st.Close()
+		cfg.stored, cfg.storedErr = st.Config(ctx)
+	})
+	if cfg.storedErr != nil {
+		return cfg.storedErr
+	}
+
+	for _, f := range []struct {
+		dst *string
+		key string
+	}{
+		{&cfg.wgPrivateKey, store.KeyWGPrivateKey},
+		{&cfg.wgPeerKey, store.KeyWGPeerKey},
+		{&cfg.wgPresharedKey, store.KeyWGPresharedKey},
+		{&cfg.wgEndpoint, store.KeyWGEndpoint},
+		{&cfg.wgAddress, store.KeyWGAddress},
+		{&cfg.wgAllowedIPs, store.KeyWGAllowedIPs},
+		{&cfg.wgDNS, store.KeyWGDNS},
+		{&cfg.davURL, store.KeyRemoteURL},
+		{&cfg.davUser, store.KeyRemoteUser},
+		{&cfg.davPass, store.KeyRemotePassword},
+	} {
+		if *f.dst == "" {
+			*f.dst = cfg.stored.Get(f.key)
+		}
+	}
+	return nil
+}
+
 // openTunnel brings the tunnel up, or returns nil when -no-tunnel was given.
-func (cfg *config) openTunnel(logger *Logger) (*wg.Tunnel, error) {
+func (cfg *config) openTunnel(ctx context.Context, logger *logs.Logger) (*wg.Tunnel, error) {
+	if err := cfg.fromStore(ctx); err != nil {
+		return nil, err
+	}
 	if cfg.noTunnel {
 		logger.Infof("wg: -no-tunnel, going straight out of the host network")
 		return nil, nil
@@ -142,7 +216,7 @@ func (cfg *config) openTunnel(logger *Logger) (*wg.Tunnel, error) {
 
 	devLog := func(string, ...any) {}
 	if cfg.wgVerbose {
-		devLog = func(format string, a ...any) { logger.Debugf("wg: "+format, a...) }
+		devLog = func(f string, a ...any) { logger.Debugf("wg: "+f, a...) }
 	}
 
 	tun, err := wg.Open(wg.Config{
@@ -166,7 +240,10 @@ func (cfg *config) openTunnel(logger *Logger) (*wg.Tunnel, error) {
 }
 
 // openDAV builds the WebDAV client, routed through tun when there is one.
-func (cfg *config) openDAV(tun *wg.Tunnel) (*webdav.Client, error) {
+func (cfg *config) openDAV(ctx context.Context, tun *wg.Tunnel) (*webdav.Client, error) {
+	if err := cfg.fromStore(ctx); err != nil {
+		return nil, err
+	}
 	if cfg.davURL == "" {
 		return nil, fmt.Errorf("missing -url (see -h)")
 	}
@@ -184,8 +261,8 @@ func (cfg *config) openDAV(tun *wg.Tunnel) (*webdav.Client, error) {
 
 // openBoth is the setup every WebDAV command shares. The returned close function
 // is safe to defer even when the tunnel was never opened.
-func (cfg *config) openBoth(logger *Logger) (*webdav.Client, *wg.Tunnel, func(), error) {
-	tun, err := cfg.openTunnel(logger)
+func (cfg *config) openBoth(ctx context.Context, logger *logs.Logger) (*webdav.Client, *wg.Tunnel, func(), error) {
+	tun, err := cfg.openTunnel(ctx, logger)
 	if err != nil {
 		return nil, nil, func() {}, err
 	}
@@ -195,7 +272,7 @@ func (cfg *config) openBoth(logger *Logger) (*webdav.Client, *wg.Tunnel, func(),
 		}
 	}
 
-	client, err := cfg.openDAV(tun)
+	client, err := cfg.openDAV(ctx, tun)
 	if err != nil {
 		closeFn()
 		return nil, nil, func() {}, err

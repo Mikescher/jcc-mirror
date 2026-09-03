@@ -1,0 +1,216 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jcc-mirror</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa; --fg: #1c1c1a; --muted: #6b6b66; --line: #dcdcd6;
+    --card: #fff; --accent: #2f5d50; --bad: #a33; --warn: #a76b00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17181a; --fg: #e6e6e3; --muted: #97978f; --line: #33343a;
+            --card: #1e1f22; --accent: #7fb8a5; --bad: #e08a86; --warn: #d9a441; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 1.5rem; background: var(--bg); color: var(--fg);
+         font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; }
+  main { max-width: 60rem; margin: 0 auto; display: grid; gap: 1.25rem; }
+  h1 { font-size: 1.3rem; margin: 0; }
+  h2 { font-size: .95rem; margin: 0 0 .75rem; text-transform: uppercase;
+       letter-spacing: .06em; color: var(--muted); }
+  h3 { font-size: .85rem; margin: 1rem 0 .5rem; color: var(--muted); }
+  section { background: var(--card); border: 1px solid var(--line);
+            border-radius: 8px; padding: 1rem 1.15rem; }
+  header { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; }
+  header .sub { color: var(--muted); font-size: .85rem; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
+  .cards { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); }
+  .card { border: 1px solid var(--line); border-radius: 6px; padding: .7rem .85rem; }
+  .card .k { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; }
+  .card .v { font-size: 1.05rem; margin-top: .15rem; }
+  .pill { display: inline-block; padding: .05rem .5rem; border-radius: 999px;
+          font-size: .75rem; border: 1px solid currentColor; }
+  .ok { color: var(--accent); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  label { display: block; margin-bottom: .9rem; }
+  label .name { font-weight: 600; }
+  label .help { display: block; color: var(--muted); font-size: .8rem; margin: .1rem 0 .3rem; }
+  input[type=text], input[type=password] {
+    width: 100%; padding: .45rem .55rem; border: 1px solid var(--line);
+    border-radius: 5px; background: var(--bg); color: var(--fg); font: inherit; }
+  button { padding: .45rem .9rem; border: 1px solid var(--line); border-radius: 5px;
+           background: var(--accent); color: var(--bg); font: inherit; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--fg); }
+  .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+  .grid2 { display: grid; gap: 0 1.25rem; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th { text-align: left; color: var(--muted); font-weight: 600; }
+  th, td { padding: .3rem .5rem .3rem 0; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
+  .scroll { overflow-x: auto; }
+  .banner { border-left: 3px solid var(--bad); padding: .6rem .85rem; border-radius: 4px;
+            background: color-mix(in srgb, var(--bad) 12%, transparent); }
+  .note { color: var(--muted); font-size: .85rem; }
+</style>
+
+<main>
+  <header>
+    <h1>jcc-mirror</h1>
+    <span class="sub">{{.Status.Version}}{{if .Status.BuildStamp}} · built {{.Status.BuildStamp}}{{end}}
+      · up {{uptime .Status.UptimeSec}}</span>
+  </header>
+
+  {{if .Error}}<div class="banner">{{.Error}}</div>{{end}}
+
+  <section>
+    <h2>Status</h2>
+    <div class="cards">
+      <div class="card">
+        <div class="k">Tunnel</div>
+        <div class="v">
+          {{if eq .Status.Tunnel.State "up"}}<span class="pill ok">up</span>
+          {{else if eq .Status.Tunnel.State "connecting"}}<span class="pill warn">connecting</span>
+          {{else if eq .Status.Tunnel.State "unconfigured"}}<span class="pill">not configured</span>
+          {{else}}<span class="pill bad">{{.Status.Tunnel.State}}</span>{{end}}
+        </div>
+        {{if .Status.Tunnel.Endpoint}}<div class="note mono">{{.Status.Tunnel.Endpoint}}</div>{{end}}
+        {{if .Status.Tunnel.Error}}<div class="note bad">{{.Status.Tunnel.Error}}</div>{{end}}
+      </div>
+      <div class="card">
+        <div class="k">Remote</div>
+        <div class="v">
+          {{if .Status.Remote.Error}}<span class="pill bad">unreachable</span>
+          {{else if .Status.Remote.Configured}}<span class="pill ok">configured</span>
+          {{else}}<span class="pill">not configured</span>{{end}}
+        </div>
+        {{if .Status.Remote.URL}}<div class="note mono">{{.Status.Remote.URL}}</div>{{end}}
+        {{if .Status.Remote.Error}}<div class="note bad">{{.Status.Remote.Error}}</div>{{end}}
+      </div>
+      <div class="card">
+        <div class="k">Database</div>
+        <div class="v">{{if eq .Status.Database "ok"}}<span class="pill ok">ok</span>
+          {{else}}<span class="pill bad">{{.Status.Database}}</span>{{end}}</div>
+      </div>
+    </div>
+
+    {{if .Status.Tunnel.Peers}}
+      <h3>Peers</h3>
+      <div class="scroll"><table>
+        <tr><th>public key</th><th>endpoint</th><th>handshake</th><th>tx</th><th>rx</th><th>allowed ips</th></tr>
+        {{range .Status.Tunnel.Peers}}
+          <tr>
+            <td class="mono">{{.PublicKey}}</td>
+            <td class="mono">{{.Endpoint}}</td>
+            <td>{{if .HandshakeAge}}{{duration .HandshakeAge}} ago{{else}}never{{end}}</td>
+            <td>{{bytes .TxBytes}}</td>
+            <td>{{bytes .RxBytes}}</td>
+            <td class="mono">{{range .AllowedIPs}}{{.}} {{end}}</td>
+          </tr>
+        {{end}}
+      </table></div>
+    {{end}}
+  </section>
+
+  <section>
+    <h2>WireGuard identity</h2>
+    {{if .Status.PublicKey}}
+      <p class="note">Paste this into the rootserver's peer entry for this container. The private half
+        is generated on first start and never leaves the data volume.</p>
+      <p class="mono">{{.Status.PublicKey}}</p>
+    {{else}}
+      <p class="note bad">No key yet.</p>
+    {{end}}
+    <p class="note">Once the tunnel is up this dashboard also answers on
+      <span class="mono">http://{{if .Status.Tunnel.Addresses}}{{index .Status.Tunnel.Addresses 0}}{{else}}&lt;our tunnel address&gt;{{end}}:{{.TunnelPort}}</span>,
+      which is how the publisher reaches it without a port forward.</p>
+  </section>
+
+  <section>
+    <h2>Access</h2>
+    {{if .Authed}}
+      <form method="post" action="/api/logout" class="row">
+        <span class="note">Authenticated. Changes and actions are unlocked on this browser.</span>
+        <button class="ghost" type="submit">Forget token</button>
+      </form>
+    {{else}}
+      <p class="note">Reading is open; changing anything needs the bearer token printed to the
+        container log at startup.</p>
+      <form method="post" action="/api/login" class="row">
+        <input type="password" name="token" placeholder="dashboard token" autocomplete="off" style="max-width:24rem">
+        <button type="submit">Unlock</button>
+      </form>
+    {{end}}
+  </section>
+
+  <section>
+    <h2>Configuration</h2>
+    <form method="post" action="/api/config">
+      <div class="grid2">
+        {{range .Groups}}
+          <div>
+            <h3>{{.Name}}</h3>
+            {{range .Fields}}
+              <label>
+                <span class="name">{{.Label}}{{if .Required}} *{{end}}</span>
+                {{if .Help}}<span class="help">{{.Help}}</span>{{end}}
+                {{if .Secret}}
+                  <input type="password" name="{{.Name}}" autocomplete="new-password"
+                         placeholder="{{if .IsSet}}stored — leave blank to keep{{else}}not set{{end}}">
+                {{else}}
+                  <input type="text" name="{{.Name}}" value="{{.Value}}" autocomplete="off">
+                {{end}}
+              </label>
+            {{end}}
+          </div>
+        {{end}}
+      </div>
+      <div class="row">
+        <button type="submit" {{if not .Authed}}disabled{{end}}>Save</button>
+        {{if not .Authed}}<span class="note">Unlock with the token to save.</span>{{end}}
+      </div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Actions</h2>
+    <form method="post" action="/api/remote/probe" class="row">
+      <button type="submit" {{if not .Authed}}disabled{{end}}>List the remote root</button>
+      <span class="note">One PROPFIND through the tunnel. The answer is written to the event log below.</span>
+    </form>
+  </section>
+
+  <section>
+    <h2>Events</h2>
+    {{if .Events}}
+      <div class="scroll"><table>
+        <tr><th>when</th><th>level</th><th>kind</th><th>message</th></tr>
+        {{range .Events}}
+          <tr>
+            <td class="mono">{{clock .TS}}</td>
+            <td class="{{if eq .Level "error"}}bad{{else if eq .Level "warn"}}warn{{end}}">{{.Level}}</td>
+            <td class="mono">{{.Kind}}</td>
+            <td>{{.Message}}</td>
+          </tr>
+        {{end}}
+      </table></div>
+    {{else}}<p class="note">Nothing logged yet.</p>{{end}}
+  </section>
+
+  <section>
+    <h2>Configuration history</h2>
+    {{if .Audit}}
+      <div class="scroll"><table>
+        <tr><th>when</th><th>key</th><th>from</th><th>to</th><th>by</th></tr>
+        {{range .Audit}}
+          <tr>
+            <td class="mono">{{clock .TS}}</td>
+            <td class="mono">{{.Key}}</td>
+            <td class="mono">{{.Old}}</td>
+            <td class="mono">{{.New}}</td>
+            <td class="mono">{{.Actor}}</td>
+          </tr>
+        {{end}}
+      </table></div>
+    {{else}}<p class="note">Nothing changed yet.</p>{{end}}
+  </section>
+</main>

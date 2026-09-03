@@ -7,6 +7,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"blackforestbytes.com/jcc-mirror/format"
+	"blackforestbytes.com/jcc-mirror/logs"
 )
 
 // countingReader counts bytes and records when the last one arrived. The
@@ -31,7 +34,7 @@ func (c countingReader) Read(p []byte) (int, error) {
 // reportBytes prints a throughput line every interval until the returned function
 // is called. It reports the instantaneous rate as well as the average, because a
 // transfer that has degraded looks fine on the average for a long time.
-func reportBytes(ctx context.Context, log *Logger, label string, done *atomic.Int64, total int64, interval time.Duration) func() {
+func reportBytes(ctx context.Context, log *logs.Logger, label string, done *atomic.Int64, total int64, interval time.Duration) func() {
 	if interval <= 0 {
 		return func() {}
 	}
@@ -54,21 +57,21 @@ func reportBytes(ctx context.Context, log *Logger, label string, done *atomic.In
 				return
 			case now := <-tick.C:
 				n := done.Load()
-				inst := humanRate(n-lastBytes, now.Sub(lastAt))
-				avg := humanRate(n, now.Sub(start))
+				inst := format.Rate(n-lastBytes, now.Sub(lastAt))
+				avg := format.Rate(n, now.Sub(start))
 				lastAt, lastBytes = now, n
 
 				if total > 0 {
 					eta := "-"
 					if n > 0 {
 						remaining := time.Duration(float64(total-n) / float64(n) * float64(now.Sub(start)))
-						eta = humanDuration(remaining)
+						eta = format.Duration(remaining)
 					}
 					log.Infof("%s: %s / %s (%.1f%%), %s now, %s avg, eta %s",
-						label, humanBytes(n), humanBytes(total), 100*float64(n)/float64(total), inst, avg, eta)
+						label, format.Bytes(n), format.Bytes(total), 100*float64(n)/float64(total), inst, avg, eta)
 					continue
 				}
-				log.Infof("%s: %s, %s now, %s avg", label, humanBytes(n), inst, avg)
+				log.Infof("%s: %s, %s now, %s avg", label, format.Bytes(n), inst, avg)
 			}
 		}
 	}()
@@ -78,5 +81,5 @@ func reportBytes(ctx context.Context, log *Logger, label string, done *atomic.In
 
 // transferSummary is the line every transfer command ends with.
 func transferSummary(label string, n int64, d time.Duration) string {
-	return fmt.Sprintf("%s: %s in %s (%s)", label, humanBytes(n), humanDuration(d), humanRate(n, d))
+	return fmt.Sprintf("%s: %s in %s (%s)", label, format.Bytes(n), format.Duration(d), format.Rate(n, d))
 }

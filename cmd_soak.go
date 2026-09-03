@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"blackforestbytes.com/jcc-mirror/format"
+	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/webdav"
 )
 
@@ -33,8 +35,8 @@ func cmdSoak(ctx context.Context, args []string) error {
 		return fmt.Errorf("missing -path")
 	}
 
-	logger := &Logger{Verbose: cfg.verbose}
-	client, _, closeFn, err := cfg.openBoth(logger)
+	logger := &logs.Logger{Verbose: cfg.verbose}
+	client, _, closeFn, err := cfg.openBoth(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -44,7 +46,7 @@ func cmdSoak(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	logger.Infof("soak: %s, %s, for %s", entry.Path, humanBytes(entry.Size), humanDuration(*duration))
+	logger.Infof("soak: %s, %s, for %s", entry.Path, format.Bytes(entry.Size), format.Duration(*duration))
 
 	ctx, cancel := context.WithTimeout(ctx, *duration)
 	defer cancel()
@@ -78,7 +80,7 @@ loop:
 			// A small file against a fast server wraps around several times a
 			// second; the progress line already carries the throughput.
 			if time.Since(lastPassLog) >= *report {
-				logger.Infof("soak: reached the end of the file after %s (pass %d)", humanBytes(offset), passes)
+				logger.Infof("soak: reached the end of the file after %s (pass %d)", format.Bytes(offset), passes)
 				lastPassLog = time.Now()
 			}
 			if !*rewind {
@@ -99,27 +101,27 @@ loop:
 				break loop
 			}
 			reconnects++
-			logger.Infof("soak: reconnecting at offset %s", humanBytes(offset))
+			logger.Infof("soak: reconnecting at offset %s", format.Bytes(offset))
 		}
 	}
 
 	elapsed := time.Since(start)
 	stopReport()
 
-	fmt.Printf("\nsoak of %q finished after %s\n", entry.Path, humanDuration(elapsed))
-	fmt.Printf("  transferred    %s\n", humanBytes(done.Load()))
-	fmt.Printf("  average rate   %s\n", humanRate(done.Load(), elapsed))
+	fmt.Printf("\nsoak of %q finished after %s\n", entry.Path, format.Duration(elapsed))
+	fmt.Printf("  transferred    %s\n", format.Bytes(done.Load()))
+	fmt.Printf("  average rate   %s\n", format.Rate(done.Load(), elapsed))
 	fmt.Printf("  full passes    %d\n", passes)
 	fmt.Printf("  errors         %d\n", errCount)
 	fmt.Printf("  reconnects     %d\n", reconnects)
-	fmt.Printf("  longest stall  %s\n", humanDuration(time.Duration(longestStall.Load())))
+	fmt.Printf("  longest stall  %s\n", format.Duration(time.Duration(longestStall.Load())))
 
 	if firstErrSet {
-		fmt.Printf("  first error at %s\n", humanDuration(firstErrAt))
+		fmt.Printf("  first error at %s\n", format.Duration(firstErrAt))
 		fmt.Printf("\n=> the server does drop long transfers, so the job state machine has to treat that as routine rather than exceptional (DESIGN.md §2.4)\n")
 		return nil
 	}
-	fmt.Printf("\n=> no interruptions in %s; long ranged GETs are safe against this server\n", humanDuration(elapsed))
+	fmt.Printf("\n=> no interruptions in %s; long ranged GETs are safe against this server\n", format.Duration(elapsed))
 	return nil
 }
 
@@ -138,7 +140,7 @@ func streamFrom(ctx context.Context, client *webdav.Client, path string, offset 
 // watchStalls records the longest gap between arriving bytes, and warns about one
 // while it is happening. A server that stops sending without closing the
 // connection produces no error at all; the gap is the only evidence.
-func watchStalls(ctx context.Context, logger *Logger, last *atomic.Int64, warn time.Duration) *atomic.Int64 {
+func watchStalls(ctx context.Context, logger *logs.Logger, last *atomic.Int64, warn time.Duration) *atomic.Int64 {
 	longest := &atomic.Int64{}
 	if warn <= 0 {
 		return longest
@@ -160,7 +162,7 @@ func watchStalls(ctx context.Context, logger *Logger, last *atomic.Int64, warn t
 				}
 				switch {
 				case gap >= warn && !warned:
-					logger.Errorf("soak: no data for %s", humanDuration(gap))
+					logger.Errorf("soak: no data for %s", format.Duration(gap))
 					warned = true
 				case gap < warn:
 					warned = false

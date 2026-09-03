@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"time"
+
+	"blackforestbytes.com/jcc-mirror/format"
+	"blackforestbytes.com/jcc-mirror/logs"
 )
 
 // cmdDepth is the other half of M0 step 3: does the server honour
@@ -16,8 +19,8 @@ func cmdDepth(ctx context.Context, args []string) error {
 		return err
 	}
 
-	logger := &Logger{Verbose: cfg.verbose}
-	client, _, closeFn, err := cfg.openBoth(logger)
+	logger := &logs.Logger{Verbose: cfg.verbose}
+	client, _, closeFn, err := cfg.openBoth(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -41,6 +44,6 @@ func cmdDepth(ctx context.Context, args []string) error {
 		return err
 	}
 	logger.Infof("=> %d entries in one request, %s - worth using where the subtree is small enough to hold in memory",
-		len(entries), humanDuration(time.Since(start)))
+		len(entries), format.Duration(time.Since(start)))
 	return nil
 }

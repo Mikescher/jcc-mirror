@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"blackforestbytes.com/jcc-mirror/format"
+	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/webdav"
 	"blackforestbytes.com/jcc-mirror/wg"
 )
@@ -21,7 +23,7 @@ func cmdStatus(ctx context.Context, args []string) error {
 		return err
 	}
 
-	logger := &Logger{Verbose: cfg.verbose}
+	logger := &logs.Logger{Verbose: cfg.verbose}
 
 	if cfg.wgPrivateKey != "" {
 		pub, err := wg.PublicKey(cfg.wgPrivateKey)
@@ -31,7 +33,7 @@ func cmdStatus(ctx context.Context, args []string) error {
 		logger.Infof("wg: our public key is %s", pub)
 	}
 
-	tun, err := cfg.openTunnel(logger)
+	tun, err := cfg.openTunnel(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -47,7 +49,7 @@ func cmdStatus(ctx context.Context, args []string) error {
 
 	var client *webdav.Client
 	if *probe && cfg.davURL != "" {
-		client, err = cfg.openDAV(tun)
+		client, err = cfg.openDAV(ctx, tun)
 		if err != nil {
 			return err
 		}
@@ -69,7 +71,7 @@ func cmdStatus(ctx context.Context, args []string) error {
 	}
 }
 
-func printTunnelStatus(logger *Logger, tun *wg.Tunnel) error {
+func printTunnelStatus(logger *logs.Logger, tun *wg.Tunnel) error {
 	st, err := tun.Status()
 	if err != nil {
 		return err
@@ -79,17 +81,17 @@ func printTunnelStatus(logger *Logger, tun *wg.Tunnel) error {
 	for _, p := range st.Peers {
 		hs := "never"
 		if age, ok := p.HandshakeAge(); ok {
-			hs = humanDuration(age) + " ago"
+			hs = format.Duration(age) + " ago"
 		}
 		logger.Infof("wg: peer %s via %s, handshake %s, tx %s, rx %s, allowed %v",
-			p.PublicKey, p.Endpoint, hs, humanBytes(p.TxBytes), humanBytes(p.RxBytes), p.AllowedIPs)
+			p.PublicKey, p.Endpoint, hs, format.Bytes(p.TxBytes), format.Bytes(p.RxBytes), p.AllowedIPs)
 	}
 	return nil
 }
 
 // probeRoot lists the remote root once. Failure is reported rather than returned:
 // the tunnel status above is still worth seeing when WebDAV is the broken half.
-func probeRoot(ctx context.Context, logger *Logger, client *webdav.Client) {
+func probeRoot(ctx context.Context, logger *logs.Logger, client *webdav.Client) {
 	start := time.Now()
 	entries, err := client.List(ctx, "")
 	if err != nil {
@@ -105,5 +107,5 @@ func probeRoot(ctx context.Context, logger *Logger, client *webdav.Client) {
 			files++
 		}
 	}
-	logger.Infof("webdav: %s -> %d dirs, %d files in %s", client.BaseURL(), dirs, files, humanDuration(time.Since(start)))
+	logger.Infof("webdav: %s -> %d dirs, %d files in %s", client.BaseURL(), dirs, files, format.Duration(time.Since(start)))
 }

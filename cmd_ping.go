@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"net/netip"
 	"time"
+
+	"blackforestbytes.com/jcc-mirror/format"
+	"blackforestbytes.com/jcc-mirror/logs"
 )
 
 // cmdPing is M0 step 1: an ICMP echo to the publisher's WireGuard address.
@@ -34,8 +37,8 @@ func cmdPing(ctx context.Context, args []string) error {
 		return fmt.Errorf("ping goes through the tunnel by definition; drop -no-tunnel")
 	}
 
-	logger := &Logger{Verbose: cfg.verbose}
-	tun, err := cfg.openTunnel(logger)
+	logger := &logs.Logger{Verbose: cfg.verbose}
+	tun, err := cfg.openTunnel(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -63,7 +66,7 @@ func cmdPing(ctx context.Context, args []string) error {
 			logger.Errorf("ping %s seq %d: %v", addr, i+1, err)
 			continue
 		}
-		logger.Infof("ping %s seq %d: %s", addr, i+1, humanDuration(rtt))
+		logger.Infof("ping %s seq %d: %s", addr, i+1, format.Duration(rtt))
 		rtts = append(rtts, rtt)
 		total += rtt
 		lo = min(lo, rtt)
@@ -74,7 +77,7 @@ func cmdPing(ctx context.Context, args []string) error {
 	logger.Infof("--- %s ping statistics ---", addr)
 	logger.Infof("%d sent, %d received, %d%% loss", sent, len(rtts), 100*(sent-len(rtts))/max(sent, 1))
 	if len(rtts) > 0 {
-		logger.Infof("rtt min/avg/max = %s / %s / %s", humanDuration(lo), humanDuration(total/time.Duration(len(rtts))), humanDuration(hi))
+		logger.Infof("rtt min/avg/max = %s / %s / %s", format.Duration(lo), format.Duration(total/time.Duration(len(rtts))), format.Duration(hi))
 	}
 
 	if len(rtts) == 0 {

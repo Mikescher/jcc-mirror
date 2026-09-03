@@ -1,4 +1,7 @@
-package main
+// Package format renders the numbers this project deals in - sizes spanning a
+// lock file and thirty terabytes, rates quoted against a line speed, entry counts
+// compared by eye between runs.
+package format
 
 import (
 	"fmt"
@@ -7,9 +10,8 @@ import (
 	"time"
 )
 
-// humanBytes formats a byte count with a binary prefix. Sizes here span a lock
-// file and thirty terabytes, so a raw number is unreadable in both directions.
-func humanBytes(n int64) string {
+// Bytes formats a byte count with a binary prefix.
+func Bytes(n int64) string {
 	const unit = 1024
 	if n < unit {
 		return fmt.Sprintf("%d B", n)
@@ -22,9 +24,9 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.2f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
-// humanRate formats a transfer rate, in bits per second because that is the unit
-// the line speed and the bandwidth schedule are quoted in.
-func humanRate(bytes int64, d time.Duration) string {
+// Rate formats a transfer rate, in bits per second because that is the unit the
+// line speed and the bandwidth schedule are quoted in.
+func Rate(bytes int64, d time.Duration) string {
 	if d <= 0 {
 		return "-"
 	}
@@ -41,8 +43,8 @@ func humanRate(bytes int64, d time.Duration) string {
 	}
 }
 
-// humanDuration rounds a duration to something readable at its own scale.
-func humanDuration(d time.Duration) string {
+// Duration rounds a duration to something readable at its own scale.
+func Duration(d time.Duration) string {
 	switch {
 	case d >= time.Hour:
 		return d.Round(time.Second).String()
@@ -55,9 +57,9 @@ func humanDuration(d time.Duration) string {
 	}
 }
 
-// comma groups a number in thousands. Entry counts in this project run into the
+// Comma groups a number in thousands. Entry counts in this project run into the
 // hundreds of thousands and are compared by eye between runs.
-func comma(n int64) string {
+func Comma(n int64) string {
 	s := strconv.FormatInt(n, 10)
 	neg := strings.HasPrefix(s, "-")
 	s = strings.TrimPrefix(s, "-")

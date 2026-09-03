@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"blackforestbytes.com/jcc-mirror/format"
+	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/webdav"
 )
 
@@ -42,8 +44,8 @@ func cmdGet(ctx context.Context, args []string) error {
 		return fmt.Errorf("-hash with -chunks > 1 needs -out: the chunks arrive out of order and there is nothing to hash in sequence")
 	}
 
-	logger := &Logger{Verbose: cfg.verbose}
-	client, _, closeFn, err := cfg.openBoth(logger)
+	logger := &logs.Logger{Verbose: cfg.verbose}
+	client, _, closeFn, err := cfg.openBoth(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -53,7 +55,7 @@ func cmdGet(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	logger.Infof("get: %s is %s, mtime %s", entry.Path, humanBytes(entry.Size), entry.MTime.Format(time.RFC3339))
+	logger.Infof("get: %s is %s, mtime %s", entry.Path, format.Bytes(entry.Size), entry.MTime.Format(time.RFC3339))
 
 	span := *length
 	if span <= 0 {

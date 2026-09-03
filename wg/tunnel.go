@@ -7,6 +7,7 @@ package wg
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -173,6 +174,20 @@ func (t *Tunnel) WaitHandshake(ctx context.Context) error {
 		case <-tick.C:
 		}
 	}
+}
+
+// GenerateKey makes a new base64 private key, the equivalent of `wg genkey`. The
+// clamping is the curve25519 one WireGuard applies to every private key; doing it
+// here keeps the stored key identical to the one the device will use.
+func GenerateKey() (string, error) {
+	var k [32]byte
+	if _, err := rand.Read(k[:]); err != nil {
+		return "", fmt.Errorf("generate private key: %w", err)
+	}
+	k[0] &= 248
+	k[31] &= 127
+	k[31] |= 64
+	return base64.StdEncoding.EncodeToString(k[:]), nil
 }
 
 // PublicKey derives the base64 public key belonging to a base64 private key. It

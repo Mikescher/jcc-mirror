@@ -1,21 +1,22 @@
-# M0 spike. The commands are one-shot and take every setting as a flag, so the
-# usual way to use this is
-#   docker compose run --rm spike ping -wg-key ... -target ...
-# Settings are passed per invocation; from M1 on they live in sqlite under /data
-# and are entered in the dashboard.
+# The dashboard answers on :8080 before anything is configured, so a first start
+# needs nothing but this file. The bearer token is printed to the container log.
 services:
-  spike:
-    image: mikescher/jcc-mirror:latest
+  jcc-mirror:
+    image: registry.blackforestbytes.com/mikescher/jcc-mirror:latest
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    restart: "no"
-    # Owns the walk manifests and any -out file. On the Synology this wants to be
-    # a uid/gid that can write the share, or the last rename of every transfer
-    # fails at the last possible moment.
-    user: "1026:100"
-    volumes:
-      - ./data:/data
+    restart: unless-stopped
     ports:
-      - "8080:8080"   # only needed for `serve -lan :8080`; the tunnel listener needs no mapping
-    command: ["help"]
+      - "8080:8080"   # the LAN dashboard; the one inside the tunnel needs no mapping
+    volumes:
+      - ./data:/data                # sqlite state, the WireGuard identity, DB backups
+      - /volume1/media:/mnt/media
+      - /volume1/clipcorn:/mnt/clipcorn
+    # The uid/gid that owns the media share. Docker applies it before the process
+    # starts, so there is no privilege-dropping entrypoint and no PUID/PGID - and
+    # without it every transfer fails at its last syscall, the rename.
+    user: "1026:100"
+
+    # The diagnostics run in the same image and read the same settings:
+    #   docker compose run --rm jcc-mirror walk -data /data -workers 8

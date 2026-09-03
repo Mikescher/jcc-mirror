@@ -8,6 +8,8 @@ import (
 	"io"
 	"time"
 
+	"blackforestbytes.com/jcc-mirror/format"
+	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/webdav"
 )
 
@@ -31,8 +33,8 @@ func cmdResume(ctx context.Context, args []string) error {
 		return fmt.Errorf("missing -path")
 	}
 
-	logger := &Logger{Verbose: cfg.verbose}
-	client, _, closeFn, err := cfg.openBoth(logger)
+	logger := &logs.Logger{Verbose: cfg.verbose}
+	client, _, closeFn, err := cfg.openBoth(ctx, logger)
 	if err != nil {
 		return err
 	}
@@ -54,7 +56,7 @@ func cmdResume(ctx context.Context, args []string) error {
 	if cut <= 0 || cut >= span {
 		cut = span / 2
 	}
-	logger.Infof("resume: %s, testing [%d, %d), aborting after %s", entry.Path, *offset, *offset+span, humanBytes(cut))
+	logger.Infof("resume: %s, testing [%d, %d), aborting after %s", entry.Path, *offset, *offset+span, format.Bytes(cut))
 
 	// Reference: the same region in one uninterrupted stream.
 	start := time.Now()
@@ -78,7 +80,7 @@ func cmdResume(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("first leg: %w", err)
 	}
-	logger.Infof("resume: dropped the connection after %s", humanBytes(n))
+	logger.Infof("resume: dropped the connection after %s", format.Bytes(n))
 
 	second, _, err := client.OpenRange(ctx, *path, *offset+n, span-n)
 	if err != nil {
