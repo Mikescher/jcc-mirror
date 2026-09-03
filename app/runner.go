@@ -17,10 +17,11 @@ import (
 // get to, and the bootstrap adoption in particular has to happen exactly once,
 // before anything else works.
 const (
-	RunPlan  = "plan"
-	RunScan  = "scan"
-	RunAdopt = "adopt"
-	RunSync  = "sync"
+	RunPlan   = "plan"
+	RunScan   = "scan"
+	RunAdopt  = "adopt"
+	RunSync   = "sync"
+	RunDelete = "delete"
 )
 
 // runHistory is how many finished runs the page keeps. They live in memory only:
@@ -97,7 +98,7 @@ func (a *App) StartRun(ctx context.Context, kind string, pairID int64) (Run, err
 // boundary is not an answer to that.
 func (a *App) startRun(ctx context.Context, kind string, pair store.Pair, auto bool) (Run, error) {
 	switch kind {
-	case RunPlan, RunScan, RunAdopt, RunSync:
+	case RunPlan, RunScan, RunAdopt, RunSync, RunDelete:
 	default:
 		return Run{}, fmt.Errorf("unknown operation %q", kind)
 	}
@@ -199,7 +200,7 @@ func (a *App) execute(ctx context.Context, eng *engine.Engine, pair store.Pair, 
 	}
 }
 
-// runOperation is the switch the four buttons come down to. The engine writes
+// runOperation is the switch the buttons come down to. The engine writes
 // the durable record itself, so all that is wanted back is a line to read.
 func runOperation(ctx context.Context, eng *engine.Engine, pair store.Pair, kind string) (string, *engine.Plan, error) {
 	switch kind {
@@ -234,24 +235,70 @@ func runOperation(ctx context.Context, eng *engine.Engine, pair store.Pair, kind
 		if err != nil {
 			return "", nil, err
 		}
-		res, err := eng.Sync(ctx, pair)
+		res, syncErr := eng.Sync(ctx, pair)
 		summary := fmt.Sprintf("%s queued; %s files transferred (%s), %s already here, %s failed, %s still queued",
 			format.Comma(int64(p.Queued)), format.Comma(int64(res.Files)), format.Bytes(res.Bytes),
 			format.Comma(int64(res.InPlace)), format.Comma(int64(res.Failed)), format.Comma(res.Pending))
-		return summary, nil, err
+		if syncErr != nil {
+			return summary, nil, syncErr
+		}
+
+		// The deletion phase, and only after a sync that finished: the tree shrinks
+		// once the additions have landed, never before (DESIGN.md §2.5).
+		reaped, err := eng.Reap(ctx, pair)
+		return summary + "; " + reapSummary(reaped), nil, err
+
+	case RunDelete:
+		res, err := eng.Reap(ctx, pair)
+		if err != nil {
+			return "", nil, err
+		}
+		return reapSummary(res), nil, nil
 	}
 	return "", nil, fmt.Errorf("unknown operation %q", kind)
 }
 
 func planSummary(p engine.Plan) string {
-	out := fmt.Sprintf("%s to add (%s), %s to replace (%s), %s vanished (%s, never deleted before M4)",
+	out := fmt.Sprintf("%s to add (%s), %s to replace (%s), %s vanished (%s, %s)",
 		format.Comma(int64(p.Add)), format.Bytes(p.AddBytes),
 		format.Comma(int64(p.Replace)), format.Bytes(p.ReplaceBytes),
-		format.Comma(int64(p.Vanished)), format.Bytes(p.VanishedBytes))
+		format.Comma(int64(p.Vanished)), format.Bytes(p.VanishedBytes), vanishedFate(p))
 	if p.Shortfall > 0 {
 		out += fmt.Sprintf(" — and it does not fit: %s short of the free-space reserve", format.Bytes(p.Shortfall))
 	}
 	return out
+}
+
+// vanishedFate is what a sync would do with the files the publisher no longer
+// has, in the few words a summary line has room for.
+func vanishedFate(p engine.Plan) string {
+	switch {
+	case p.Mode != store.ModeMirror:
+		return "kept: the pair is additive"
+	case p.Vanished == 0:
+		return "nothing to delete"
+	case p.Guard != "" && !p.Approved:
+		return "held for approval: " + p.Guard
+	default:
+		return "to be quarantined"
+	}
+}
+
+// reapSummary is the deletion phase in one line.
+func reapSummary(r engine.ReapResult) string {
+	switch {
+	case r.Blocked != nil:
+		return fmt.Sprintf("deletion of %s file(s) is waiting for approval: %s",
+			format.Comma(r.Blocked.Files), r.Blocked.Reason)
+	case r.Skipped != "":
+		return "nothing deleted — " + r.Skipped
+	default:
+		out := fmt.Sprintf("%s file(s) quarantined (%s)", format.Comma(int64(r.Deleted)), format.Bytes(r.Bytes))
+		if r.Failed > 0 {
+			out += fmt.Sprintf(", %s could not be moved", format.Comma(int64(r.Failed)))
+		}
+		return out
+	}
 }
 
 // CancelRun stops whatever is running, and records reason as what the run says

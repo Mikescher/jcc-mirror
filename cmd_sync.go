@@ -29,6 +29,7 @@ func cmdSync(ctx context.Context, args []string) error {
 	fs, cfg := newFlagSet("sync")
 	ref := fs.String("pair", "", "the pair to transfer, by name or id")
 	planOnly := fs.Bool("plan-only", false, "print what would happen and stop: nothing is queued and no byte is moved")
+	noDelete := fs.Bool("no-delete", false, "transfer only, and leave the deletion phase of a mirror pair for later")
 	progress := fs.Duration("progress", 5*time.Second, "how often to report where the transfer is, 0 to disable")
 	fs.StringVar(&cfg.limit, "limit", "", "bandwidth cap, e.g. 5MiB or off; the schedule's current cap is used when this is left out")
 	if err := fs.Parse(args); err != nil {
@@ -82,7 +83,15 @@ func cmdSync(ctx context.Context, args []string) error {
 	if res.Failed > 0 {
 		return fmt.Errorf("%s file(s) failed for good; `jcc-mirror jobs -pair %s -state failed` says why", format.Comma(int64(res.Failed)), pair.Name)
 	}
-	return nil
+
+	// Only now, and only because the transfers all landed: the tree shrinks after
+	// it has grown, never during (DESIGN.md §2.5).
+	if *noDelete {
+		return nil
+	}
+	reaped, reapErr := eng.Reap(ctx, pair)
+	printReap(pair, reaped)
+	return reapErr
 }
 
 // reportSync prints where the run is every interval until the returned function

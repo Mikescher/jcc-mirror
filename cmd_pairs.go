@@ -108,7 +108,7 @@ func printPairState(ctx context.Context, st *store.Store, p store.Pair) error {
 		fmt.Printf("  excludes       %s\n", strings.Join(p.Excludes, ", "))
 	}
 	if p.DeleteGuard > 0 {
-		fmt.Printf("  delete guard   %s files (M4)\n", format.Comma(int64(p.DeleteGuard)))
+		fmt.Printf("  delete guard   %s files before a deletion waits for approval\n", format.Comma(int64(p.DeleteGuard)))
 	}
 
 	if scanned && scan.FinishedAt != nil {
@@ -293,9 +293,9 @@ func pairFlags(fs *flag.FlagSet) (*store.Pair, *bool) {
 	fs.StringVar(&p.Type, "type", store.PairRaw, "\"raw\", or \"jcc\" for the ClipCornDB directory, which grows its lock gate in M5")
 	fs.StringVar(&p.RemotePath, "remote", "", "directory on the publisher's share, relative to the WebDAV base URL; empty means its root")
 	fs.StringVar(&p.LocalPath, "local", "", "absolute directory here that the pair mirrors into")
-	fs.StringVar(&p.Mode, "mode", store.ModeAdditive, "\"additive\" or \"mirror\"; mirror deletes nothing until M4 brings the guards with it")
+	fs.StringVar(&p.Mode, "mode", store.ModeAdditive, "\"additive\" or \"mirror\"; a mirror pair quarantines what the publisher drops, behind the guards")
 	fs.IntVar(&p.Priority, "priority", 100, "lower runs first")
-	fs.IntVar(&p.DeleteGuard, "guard", 100, "M4: refuse a plan deleting more than this many files, and ask first; 0 removes the limit")
+	fs.IntVar(&p.DeleteGuard, "guard", 100, "hold a deletion of more than this many files until it is approved; 0 removes the count limit, leaving the percentage threshold")
 	enabled := fs.Bool("enabled", true, "whether the pair is mirrored at all")
 
 	fs.Var(&listFlag{dst: &p.Includes}, "include", "glob a path must match to be mirrored; repeat the flag, or separate several with commas")

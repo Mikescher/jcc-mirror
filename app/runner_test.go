@@ -83,6 +83,23 @@ func (m *mirror) write(t *testing.T, rel string, size int) []byte {
 	return body
 }
 
+// updatePair changes the pair through the same endpoint the form posts to, so a
+// test cannot set a field the dashboard cannot.
+func (m *mirror) updatePair(t *testing.T, form url.Values) {
+	t.Helper()
+
+	form.Set("id", strconv.FormatInt(m.pair.ID, 10))
+	if rec := postForm(t, m.h, "/api/pairs/update", m.token, form); rec.Code != http.StatusOK && rec.Code != http.StatusSeeOther {
+		t.Fatalf("update pair: %d %s", rec.Code, rec.Body)
+	}
+
+	pair, err := m.app.store.PairByID(context.Background(), m.pair.ID)
+	if err != nil {
+		t.Fatalf("reload pair: %v", err)
+	}
+	m.pair = pair
+}
+
 // run starts an operation and waits for it to finish, which is what an operator
 // does by watching the page refresh itself.
 func (m *mirror) run(t *testing.T, kind string) Run {
@@ -297,5 +314,69 @@ func TestSetupPageRefreshesWhileBusy(t *testing.T) {
 	}
 	if !strings.Contains(body, "Stop") {
 		t.Error("a running operation cannot be stopped from the page")
+	}
+}
+
+// TestDashboardApprovesADeletion is §2.5 from the operator's side: a mirror pair
+// that wants to delete more than its guard allows stops, says so on the page, and
+// goes ahead only once someone has pressed the button.
+func TestDashboardApprovesADeletion(t *testing.T) {
+	m := newMirror(t)
+	m.write(t, "Filme/gone.mkv", 2048)
+	m.write(t, "Filme/stays.mkv", 1024)
+
+	// No per-pair count limit at all, so what holds this back is the stored 10%
+	// threshold: one of two files is half the pair.
+	m.updatePair(t, url.Values{"mode": {store.ModeMirror}, "deleteGuard": {"0"}})
+	m.run(t, RunScan)
+	if sync := m.run(t, RunSync); sync.Error != "" {
+		t.Fatalf("sync: %s", sync.Error)
+	}
+
+	if err := os.Remove(filepath.Join(m.src, "Filme", "gone.mkv")); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	m.run(t, RunScan)
+
+	held := m.run(t, RunSync)
+	if held.Error != "" {
+		t.Fatalf("sync: %s", held.Error)
+	}
+	if !strings.Contains(held.Summary, "waiting for approval") {
+		t.Errorf("sync summary = %q, want it to say the deletion is held", held.Summary)
+	}
+	if _, err := os.Stat(filepath.Join(m.dst, "Filme", "gone.mkv")); err != nil {
+		t.Fatalf("the held file is gone from the tree: %v", err)
+	}
+
+	views, err := m.app.PairViews(context.Background())
+	if err != nil {
+		t.Fatalf("pair views: %v", err)
+	}
+	if views[0].Approval == nil || !views[0].Approval.Pending() {
+		t.Fatalf("the page shows %+v, want a pending approval", views[0].Approval)
+	}
+
+	// And it says so where the operator is, not only in the event log: a mirror
+	// that has quietly stopped deleting is the failure this guard trades for.
+	page := do(t, m.h, httptest.NewRequest(http.MethodGet, "/", nil))
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "waiting to be deleted") {
+		t.Errorf("the setup page (%d) does not surface the held deletion", page.Code)
+	}
+
+	form := url.Values{"id": {strconv.FormatInt(m.pair.ID, 10)}, "decision": {store.ApprovalApproved}}
+	if rec := postForm(t, m.h, "/api/pairs/deletions", m.token, form); rec.Code != http.StatusOK && rec.Code != http.StatusSeeOther {
+		t.Fatalf("approve: %d %s", rec.Code, rec.Body)
+	}
+
+	done := m.run(t, RunDelete)
+	if done.Error != "" {
+		t.Fatalf("delete: %s", done.Error)
+	}
+	if _, err := os.Stat(filepath.Join(m.dst, "Filme", "gone.mkv")); err == nil {
+		t.Error("the approved file is still in the tree")
+	}
+	if _, err := os.Stat(filepath.Join(m.dst, "Filme", "stays.mkv")); err != nil {
+		t.Errorf("a file the publisher still has was deleted: %v", err)
 	}
 }

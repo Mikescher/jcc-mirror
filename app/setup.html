@@ -51,6 +51,8 @@
   .scroll { overflow-x: auto; }
   .banner { border-left: 3px solid var(--bad); padding: .6rem .85rem; border-radius: 4px;
             background: color-mix(in srgb, var(--bad) 12%, transparent); }
+  .hold { border-left: 3px solid var(--warn); padding: .6rem .85rem; border-radius: 4px;
+          margin-bottom: .6rem; background: color-mix(in srgb, var(--warn) 12%, transparent); }
   .note { color: var(--muted); font-size: .85rem; }
   button.danger { background: transparent; color: var(--bad); border-color: var(--bad); }
   button:disabled { opacity: .45; cursor: not-allowed; }
@@ -263,20 +265,40 @@
     {{end}}
 
     {{range .Pairs}}
+      {{$pair := .}}
       <div class="pair">
         <h3>{{.Name}}
           {{if not .Enabled}}<span class="pill">disabled</span>{{end}}
           {{if eq .Type "jcc"}}<span class="pill warn">jcc</span>{{end}}
+          {{if eq .Mode "mirror"}}<span class="pill">mirror</span>{{end}}
         </h3>
         <dl>
           <dt>publisher</dt><dd class="mono">{{if .RemotePath}}{{.RemotePath}}{{else}}(the remote root){{end}} — {{comma .RemoteFiles}} files, {{bytes .RemoteBytes}}</dd>
           <dt>here</dt><dd class="mono">{{.LocalPath}} — {{comma .LocalFiles}} files, {{bytes .LocalBytes}}</dd>
           <dt>last scan</dt><dd>{{if .LastScan}}{{clock .LastScan}}{{else}}never — nothing can be planned until one finishes{{end}}</dd>
           <dt>queue</dt><dd>{{comma (index .Queue.Counts "pending")}} pending, {{comma (index .Queue.Counts "failed")}} failed, {{bytes .Queue.PendingBytes}} to go</dd>
+          <dt>mode</dt><dd>{{if eq .Mode "mirror"}}mirror — a file the publisher drops is quarantined here too, above {{comma .DeleteGuard}} files only after approval{{else}}additive — nothing here is ever deleted{{end}}</dd>
           {{if .Space.Total}}<dt>free here</dt><dd>{{bytes .Space.Free}} of {{bytes .Space.Total}} on {{.Space.Path}}</dd>{{end}}
           {{if .Excludes}}<dt>excludes</dt><dd class="mono">{{.ExcludesText}}</dd>{{end}}
           {{if .Includes}}<dt>includes</dt><dd class="mono">{{.IncludesText}}</dd>{{end}}
         </dl>
+
+        {{with .Approval}}
+          {{if .Pending}}
+            <div class="hold">
+              <strong>{{comma .Files}} file(s) are waiting to be deleted</strong>
+              <div class="note">{{.Reason}}. {{bytes .Bytes}} would move to the quarantine under
+                .jccmirror/trash, where a deletion that should not have happened can be moved back
+                until the retention runs out. Nothing has been removed, and nothing will be until
+                this is answered.</div>
+              <form method="post" action="/api/pairs/deletions" class="row" style="margin-top:.5rem">
+                <input type="hidden" name="id" value="{{$pair.ID}}">
+                <button name="decision" value="approved" {{if not $.Authed}}disabled{{end}}>Delete them</button>
+                <button class="ghost" name="decision" value="rejected" {{if not $.Authed}}disabled{{end}}>Keep them</button>
+              </form>
+            </div>
+          {{end}}
+        {{end}}
 
         <form method="post" action="/api/runs" class="row">
           <input type="hidden" name="pair" value="{{.ID}}">
@@ -284,6 +306,9 @@
           <button class="ghost" name="kind" value="plan" {{if $off}}disabled{{end}}>Plan</button>
           <button class="ghost" name="kind" value="scan" {{if $off}}disabled{{end}}>Scan</button>
           <button class="ghost" name="kind" value="adopt" {{if $off}}disabled{{end}}>Adopt</button>
+          {{if eq .Mode "mirror"}}
+            <button class="ghost" name="kind" value="delete" {{if $off}}disabled{{end}}>Delete</button>
+          {{end}}
           <button name="kind" value="sync" {{if $off}}disabled{{end}}>Sync</button>
         </form>
 
@@ -319,7 +344,7 @@
               <label style="margin:0"><span class="name">Mode</span>
                 <select name="mode">
                   <option value="additive" {{if eq .Mode "additive"}}selected{{end}}>additive</option>
-                  <option value="mirror" {{if eq .Mode "mirror"}}selected{{end}}>mirror (deletes from M4)</option>
+                  <option value="mirror" {{if eq .Mode "mirror"}}selected{{end}}>mirror (quarantines what the publisher drops)</option>
                 </select></label>
               <label style="margin:0"><span class="name">Enabled</span>
                 <input type="hidden" name="enabled" value="false">
@@ -388,8 +413,14 @@
             {{end}}
           </table></div>
           {{if .Truncated}}<p class="note">Only the first entries are listed.</p>{{end}}
-          {{if .Vanished}}<p class="note">The {{comma .Vanished}} vanished file(s) are counted and never
-            deleted: this is an additive mirror until M4 brings the deletion guards with it.</p>{{end}}
+          {{if .Vanished}}<p class="note">
+            {{if ne .Mode "mirror"}}The {{comma .Vanished}} vanished file(s) are counted and never deleted:
+              this pair is additive, so the tree here only ever grows.
+            {{else if .Guard}}{{if .Approved}}The {{comma .Vanished}} vanished file(s) have been approved and
+              go to the quarantine on the next sync.
+            {{else}}The {{comma .Vanished}} vanished file(s) are on hold: {{.Guard}}.
+            {{end}}{{else}}The {{comma .Vanished}} vanished file(s) move to the quarantine on the next sync,
+              once the additions have landed.{{end}}</p>{{end}}
         {{end}}
       {{end}}
     {{end}}

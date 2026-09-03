@@ -23,9 +23,10 @@ const (
 	PairJCC = "jcc"
 )
 
-// Pair modes. In additive mode the local tree only ever grows. Mirror mode is
-// accepted here but does not delete anything until M4 brings the guards with it,
-// which is deliberate: run additive-only until the diff is trusted.
+// Pair modes. In additive mode the local tree only ever grows. In mirror mode a
+// file the publisher no longer has is quarantined here too, behind the guards of
+// DESIGN.md §2.5 - which is why additive is the default: run additive-only until
+// the diff is trusted.
 const (
 	ModeAdditive = "additive"
 	ModeMirror   = "mirror"
@@ -45,7 +46,7 @@ type Pair struct {
 	Mode        string    `json:"mode"`
 	Includes    []string  `json:"includes"`
 	Excludes    []string  `json:"excludes"`
-	DeleteGuard int       `json:"deleteGuard"` // M4: refuse a plan deleting more than this many files
+	DeleteGuard int       `json:"deleteGuard"` // deletions above this many files wait for approval; 0 is no count limit
 	Priority    int       `json:"priority"`    // lower runs first
 	Enabled     bool      `json:"enabled"`
 	CreatedAt   time.Time `json:"createdAt"`

@@ -9,8 +9,9 @@ import (
 	"time"
 )
 
-// Job operations. 'delete' exists in the schema from the start but is never
-// queued before M4.
+// Job operations. 'delete' exists in the schema and in a plan, but never in the
+// queue: a deletion is not a transfer with a retry budget, it is a phase that
+// runs after the additions have landed (DESIGN.md §2.5).
 const (
 	OpAdd     = "add"
 	OpReplace = "replace"

@@ -44,9 +44,19 @@ func Rate(bytes int64, d time.Duration) string {
 	}
 }
 
-// Duration rounds a duration to something readable at its own scale.
+// Duration rounds a duration to something readable at its own scale. Go's own
+// rendering stops at hours, which is not a scale this project stops at: a
+// quarantine retention and the ETA of a 30 TB transfer are both counted in days.
 func Duration(d time.Duration) string {
+	const day = 24 * time.Hour
+
 	switch {
+	case d >= day:
+		d = d.Round(time.Hour)
+		if hours := d % day / time.Hour; hours > 0 {
+			return fmt.Sprintf("%dd%dh", d/day, hours)
+		}
+		return fmt.Sprintf("%dd", d/day)
 	case d >= time.Hour:
 		return d.Round(time.Second).String()
 	case d >= time.Minute:

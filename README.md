@@ -4,19 +4,24 @@ One-way replication of a jClipCorn collection from the publisher's NAS to the
 subscriber's Synology. See `DESIGN.md` for the design; this README covers what is
 built so far.
 
-**Status: M3.** It mirrors, on a schedule, at a rate you choose. On top of M1's
-skeleton — sqlite state, a config table with an audit trail, a setup view, the
-`Remote` interface with a WebDAV implementation and a local fake, an event log
-and `/healthz` — and M2's engine — a resumable walk that builds the manifest the
-publisher does not have, a differ, a transfer with ranged GETs, `.part` files,
-verification, an atomic rename and a per-file job queue with retries, plus adopt
-mode for the USB bootstrap — there is now a scheduler: one 7×24 grid that says
-both when bytes may move and how fast, a shared limiter that a window boundary
-adjusts mid-transfer, and a free-space preflight that refuses a plan which
-cannot land.
+**Status: M4.** It mirrors, on a schedule, at a rate you choose, and it can now
+shrink as well as grow. On top of M1's skeleton — sqlite state, a config table
+with an audit trail, a setup view, the `Remote` interface with a WebDAV
+implementation and a local fake, an event log and `/healthz` — M2's engine — a
+resumable walk that builds the manifest the publisher does not have, a differ, a
+transfer with ranged GETs, `.part` files, verification, an atomic rename and a
+per-file job queue with retries, plus adopt mode for the USB bootstrap — and M3's
+scheduler — one 7×24 grid that says both when bytes may move and how fast, a
+shared limiter that a window boundary adjusts mid-transfer, and a free-space
+preflight — there is now deletion, behind every guard of `DESIGN.md` §2.5: mirror
+mode per pair, two thresholds that hold a large deletion for one approval, a
+dated quarantine with a retention instead of an unlink, and the assertion that an
+empty manifest is a publisher who is not there rather than one who deleted
+everything.
 
-It still never deletes anything. Deletion and its guards are M4, the
-`ClipCornDB.db` lock gate is M5, the dashboard is M6 and self-update is M7.
+A pair is additive until it is told otherwise, which is the point: run
+additive-only until the diff is trusted. The `ClipCornDB.db` lock gate is M5, the
+dashboard is M6 and self-update is M7.
 
 ## Running it
 
@@ -64,8 +69,9 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 Two ways in, on the same state: the dashboard and the CLI.
 
 **From the dashboard.** The setup view has a Mirror section: the pairs with how
-far behind each one is, an editor for them, and a Plan / Scan / Adopt / Sync
-button each. A run happens in the background and the page refreshes itself while
+far behind each one is, an editor for them, and a Plan / Scan / Adopt / Delete /
+Sync button each — plus, when a deletion is over a threshold, the two buttons
+that answer it. A run happens in the background and the page refreshes itself while
 one is going, so a sync that takes a day and a half is watchable from a phone.
 One runs at a time — the transfer engine moves one file at a time by design, and
 the scheduler walks the pairs in priority order for the same reason. Stop is
@@ -100,6 +106,9 @@ jcc-mirror plan  -data /data -pair media     # what would a sync do? changes not
 jcc-mirror sync  -data /data -pair media     # do it
 jcc-mirror jobs  -data /data -pair media -state failed
 ```
+
+A `sync` of a mirror pair ends with the deletion phase; `-no-delete` leaves it
+out, and `jcc-mirror delete` runs it on its own.
 
 Once that has been watched for a while, `jcc-mirror schedule` hands the same
 three steps to the daemon; see **The schedule** below.
@@ -160,13 +169,50 @@ Every file is a row in `jobs` with its own state machine and retry budget, which
 is what makes a transfer retriable rather than an in-memory loop that dies with
 the process. Anything a crash left `running` is requeued by the next run.
 
+**The deletion** is a phase of its own, not an operation in the queue, and it
+runs after a sync rather than inside one: the tree only ever shrinks once the
+additions have landed. A pair whose queue still holds work, or holds a file that
+failed for good, does not delete anything at all this time round.
+
+It is opt-in per pair. `-mode additive` — the default — keeps everything; `-mode
+mirror` quarantines what the publisher dropped. Four guards stand in front of it:
+
+- **Two thresholds.** A deletion of more than the pair's `-guard` files, or of
+  more than `delete.max_percent` of what the pair holds, is not carried out. It
+  becomes one request per pair, which the setup view surfaces with a button and
+  `jcc-mirror delete -approve` answers from a shell. Over the line, *nothing*
+  goes — not the first N and then a stop.
+- **An approval covers what was looked at.** It is bound to the walk it was
+  computed from and to the count at that moment, so it can authorise a set that
+  shrank since, never one that grew, and never one from a later walk. A scan in
+  between makes it stale on purpose.
+- **A quarantine, not an unlink.** A deleted file is renamed into
+  `<local>/.jccmirror/trash/<date>/`, keeping its relative path — the same
+  filesystem, so a 40 GB file costs a rename and no space. It stays there for
+  `delete.retention` (a week by default), and `jcc-mirror trash` lists it, puts
+  one back, or empties what has expired. A sync does that sweep on its own.
+- **A non-empty manifest.** A pair whose manifest holds no files at all is a
+  publisher who is not there, not one who deleted 30 TB, and is refused — the
+  same rule the scanner applies to a walk that finds nothing.
+
+```bash
+jcc-mirror plan   -data /data -pair media          # says what would go, and what holds it
+jcc-mirror delete -data /data -pair media          # runs the phase; may raise a request
+jcc-mirror delete -data /data -pair media -approve # allows exactly that set, then runs
+jcc-mirror trash  -data /data -pair media          # what is held, and until when
+jcc-mirror trash  -data /data -pair media -restore "Filme/x.mkv"
+```
+
+A restored file is yours: no row of local truth is written for it, so the next
+mirror run leaves it alone rather than quarantining it again.
+
 **What is still not built**, so it does not come as a surprise:
 
 | | |
 |---|---|
-| **Nothing is ever deleted.** | Files the publisher no longer has are counted and reported by `plan`, and that is all. Mirror mode, the deletion threshold, the quarantine and the guards are M4 — deliberately after the diff has been watched for a while. |
+| **An additive pair is still never shrunk.** | `additive` is the default and means what it says: files the publisher no longer has are counted by `plan` and kept. Deletion is opt-in per pair, with `-mode mirror`. |
 | **A `jcc` pair refuses to transfer.** | Its hard exclusions and the lock gate on `ClipCornDB.db` are M5, and without them a sync would overwrite this side's own `ClipCornUserData.db` and `ClipCornHistory.db` — both per-user, and neither is ever synced. Scanning one is allowed; it is read-only, and the scheduler does scan them. |
-| **No real dashboard.** | The setup view can now start and watch the four operations, edit the pairs and draw the schedule, which is enough to run the mirror without a shell. The six views, the SSE stream, the bandwidth charts and the notifications are still M6. |
+| **No real dashboard.** | The setup view can now start and watch the operations, answer a held deletion, edit the pairs and draw the schedule, which is enough to run the mirror without a shell. The six views, the SSE stream, the bandwidth charts and the notifications are still M6. |
 
 ## The schedule
 
@@ -288,7 +334,8 @@ The engine's settings live in the same table and appear in the same setup view,
 because the key registry is what the form is generated from: the two grids, the
 unattended switch and the scan interval under **Schedule**, walk concurrency and
 the mtime tolerance under **Scan**, and streams per file, chunk size, attempts,
-retry backoff, post-copy hashing and the free-space reserve under **Transfer**. The pairs themselves are
+retry backoff, post-copy hashing and the free-space reserve under **Transfer**,
+and the deletion threshold and quarantine retention under **Deletion**. The pairs themselves are
 the exception — they are rows of their own, edited with `jcc-mirror pairs` until
 the dashboard grows an editor in M6.
 
@@ -338,11 +385,13 @@ app/           the running daemon: tunnel lifecycle, scheduler, dashboard,
 schedule/      the 7x24 grid: parsing, rendering, and when the answer next
                changes
 engine/        the mirror: scan.go walks, diff.go plans, transfer.go moves
-               bytes, adopt.go recognises the USB bootstrap, filter.go is the
-               path globbing, limiter.go is the shared bandwidth cap and
+               bytes, adopt.go recognises the USB bootstrap, reap.go deletes
+               behind the guards and trash.go is the quarantine, filter.go is
+               the path globbing, limiter.go is the shared bandwidth cap and
                space.go the free-space preflight
 store/         sqlite state: migrations, config with audit, events, and the
-               engine's tables - pairs, manifest, scans, files, jobs, changes
+               engine's tables - pairs, manifest, scans, files, jobs, changes,
+               delete_approvals
 wg/            wireguard-go + netstack: the tunnel, ping and device status
 webdav/        PROPFIND, HEAD and ranged GET; propfind.go is the pure decoder
 remote/        the three-method interface the engine talks to, plus the ranged

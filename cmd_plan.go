@@ -58,7 +58,7 @@ func printPlan(p engine.Plan) error {
 	fmt.Printf("\nplan for %q, against the walk of %s\n", p.PairName, p.ScannedAt.Format("2006-01-02 15:04:05"))
 	fmt.Printf("  add            %s files, %s\n", format.Comma(int64(p.Add)), format.Bytes(p.AddBytes))
 	fmt.Printf("  replace        %s files, %s\n", format.Comma(int64(p.Replace)), format.Bytes(p.ReplaceBytes))
-	fmt.Printf("  vanished       %s files, %s\n", format.Comma(int64(p.Vanished)), format.Bytes(p.VanishedBytes))
+	fmt.Printf("  vanished       %s files, %s (%s)\n", format.Comma(int64(p.Vanished)), format.Bytes(p.VanishedBytes), p.Mode)
 	if p.Excluded > 0 {
 		fmt.Printf("  excluded       %s differences dropped by the pair's globs\n", format.Comma(int64(p.Excluded)))
 	}
@@ -92,8 +92,18 @@ func printPlan(p engine.Plan) error {
 	}
 	if p.Vanished > 0 {
 		// The count is the point of it: a diff that has gone wrong shows up as a
-		// vanished count in the thousands long before M4 could act on one.
-		fmt.Printf("=> the %s vanished file(s) are counted and will not be deleted: M2 is additive\n   and deletion is M4, behind the guards of DESIGN.md §2.5.\n", format.Comma(int64(p.Vanished)))
+		// vanished count in the thousands long before anything acts on one.
+		switch {
+		case p.Mode != store.ModeMirror:
+			fmt.Printf("=> the %s vanished file(s) are counted and will not be deleted: this pair is\n   additive, so the tree here only ever grows.\n", format.Comma(int64(p.Vanished)))
+		case p.Guard != "" && !p.Approved:
+			fmt.Printf("=> the %s vanished file(s) are on hold: %s.\n   `jcc-mirror delete -pair %s -approve` allows exactly this set.\n",
+				format.Comma(int64(p.Vanished)), p.Guard, p.PairName)
+		case p.Guard != "":
+			fmt.Printf("=> the %s vanished file(s) have been approved and go to the quarantine on the\n   next sync.\n", format.Comma(int64(p.Vanished)))
+		default:
+			fmt.Printf("=> the %s vanished file(s) move to .jccmirror/trash on the next sync, once the\n   additions have landed, and are removed for good when the retention runs out.\n", format.Comma(int64(p.Vanished)))
+		}
 	}
 	if p.Transfers() > 0 && p.Shortfall == 0 {
 		fmt.Printf("=> `jcc-mirror sync -pair %s` queues and transfers this.\n", p.PairName)

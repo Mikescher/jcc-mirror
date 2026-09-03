@@ -31,10 +31,16 @@ type Plan struct {
 	Replace      int   `json:"replace"`
 	ReplaceBytes int64 `json:"replaceBytes"`
 
-	// Vanished is what we hold and the publisher no longer has. M2 counts it and
-	// stops there; deleting is M4, behind the guards of DESIGN.md §2.5.
-	Vanished      int   `json:"vanished"`
-	VanishedBytes int64 `json:"vanishedBytes"`
+	// Vanished is what we hold and the publisher no longer has. What becomes of it
+	// is the pair's Mode: an additive pair keeps it, a mirror pair quarantines it
+	// once the additions have landed. Guard is why a person has to look first, when
+	// the count is over a threshold, and Approved says one already has
+	// (DESIGN.md §2.5).
+	Vanished      int    `json:"vanished"`
+	VanishedBytes int64  `json:"vanishedBytes"`
+	Mode          string `json:"mode"`
+	Guard         string `json:"guard,omitempty"`
+	Approved      bool   `json:"approved,omitempty"`
 
 	// Excluded counts the differences the pair's globs dropped, so a plan that is
 	// unexpectedly small says why.
@@ -88,8 +94,9 @@ func (e *Engine) Enqueue(ctx context.Context, pair store.Pair) (Plan, error) {
 	var queued int
 	p, err := e.plan(ctx, pair, 0, func(entry PlanEntry) error {
 		if entry.Op == store.OpDelete {
-			// Counted by the plan, never queued: the tree only ever grows until the
-			// guards of DESIGN.md §2.5 exist to shrink it safely.
+			// Counted by the plan, never queued. A deletion is not a transfer with a
+			// retry budget: it is the phase Reap runs once the whole queue has landed,
+			// behind the guards of DESIGN.md §2.5.
 			return nil
 		}
 		if _, err := e.store.EnqueueJob(ctx, store.Job{
@@ -123,7 +130,7 @@ func (e *Engine) plan(ctx context.Context, pair store.Pair, sample int, fn func(
 		return Plan{}, fmt.Errorf("pair %q: %w", pair.Name, errNoManifest)
 	}
 
-	p := Plan{PairID: pair.ID, PairName: pair.Name}
+	p := Plan{PairID: pair.ID, PairName: pair.Name, Mode: pair.Mode}
 	if scan.FinishedAt != nil {
 		p.ScannedAt = *scan.FinishedAt
 	}
@@ -185,6 +192,19 @@ func (e *Engine) plan(ctx context.Context, pair store.Pair, sample int, fn func(
 	})
 	if err != nil {
 		return Plan{}, err
+	}
+
+	// What a mirror pair would do with the vanished files, before it does it: a
+	// plan that trips a guard is the one worth reading, and reading it here costs
+	// nothing while reading it after the fact costs a run.
+	if p.Mode == store.ModeMirror && p.Vanished > 0 {
+		if p.Guard = guardTrip(pair, e.opts.DeletePercent, int64(p.Vanished), p.LocalFiles); p.Guard != "" {
+			approval, ok, err := e.store.LatestApproval(ctx, pair.ID)
+			if err != nil {
+				return Plan{}, err
+			}
+			p.Approved = ok && approval.Covers(scan.ID, int64(p.Vanished))
+		}
 	}
 
 	// A replace stages its .part beside the file it replaces, so what it needs is

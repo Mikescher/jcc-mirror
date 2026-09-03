@@ -54,10 +54,9 @@ func (s *Store) ChangedFiles(ctx context.Context, pairID int64, tolerance time.D
 	return rows.Err()
 }
 
-// VanishedFiles streams the files we hold that the last walk did not find. In M2
-// they are only counted and reported; deleting them is M4, behind the guards -
-// the point of running additive-only first is that this list gets read by a human
-// for a while before anything acts on it (DESIGN.md §2.5).
+// VanishedFiles streams the files we hold that the last walk did not find. It is
+// the read-only half: a plan counts them and reports them, and only the pass that
+// acts on them needs VanishedPage (DESIGN.md §2.5).
 func (s *Store) VanishedFiles(ctx context.Context, pairID int64, fn func(path string, size int64) error) error {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT f.relpath, f.size
@@ -83,6 +82,45 @@ func (s *Store) VanishedFiles(ctx context.Context, pairID int64, fn func(path st
 		}
 	}
 	return rows.Err()
+}
+
+// VanishedFile is one row of that list.
+type VanishedFile struct {
+	Path string
+	Size int64
+}
+
+// VanishedPage returns the same list one page at a time, in path order, starting
+// after the path the last page ended on.
+//
+// The deletion phase pages rather than streams because it deletes the rows it is
+// reading: a cursor left open over a table being written under it is not a thing
+// to build a deletion on. The cursor is a path rather than an offset, so the rows
+// that went do not shift the rows that are left.
+func (s *Store) VanishedPage(ctx context.Context, pairID int64, after string, limit int) ([]VanishedFile, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT f.relpath, f.size
+		 FROM files f
+		 LEFT JOIN manifest m ON m.pair_id = f.pair_id AND m.relpath = f.relpath AND m.is_dir = 0
+		 WHERE f.pair_id = ? AND m.relpath IS NULL AND f.relpath > ?
+		 ORDER BY f.relpath LIMIT ?`, pairID, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read vanished files of pair %d: %w", pairID, err)
+	}
+	defer rows.Close()
+
+	out := make([]VanishedFile, 0, limit)
+	for rows.Next() {
+		var v VanishedFile
+		if err := rows.Scan(&v.Path, &v.Size); err != nil {
+			return nil, fmt.Errorf("scan vanished file: %w", err)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 // RemoteFiles streams the last walk itself, which is what adoption matches the

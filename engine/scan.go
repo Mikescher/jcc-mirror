@@ -83,8 +83,8 @@ func (e *Engine) Scan(ctx context.Context, pair store.Pair, resume bool) (ScanRe
 	// It catches a share that was already gone when the walk started, not one that
 	// goes away halfway through: that walk still finds files, completes, and
 	// sweeps everything it did not re-see. The guard for the partial case is the
-	// deletion threshold of §2.5, which arrives with M4 - until then the sweep
-	// only ever costs a re-scan, because nothing acts on what it removed.
+	// deletion threshold of §2.5, which stops a sweep that large from being acted
+	// on until a person has looked at it.
 	case counted.Files == 0:
 		state = store.ScanFailed
 		msg = "the walk found no files at all - the remote root is empty or the share is not mounted, which is an error rather than a deletion"

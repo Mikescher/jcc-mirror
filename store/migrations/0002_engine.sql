@@ -73,7 +73,8 @@ CREATE TABLE jobs (
     pair_id         INTEGER NOT NULL REFERENCES pairs (id) ON DELETE CASCADE,
     relpath         TEXT    NOT NULL,
     -- 'delete' is accepted here from the start: adding a value to a CHECK later
-    -- means rebuilding the table. M2 never queues one - deletion is M4.
+    -- means rebuilding the table. Nothing ever queues one - a deletion is a phase
+    -- of its own, not a transfer with a retry budget.
     op              TEXT    NOT NULL CHECK (op IN ('add', 'replace', 'delete')),
     bytes_total     INTEGER NOT NULL,
     bytes_done      INTEGER NOT NULL DEFAULT 0,

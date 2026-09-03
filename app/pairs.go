@@ -26,6 +26,12 @@ type PairView struct {
 	Queue       store.JobQueue
 	LastScan    *time.Time
 	Space       engine.Space
+
+	// Approval is the deletion this pair is waiting to be allowed to make. It is
+	// on the page rather than in an inbox because a mirror that has stopped
+	// deleting is otherwise invisible until someone reads the event log
+	// (DESIGN.md §2.5).
+	Approval *store.DeleteApproval
 }
 
 // IncludesText and ExcludesText render the globs for the form field they are
@@ -71,6 +77,11 @@ func (a *App) PairViews(ctx context.Context) ([]PairView, error) {
 			return nil, err
 		} else if ok {
 			v.LastScan = sc.FinishedAt
+		}
+		if ap, ok, err := a.store.OpenApproval(ctx, p.ID); err != nil {
+			return nil, err
+		} else if ok {
+			v.Approval = &ap
 		}
 		out = append(out, v)
 	}

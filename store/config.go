@@ -48,6 +48,9 @@ const (
 	KeyHashAfterCopy  = "transfer.hash"
 	KeyReserve        = "transfer.reserve"
 
+	KeyDeletePercent   = "delete.max_percent"
+	KeyDeleteRetention = "delete.retention"
+
 	KeyDashboardToken = "dashboard.token"
 	KeyTimezone       = "general.timezone"
 )
@@ -203,6 +206,19 @@ var keyDefs = []KeyDef{
 		Help:     "How much room to leave on the destination volume. A sync whose completion would eat into it is refused before it starts, and again before every file - a plan can run for days. A full volume on a Synology is its own kind of bad day.",
 		Default:  "50GiB",
 		Validate: validateSize,
+	},
+
+	{
+		Name: KeyDeletePercent, Group: "Deletion", Label: "Deletion threshold",
+		Help:     "The share of a mirror pair that may vanish before a deletion needs a person to approve it. It is the guard against a diff that has gone wrong: a publisher who renames a directory can retire thousands of files in one walk. 0 turns the percentage off and leaves only the per-pair file count.",
+		Default:  "10",
+		Validate: validatePercent,
+	},
+	{
+		Name: KeyDeleteRetention, Group: "Deletion", Label: "Quarantine retention",
+		Help:     "How long deleted files stay in .jccmirror/trash before they are really gone. Nothing is ever unlinked directly, so a deletion that should not have happened is a move back for this long.",
+		Default:  "168h",
+		Validate: validateDuration,
 	},
 
 	{
@@ -575,6 +591,17 @@ func validatePositiveInt(s string) error {
 	}
 	if n < 1 {
 		return errors.New("must be at least 1")
+	}
+	return nil
+}
+
+func validatePercent(s string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return fmt.Errorf("not a number: %w", err)
+	}
+	if n < 0 || n > 100 {
+		return errors.New("must be between 0 and 100")
 	}
 	return nil
 }

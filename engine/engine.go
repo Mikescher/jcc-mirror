@@ -39,6 +39,13 @@ type Options struct {
 	HashAfterCopy  bool
 	Reserve        int64 // free space to leave on the destination volume (S4)
 
+	// The deletion guards of DESIGN.md §2.5. DeletePercent is the share of a pair
+	// that may vanish before a person has to approve it; TrashRetention is how long
+	// a quarantined file is kept before it is really gone. Zero turns the
+	// percentage guard off - the per-pair file count still applies.
+	DeletePercent  int
+	TrashRetention time.Duration
+
 	// Limiter is the bandwidth cap, and is shared rather than owned: the
 	// scheduler holds the same one and changes it live at a window boundary. A
 	// nil one is no cap at all.
@@ -56,6 +63,8 @@ func OptionsFrom(v store.Values) Options {
 		RetryBackoff:   v.Duration(store.KeyRetryBackoff),
 		HashAfterCopy:  v.Bool(store.KeyHashAfterCopy),
 		Reserve:        v.Size(store.KeyReserve),
+		DeletePercent:  v.Int(store.KeyDeletePercent),
+		TrashRetention: v.Duration(store.KeyDeleteRetention),
 	}
 }
 
@@ -79,6 +88,11 @@ func (o *Options) fill() {
 	}
 	if o.RetryBackoff <= 0 {
 		o.RetryBackoff = 30 * time.Second
+	}
+	// Never zero: a quarantine with no retention is deletion with extra steps, and
+	// the one thing §2.5 will not have is a delete that cannot be undone.
+	if o.TrashRetention <= 0 {
+		o.TrashRetention = 7 * 24 * time.Hour
 	}
 }
 

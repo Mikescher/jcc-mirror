@@ -1,6 +1,26 @@
 package format
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+// TestDurationCountsInDays is the scale the rest of Go's formatting stops short
+// of: a retention and the ETA of a transfer that runs for months are both read in
+// days, not in four-digit hours.
+func TestDurationCountsInDays(t *testing.T) {
+	for in, want := range map[time.Duration]string{
+		7 * 24 * time.Hour:                           "7d",
+		6*24*time.Hour + 7*time.Hour:                 "6d7h",
+		6*24*time.Hour + 7*time.Hour + 4*time.Minute: "6d7h",
+		23 * time.Hour:                               "23h0m0s",
+		90 * time.Second:                             "1m30s",
+	} {
+		if got := Duration(in); got != want {
+			t.Errorf("Duration(%s) = %q, want %q", in, got, want)
+		}
+	}
+}
 
 func TestParseSize(t *testing.T) {
 	sizes := map[string]int64{

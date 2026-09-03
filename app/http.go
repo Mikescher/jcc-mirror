@@ -41,6 +41,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/pairs", a.requireToken(a.handleCreatePair))
 	mux.HandleFunc("POST /api/pairs/update", a.requireToken(a.handleUpdatePair))
 	mux.HandleFunc("POST /api/pairs/delete", a.requireToken(a.handleDeletePair))
+	mux.HandleFunc("POST /api/pairs/deletions", a.requireToken(a.handleDecideDeletion))
 	mux.HandleFunc("POST /api/runs", a.requireToken(a.handleStartRun))
 	mux.HandleFunc("POST /api/runs/cancel", a.requireToken(a.handleCancelRun))
 
