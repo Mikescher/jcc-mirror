@@ -29,12 +29,20 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/config", a.handleGetConfig)
 	mux.HandleFunc("GET /api/config/audit", a.handleGetAudit)
 	mux.HandleFunc("GET /api/events", a.handleGetEvents)
+	mux.HandleFunc("GET /api/pairs", a.handleGetPairs)
+	mux.HandleFunc("GET /api/runs", a.handleGetRuns)
 	mux.HandleFunc("GET /{$}", a.handleSetupPage)
 
 	mux.HandleFunc("POST /api/login", a.handleLogin)
 	mux.HandleFunc("POST /api/logout", a.handleLogout)
 	mux.HandleFunc("POST /api/config", a.requireToken(a.handleSetConfig))
 	mux.HandleFunc("POST /api/remote/probe", a.requireToken(a.handleProbe))
+
+	mux.HandleFunc("POST /api/pairs", a.requireToken(a.handleCreatePair))
+	mux.HandleFunc("POST /api/pairs/update", a.requireToken(a.handleUpdatePair))
+	mux.HandleFunc("POST /api/pairs/delete", a.requireToken(a.handleDeletePair))
+	mux.HandleFunc("POST /api/runs", a.requireToken(a.handleStartRun))
+	mux.HandleFunc("POST /api/runs/cancel", a.requireToken(a.handleCancelRun))
 
 	return noStore(mux)
 }
@@ -289,6 +297,56 @@ func (a *App) probeRemote(ctx context.Context) map[string]any {
 	a.Event(ctx, store.LevelInfo, store.KindRemoteProbe,
 		strconv.Itoa(dirs)+" directories and "+strconv.Itoa(files)+" files in the remote root", data)
 	return data
+}
+
+func (a *App) handleGetRuns(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.Runs(r.Context()))
+}
+
+// handleStartRun is the button that replaces a shell in the container. It answers
+// as soon as the operation has started: a scan runs for minutes and a sync for
+// days, so nothing here waits for one.
+func (a *App) handleStartRun(w http.ResponseWriter, r *http.Request) {
+	fields, err := readFields(w, r)
+	if err != nil {
+		a.fail(w, r, http.StatusBadRequest, err)
+		return
+	}
+
+	id, err := strconv.ParseInt(strings.TrimSpace(fields["pair"]), 10, 64)
+	if err != nil {
+		a.fail(w, r, http.StatusBadRequest, errors.New("which pair? send its id as `pair`"))
+		return
+	}
+
+	run, err := a.StartRun(r.Context(), strings.TrimSpace(fields["kind"]), id)
+	if err != nil {
+		// 409 is the interesting one - something else is already running. A pair
+		// that is not there is an ordinary mistake and should not read like one.
+		code := http.StatusConflict
+		if errors.Is(err, store.ErrNoPair) {
+			code = http.StatusNotFound
+		}
+		a.fail(w, r, code, err)
+		return
+	}
+	if wantsHTML(r) {
+		a.redirectHome(w, r)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, run)
+}
+
+func (a *App) handleCancelRun(w http.ResponseWriter, r *http.Request) {
+	if err := a.CancelRun(); err != nil {
+		a.fail(w, r, http.StatusConflict, err)
+		return
+	}
+	if wantsHTML(r) {
+		a.redirectHome(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopping"})
 }
 
 // readSettings pulls the settings out of a JSON or form body. A blank secret

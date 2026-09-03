@@ -2,6 +2,7 @@ package app
 
 import (
 	_ "embed"
+	"fmt"
 	"html/template"
 	"net/http"
 	"sort"
@@ -20,14 +21,46 @@ var setupHTML string
 // on a first boot, from a phone, over a tunnel that may itself be the problem.
 var setupTmpl = template.Must(template.New("setup").Funcs(template.FuncMap{
 	"bytes":    format.Bytes,
+	"comma":    comma,
 	"duration": func(seconds float64) string { return format.Duration(time.Duration(seconds * float64(time.Second))) },
+	"elapsed":  format.Duration,
 	"uptime":   func(seconds int64) string { return format.Duration(time.Duration(seconds) * time.Second) },
 	"clock":    func(t time.Time) string { return t.Local().Format("2006-01-02 15:04:05") },
+	"rate":     func(b int64, d time.Duration) string { return format.Rate(b, d) },
+	"percent":  percent,
 }).Parse(setupHTML))
+
+// comma groups a count for the page. It takes either width of integer because the
+// engine counts files as int and rows as int64, and a template is not the place
+// to care which.
+func comma(v any) string {
+	switch n := v.(type) {
+	case int:
+		return format.Comma(int64(n))
+	case int64:
+		return format.Comma(n)
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
+// percent is the width of a progress bar, clamped so a total that is not known
+// yet cannot produce a bar wider than its track.
+func percent(done, total int64) int {
+	if total <= 0 || done <= 0 {
+		return 0
+	}
+	if done >= total {
+		return 100
+	}
+	return int(done * 100 / total)
+}
 
 type pageData struct {
 	Status     Status
 	Groups     []configGroup
+	Pairs      []PairView
+	Runs       RunState
 	Events     []store.Event
 	Audit      []store.AuditEntry
 	Authed     bool
@@ -66,7 +99,11 @@ func (a *App) renderSetupPage(w http.ResponseWriter, r *http.Request, code int, 
 		return
 	}
 	data.Groups = groupFields(values)
+	data.Runs = a.Runs(ctx)
 
+	if data.Pairs, err = a.PairViews(ctx); err != nil {
+		a.log.Errorf("dashboard: %v", err)
+	}
 	if data.Events, err = a.store.Events(ctx, store.EventFilter{Limit: 25}); err != nil {
 		a.log.Errorf("dashboard: %v", err)
 	}

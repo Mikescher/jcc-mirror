@@ -27,7 +27,7 @@ type FS struct {
 	root string
 }
 
-var _ remote.Remote = (*FS)(nil)
+var _ remote.RangeReader = (*FS)(nil)
 
 // New serves root, which must be an existing directory.
 func New(root string) (*FS, error) {
@@ -101,38 +101,55 @@ func (f *FS) Stat(ctx context.Context, p string) (remote.Entry, error) {
 
 // Open implements remote.Remote.
 func (f *FS) Open(ctx context.Context, p string, offset int64) (io.ReadCloser, error) {
+	rc, _, err := f.OpenRange(ctx, p, offset, 0)
+	return rc, err
+}
+
+// OpenRange implements remote.RangeReader, which is what the transfer engine
+// actually uses. Without it here the engine would be exercised through a
+// different code path in every test than the one that runs against DSM.
+func (f *FS) OpenRange(ctx context.Context, p string, offset, length int64) (io.ReadCloser, int64, error) {
 	_, full, err := f.resolve(p)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if offset < 0 {
-		return nil, fmt.Errorf("open %q: negative offset %d", p, offset)
+		return nil, 0, fmt.Errorf("open %q: negative offset %d", p, offset)
 	}
 
 	fh, err := os.Open(full)
 	if err != nil {
-		return nil, fmt.Errorf("open %q: %w", p, err)
+		return nil, 0, fmt.Errorf("open %q: %w", p, err)
 	}
 
 	st, err := fh.Stat()
 	if err != nil {
 		fh.Close()
-		return nil, fmt.Errorf("open %q: %w", p, err)
+		return nil, 0, fmt.Errorf("open %q: %w", p, err)
 	}
 	// The server's answer to a range past the end is 416, not an empty body, and
 	// the transfer engine has to see the same thing here.
 	if offset > st.Size() {
 		fh.Close()
-		return nil, fmt.Errorf("open %q: offset %d is past the end (%d bytes)", p, offset, st.Size())
+		return nil, 0, fmt.Errorf("open %q: offset %d is past the end (%d bytes)", p, offset, st.Size())
 	}
 	if _, err := fh.Seek(offset, io.SeekStart); err != nil {
 		fh.Close()
-		return nil, fmt.Errorf("open %q at %d: %w", p, offset, err)
+		return nil, 0, fmt.Errorf("open %q at %d: %w", p, offset, err)
 	}
-	return fh, nil
+	if length <= 0 {
+		return fh, st.Size(), nil
+	}
+	return sectionReader{Reader: io.LimitReader(fh, length), Closer: fh}, st.Size(), nil
+}
+
+// sectionReader bounds a read without losing the ability to close the file.
+type sectionReader struct {
+	io.Reader
+	io.Closer
 }
 
 // resolve turns a remote-relative path into its normalized form and its location

@@ -21,6 +21,8 @@ import (
 	"syscall"
 
 	"blackforestbytes.com/jcc-mirror/logs"
+	"blackforestbytes.com/jcc-mirror/remote"
+	"blackforestbytes.com/jcc-mirror/remote/localfs"
 	"blackforestbytes.com/jcc-mirror/store"
 	"blackforestbytes.com/jcc-mirror/webdav"
 	"blackforestbytes.com/jcc-mirror/wg"
@@ -28,26 +30,48 @@ import (
 
 type command struct {
 	name  string
+	group int
 	brief string
 	run   func(ctx context.Context, args []string) error
 }
 
-var commands = []command{
-	{"serve", "run the daemon: sqlite state, tunnel, dashboard", cmdServe},
-	{"version", "print the version and build timestamp", cmdVersion},
-	{"pubkey", "derive the public key of -wg-key, for the rootserver peer entry", cmdPubkey},
-	{"ping", "ICMP-ping a WireGuard address through the tunnel (M0 step 1)", cmdPing},
-	{"status", "bring the tunnel up and report handshake, endpoint and counters (M0 step 2)", cmdStatus},
-	{"propfind", "list one remote directory (M0 step 3)", cmdPropfind},
-	{"depth", "check whether the server honours Depth: infinity (M0 step 3)", cmdDepth},
-	{"walk", "time a full metadata walk of the remote tree (M0 step 4)", cmdWalk},
-	{"get", "ranged GET, optionally in parallel chunks (M0 step 5)", cmdGet},
-	{"resume", "abort a GET mid-file and prove the resume is byte-identical (M0 step 5)", cmdResume},
-	{"soak", "stream for hours and report stalls, errors and throughput (M0 step 5)", cmdSoak},
+// The sections of the usage text, in the order it prints them.
+const (
+	groupDaemon = iota
+	groupMirror
+	groupDiagnostics
+)
+
+var groups = []struct {
+	id    int
+	title string
+}{
+	{groupDaemon, "the daemon"},
+	{groupMirror, "the mirror"},
+	{groupDiagnostics, "diagnostics, in the order they are meant to be run"},
 }
 
-// diagnostics is where the M0 checklist starts in commands, for the usage text.
-const diagnostics = 2
+var commands = []command{
+	{"serve", groupDaemon, "run the daemon: sqlite state, tunnel, dashboard", cmdServe},
+	{"version", groupDaemon, "print the version and build timestamp", cmdVersion},
+
+	{"pairs", groupMirror, "list, add, change and remove the directory pairs", cmdPairs},
+	{"scan", groupMirror, "walk a pair's remote root into the manifest", cmdScan},
+	{"plan", groupMirror, "say what a sync would do, and change nothing", cmdPlan},
+	{"sync", groupMirror, "queue the plan and transfer it", cmdSync},
+	{"adopt", groupMirror, "recognise a USB bootstrap already on disk, matched on size", cmdAdopt},
+	{"jobs", groupMirror, "inspect the transfer queue, including what failed and why", cmdJobs},
+
+	{"pubkey", groupDiagnostics, "derive the public key of -wg-key, for the rootserver peer entry", cmdPubkey},
+	{"ping", groupDiagnostics, "ICMP-ping a WireGuard address through the tunnel (M0 step 1)", cmdPing},
+	{"status", groupDiagnostics, "bring the tunnel up and report handshake, endpoint and counters (M0 step 2)", cmdStatus},
+	{"propfind", groupDiagnostics, "list one remote directory (M0 step 3)", cmdPropfind},
+	{"depth", groupDiagnostics, "check whether the server honours Depth: infinity (M0 step 3)", cmdDepth},
+	{"walk", groupDiagnostics, "time a full metadata walk of the remote tree (M0 step 4)", cmdWalk},
+	{"get", groupDiagnostics, "ranged GET, optionally in parallel chunks (M0 step 5)", cmdGet},
+	{"resume", groupDiagnostics, "abort a GET mid-file and prove the resume is byte-identical (M0 step 5)", cmdResume},
+	{"soak", groupDiagnostics, "stream for hours and report stalls, errors and throughput (M0 step 5)", cmdSoak},
+}
 
 func main() {
 	log.SetFlags(log.Ltime)
@@ -88,15 +112,16 @@ func run() error {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "jcc-mirror %s\n\nusage: jcc-mirror <command> [flags]\n\n", version)
-	for _, c := range commands[:diagnostics] {
-		fmt.Fprintf(os.Stderr, "  %-9s %s\n", c.name, c.brief)
+	fmt.Fprintf(os.Stderr, "jcc-mirror %s\n\nusage: jcc-mirror <command> [flags]\n", version)
+	for _, g := range groups {
+		fmt.Fprintf(os.Stderr, "\n%s:\n\n", g.title)
+		for _, c := range commands {
+			if c.group == g.id {
+				fmt.Fprintf(os.Stderr, "  %-9s %s\n", c.name, c.brief)
+			}
+		}
 	}
-	fmt.Fprintf(os.Stderr, "\ndiagnostics, in the order they are meant to be run:\n\n")
-	for _, c := range commands[diagnostics:] {
-		fmt.Fprintf(os.Stderr, "  %-9s %s\n", c.name, c.brief)
-	}
-	fmt.Fprintf(os.Stderr, "\nEvery command takes -h. The daemon is configured in the dashboard; the\ndiagnostics take flags, or -data to reuse what the daemon is running on.\n")
+	fmt.Fprintf(os.Stderr, "\nEvery command takes -h. The daemon is configured in the dashboard; the mirror\nand the diagnostics take -data to work on the same sqlite state, and -remote-dir\nto run against a local directory instead of the publisher's share.\n")
 }
 
 func cmdVersion(context.Context, []string) error {
@@ -118,9 +143,10 @@ type config struct {
 	wgVerbose      bool
 	noTunnel       bool
 
-	davURL  string
-	davUser string
-	davPass string
+	davURL    string
+	davUser   string
+	davPass   string
+	remoteDir string
 
 	dataDir string
 	verbose bool
@@ -152,6 +178,7 @@ func newFlagSet(name string) (*flag.FlagSet, *config) {
 	fs.StringVar(&cfg.davURL, "url", "", "WebDAV base URL, the remote root of the mirror")
 	fs.StringVar(&cfg.davUser, "user", "", "WebDAV user")
 	fs.StringVar(&cfg.davPass, "pass", "", "WebDAV password")
+	fs.StringVar(&cfg.remoteDir, "remote-dir", "", "serve this local directory as the remote instead of WebDAV, for development and testing")
 
 	fs.StringVar(&cfg.dataDir, "data", "", "take the settings left unset from the store in this data directory, e.g. "+staticDataDir)
 	fs.BoolVar(&cfg.verbose, "v", false, "verbose output")
@@ -278,4 +305,25 @@ func (cfg *config) openBoth(ctx context.Context, logger *logs.Logger) (*webdav.C
 		return nil, nil, func() {}, err
 	}
 	return client, tun, closeFn, nil
+}
+
+// openEngineRemote is what the mirror commands run against. With -remote-dir a
+// local directory stands in for the publisher's share, which is what lets the
+// whole of M2 be exercised with no NAS, no tunnel and no WebDAV server; it wins
+// over -url, and nothing about the tunnel is touched.
+func (cfg *config) openEngineRemote(ctx context.Context, logger *logs.Logger) (remote.Remote, func(), error) {
+	if cfg.remoteDir != "" {
+		fs, err := localfs.New(cfg.remoteDir)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		logger.Infof("remote: %s stands in for the publisher's share", fs.Root())
+		return fs, func() {}, nil
+	}
+
+	client, _, closeFn, err := cfg.openBoth(ctx, logger)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	return client, closeFn, nil
 }

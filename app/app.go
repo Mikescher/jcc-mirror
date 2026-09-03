@@ -51,7 +51,13 @@ type App struct {
 	// handler serves both listeners. It is set once, before Start.
 	handler http.Handler
 
+	// runs is the one mirror operation that may be in flight, started from the
+	// dashboard. It has a lock of its own: a sync runs for days, and the tunnel
+	// paths must not queue behind it.
+	runs runner
+
 	mu        sync.Mutex
+	baseCtx   context.Context // the daemon's lifetime, which a run's context hangs off
 	tunnel    *wg.Tunnel
 	tunnelCfg tunnelSettings
 	tunnelErr error
@@ -82,6 +88,10 @@ func (a *App) Store() *store.Store { return a.store }
 // if it is configured, and starts the reconcile loop. It does not fail on a
 // tunnel that will not open: the dashboard is how that gets fixed.
 func (a *App) Start(ctx context.Context) error {
+	a.mu.Lock()
+	a.baseCtx = ctx
+	a.mu.Unlock()
+
 	created, err := a.store.EnsureGenerated(ctx, generateSetting)
 	if err != nil {
 		return err
@@ -114,11 +124,34 @@ func (a *App) Start(ctx context.Context) error {
 
 // Close tears the tunnel down and records the shutdown.
 func (a *App) Close(ctx context.Context) {
+	// A run in flight is stopped rather than left to be killed with the process.
+	// Nothing is lost either way - a scan stays resumable and a transfer keeps its
+	// watermark - but stopping it means the run's own record gets written.
+	if err := a.CancelRun(); err == nil {
+		a.awaitRun(2 * time.Second)
+	}
+
 	a.Event(ctx, store.LevelInfo, store.KindShutdown, "jcc-mirror stopped", nil)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.closeTunnelLocked()
+}
+
+// awaitRun waits for the running operation to notice its cancelled context, so
+// its result is recorded before the process goes. It is a courtesy with a short
+// fuse: a transfer that will not stop must not hold up the shutdown.
+func (a *App) awaitRun(limit time.Duration) {
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		a.runs.mu.Lock()
+		running := a.runs.current != nil
+		a.runs.mu.Unlock()
+		if !running {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // Reload applies the current configuration. It is called at startup and after
@@ -275,7 +308,12 @@ func (a *App) PublicKey(ctx context.Context) (string, error) {
 // swallowed: the event log is telemetry, and losing a line must never fail the
 // operation that produced it.
 func (a *App) Event(ctx context.Context, level, kind, message string, data map[string]any) {
-	e := store.Event{Level: level, Kind: kind, Message: message, Data: data}
+	a.eventFor(ctx, nil, level, kind, message, data)
+}
+
+// eventFor is Event for something that belongs to one pair.
+func (a *App) eventFor(ctx context.Context, pairID *int64, level, kind, message string, data map[string]any) {
+	e := store.Event{Level: level, Kind: kind, PairID: pairID, Message: message, Data: data}
 	if err := a.store.AppendEvent(ctx, &e); err != nil {
 		a.log.Errorf("events: %v", err)
 	}

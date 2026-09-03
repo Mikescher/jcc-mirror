@@ -31,6 +31,14 @@ const (
 	KeyRemoteUser     = "remote.user"
 	KeyRemotePassword = "remote.password"
 
+	KeyScanWorkers    = "scan.workers"
+	KeyMTimeTolerance = "scan.mtime_tolerance"
+	KeyTransferChunks = "transfer.chunks"
+	KeyChunkSize      = "transfer.chunk_size"
+	KeyMaxAttempts    = "transfer.max_attempts"
+	KeyRetryBackoff   = "transfer.retry_backoff"
+	KeyHashAfterCopy  = "transfer.hash"
+
 	KeyDashboardToken = "dashboard.token"
 	KeyTimezone       = "general.timezone"
 )
@@ -115,6 +123,50 @@ var keyDefs = []KeyDef{
 	},
 
 	{
+		Name: KeyScanWorkers, Group: "Scan", Label: "Walk concurrency",
+		Help:     "PROPFINDs in flight. The walk is latency-bound, so a little parallelism helps a lot and more helps nothing.",
+		Default:  "8",
+		Validate: validatePositiveInt,
+	},
+	{
+		Name: KeyMTimeTolerance, Group: "Scan", Label: "Mtime tolerance",
+		Help:     "How far apart two timestamps may be and still count as the same file. WebDAV dates carry whole seconds only, so this must never be zero.",
+		Default:  "2s",
+		Validate: validateDuration,
+	},
+
+	{
+		Name: KeyTransferChunks, Group: "Transfer", Label: "Streams per file",
+		Help:     "Parallel ranged streams within one file; 1 is strictly sequential. Files are still transferred one at a time.",
+		Default:  "4",
+		Validate: validatePositiveInt,
+	},
+	{
+		Name: KeyChunkSize, Group: "Transfer", Label: "Chunk size",
+		Help:     "The span one stream fetches per request. Also the resume granularity: an interrupted file loses at most this much per stream.",
+		Default:  "64MiB",
+		Validate: validateSize,
+	},
+	{
+		Name: KeyMaxAttempts, Group: "Transfer", Label: "Attempts per file",
+		Help:     "How often a file is retried before the job is marked failed and waits for someone to look at it.",
+		Default:  "5",
+		Validate: validatePositiveInt,
+	},
+	{
+		Name: KeyRetryBackoff, Group: "Transfer", Label: "Retry backoff",
+		Help:     "The wait after the first failed attempt. It doubles per attempt, up to an hour.",
+		Default:  "30s",
+		Validate: validateDuration,
+	},
+	{
+		Name: KeyHashAfterCopy, Group: "Transfer", Label: "Hash after copy",
+		Help:     "sha256 every file once it has landed and keep it for a future scrub. It costs a second read of everything transferred.",
+		Default:  "false",
+		Validate: validateBool,
+	},
+
+	{
 		Name: KeyDashboardToken, Group: "Dashboard", Label: "Bearer token",
 		Help:      "Generated at first start and printed to the container log. Required for every non-GET request.",
 		Secret:    true,
@@ -167,6 +219,42 @@ func (e *ValidationError) Unwrap() error { return e.Err }
 type Values map[string]string
 
 func (v Values) Get(key string) string { return v[key] }
+
+// Int, Duration, Size and Bool read a setting in the type it is written in. A
+// stored value is validated before it is written, so a parse failure here means
+// the table was edited by hand - the registry's default is a better answer than
+// a zero.
+func (v Values) Int(key string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(v[key]))
+	if err != nil {
+		n, _ = strconv.Atoi(keyByName[key].Default)
+	}
+	return n
+}
+
+func (v Values) Duration(key string) time.Duration {
+	d, err := time.ParseDuration(strings.TrimSpace(v[key]))
+	if err != nil {
+		d, _ = time.ParseDuration(keyByName[key].Default)
+	}
+	return d
+}
+
+func (v Values) Size(key string) int64 {
+	n, err := ParseSize(v[key])
+	if err != nil {
+		n, _ = ParseSize(keyByName[key].Default)
+	}
+	return n
+}
+
+func (v Values) Bool(key string) bool {
+	b, err := strconv.ParseBool(strings.TrimSpace(v[key]))
+	if err != nil {
+		b, _ = strconv.ParseBool(keyByName[key].Default)
+	}
+	return b
+}
 
 // Config returns every setting, defaults included.
 func (s *Store) Config(ctx context.Context) (Values, error) {
@@ -439,6 +527,78 @@ func validateHTTPURL(s string) error {
 		return errors.New("no host")
 	}
 	return nil
+}
+
+func validatePositiveInt(s string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return fmt.Errorf("not a number: %w", err)
+	}
+	if n < 1 {
+		return errors.New("must be at least 1")
+	}
+	return nil
+}
+
+func validateDuration(s string) error {
+	d, err := time.ParseDuration(strings.TrimSpace(s))
+	if err != nil {
+		return fmt.Errorf("not a duration like \"30s\" or \"5m\": %w", err)
+	}
+	if d <= 0 {
+		return errors.New("must be positive")
+	}
+	return nil
+}
+
+func validateSize(s string) error {
+	_, err := ParseSize(s)
+	return err
+}
+
+func validateBool(s string) error {
+	if _, err := strconv.ParseBool(strings.TrimSpace(s)); err != nil {
+		return errors.New("want true or false")
+	}
+	return nil
+}
+
+// ParseSize reads a byte count, with or without a binary suffix: "67108864",
+// "64MiB" and "64M" are the same number. Sizes in this project are quoted in
+// whichever of the two an operator happens to reach for.
+func ParseSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("required")
+	}
+
+	digits := strings.TrimRight(s, "kKmMgGtTiIbB \t")
+	suffix := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(s, digits)))
+	suffix = strings.TrimSuffix(strings.TrimSuffix(suffix, "b"), "i")
+
+	n, err := strconv.ParseInt(strings.TrimSpace(digits), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("not a size like \"64MiB\": %w", err)
+	}
+
+	mult := int64(1)
+	switch suffix {
+	case "":
+	case "k":
+		mult = 1 << 10
+	case "m":
+		mult = 1 << 20
+	case "g":
+		mult = 1 << 30
+	case "t":
+		mult = 1 << 40
+	default:
+		return 0, fmt.Errorf("unknown size suffix %q", suffix)
+	}
+	if n <= 0 {
+		return 0, errors.New("must be positive")
+	}
+	return n * mult, nil
 }
 
 func validateTimezone(s string) error {

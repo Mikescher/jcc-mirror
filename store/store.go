@@ -1,7 +1,8 @@
-// Package store is jcc-mirror's own state: configuration, the event log, and from
-// M2 on the manifest, the job queue and the transfer history. It is a sqlite
-// database in the data volume, opened with the pure-Go driver so the binary stays
-// static and cross-compiles to the Synology without a libc to match.
+// Package store is jcc-mirror's own state: the configuration, the event log, the
+// pairs, the manifest of the publisher's tree, local truth, the job queue and the
+// transfer history. It is a sqlite database in the data volume, opened with the
+// pure-Go driver so the binary stays static and cross-compiles to the Synology
+// without a libc to match.
 //
 // WAL is right for this database - unlike ClipCorn's, it has no attached second
 // file to stay atomic with (DESIGN.md §7).

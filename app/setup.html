@@ -2,6 +2,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>jcc-mirror</title>
+{{if .Runs.Busy}}<meta http-equiv="refresh" content="5">{{end}}
 <style>
   :root {
     color-scheme: light dark;
@@ -51,6 +52,20 @@
   .banner { border-left: 3px solid var(--bad); padding: .6rem .85rem; border-radius: 4px;
             background: color-mix(in srgb, var(--bad) 12%, transparent); }
   .note { color: var(--muted); font-size: .85rem; }
+  button.danger { background: transparent; color: var(--bad); border-color: var(--bad); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  select { padding: .4rem .5rem; border: 1px solid var(--line); border-radius: 5px;
+           background: var(--bg); color: var(--fg); font: inherit; }
+  .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin: .4rem 0; }
+  .bar > span { display: block; height: 100%; background: var(--accent); }
+  .pair { border: 1px solid var(--line); border-radius: 6px; padding: .8rem .95rem; margin-bottom: .8rem; }
+  .pair h3 { margin: 0 0 .4rem; color: var(--fg); font-size: .95rem; }
+  .pair dl { display: grid; grid-template-columns: auto 1fr; gap: .1rem .8rem; margin: 0 0 .6rem; }
+  .pair dt { color: var(--muted); } .pair dd { margin: 0; }
+  details > summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
+  details[open] > summary { margin-bottom: .6rem; }
+  .running { border-left: 3px solid var(--accent); padding: .6rem .85rem; border-radius: 4px;
+             background: color-mix(in srgb, var(--accent) 10%, transparent); }
 </style>
 
 <main>
@@ -139,6 +154,179 @@
         <input type="password" name="token" placeholder="dashboard token" autocomplete="off" style="max-width:24rem">
         <button type="submit">Unlock</button>
       </form>
+    {{end}}
+  </section>
+
+
+  <section>
+    <h2>Mirror</h2>
+
+    {{with .Runs.Current}}
+      <div class="running">
+        <div class="row">
+          <strong>{{.Kind}}</strong>
+          <span>of <strong>{{.PairName}}</strong>, running for {{elapsed .Elapsed}}</span>
+          <form method="post" action="/api/runs/cancel" style="margin-left:auto">
+            <button class="ghost" type="submit" {{if not $.Authed}}disabled{{end}}>Stop</button>
+          </form>
+        </div>
+
+        {{if eq .Kind "sync"}}
+          {{with $.Runs.Progress}}
+            <div class="bar"><span style="width:{{percent .RunBytes .RunTotal}}%"></span></div>
+            <div class="note">
+              {{comma .Files}} of {{comma .FilesTotal}} files ·
+              {{bytes .RunBytes}} of {{bytes .RunTotal}}
+              {{if .Path}}<br>{{.Path}} — {{bytes .FileDone}} of {{bytes .FileTotal}}{{end}}
+            </div>
+          {{end}}
+        {{else if eq .Kind "scan"}}
+          {{with $.Runs.Scan}}
+            <div class="note">{{comma .Dirs}} directories, {{comma .Files}} files, {{bytes .Bytes}} so far</div>
+          {{else}}
+            <div class="note">walking the publisher's tree</div>
+          {{end}}
+        {{end}}
+      </div>
+      <p class="note">Stopping is safe at any moment: a walk stays resumable and every transfer
+        keeps its place in the file, so the next run carries on rather than starting over.</p>
+    {{else}}
+      <p class="note">Nothing running.</p>
+    {{end}}
+
+    {{if not .Pairs}}
+      <p class="note">No pairs yet. Add one below, then <em>scan</em> to find out what the publisher has.</p>
+    {{end}}
+
+    {{range .Pairs}}
+      <div class="pair">
+        <h3>{{.Name}}
+          {{if not .Enabled}}<span class="pill">disabled</span>{{end}}
+          {{if eq .Type "jcc"}}<span class="pill warn">jcc</span>{{end}}
+        </h3>
+        <dl>
+          <dt>publisher</dt><dd class="mono">{{if .RemotePath}}{{.RemotePath}}{{else}}(the remote root){{end}} — {{comma .RemoteFiles}} files, {{bytes .RemoteBytes}}</dd>
+          <dt>here</dt><dd class="mono">{{.LocalPath}} — {{comma .LocalFiles}} files, {{bytes .LocalBytes}}</dd>
+          <dt>last scan</dt><dd>{{if .LastScan}}{{clock .LastScan}}{{else}}never — nothing can be planned until one finishes{{end}}</dd>
+          <dt>queue</dt><dd>{{comma (index .Queue.Counts "pending")}} pending, {{comma (index .Queue.Counts "failed")}} failed, {{bytes .Queue.PendingBytes}} to go</dd>
+          {{if .Excludes}}<dt>excludes</dt><dd class="mono">{{.ExcludesText}}</dd>{{end}}
+          {{if .Includes}}<dt>includes</dt><dd class="mono">{{.IncludesText}}</dd>{{end}}
+        </dl>
+
+        <form method="post" action="/api/runs" class="row">
+          <input type="hidden" name="pair" value="{{.ID}}">
+          {{$off := or (not $.Authed) $.Runs.Busy (not .Enabled)}}
+          <button class="ghost" name="kind" value="plan" {{if $off}}disabled{{end}}>Plan</button>
+          <button class="ghost" name="kind" value="scan" {{if $off}}disabled{{end}}>Scan</button>
+          <button class="ghost" name="kind" value="adopt" {{if $off}}disabled{{end}}>Adopt</button>
+          <button name="kind" value="sync" {{if $off}}disabled{{end}}>Sync</button>
+        </form>
+
+        <details>
+          <summary>Edit this pair</summary>
+          <form method="post" action="/api/pairs/update">
+            <input type="hidden" name="id" value="{{.ID}}">
+            <div class="grid2">
+              <label><span class="name">Name</span>
+                <input type="text" name="name" value="{{.Name}}" autocomplete="off"></label>
+              <label><span class="name">Publisher directory</span>
+                <span class="help">Relative to the WebDAV base URL. Empty means its root.</span>
+                <input type="text" name="remotePath" value="{{.RemotePath}}" autocomplete="off"></label>
+              <label><span class="name">Directory here</span>
+                <span class="help">Absolute, inside the container.</span>
+                <input type="text" name="localPath" value="{{.LocalPath}}" autocomplete="off"></label>
+              <label><span class="name">Excludes</span>
+                <span class="help">Globs, comma separated. A directory glob drops its whole subtree and the walk never lists it.</span>
+                <input type="text" name="excludes" value="{{.ExcludesText}}" autocomplete="off"></label>
+              <label><span class="name">Includes</span>
+                <span class="help">Leave empty to mirror everything the excludes did not drop.</span>
+                <input type="text" name="includes" value="{{.IncludesText}}" autocomplete="off"></label>
+              <label><span class="name">Priority</span>
+                <span class="help">Lower runs first.</span>
+                <input type="text" name="priority" value="{{.Priority}}" autocomplete="off"></label>
+            </div>
+            <div class="row">
+              <label style="margin:0"><span class="name">Type</span>
+                <select name="type">
+                  <option value="raw" {{if eq .Type "raw"}}selected{{end}}>raw</option>
+                  <option value="jcc" {{if eq .Type "jcc"}}selected{{end}}>jcc (M5)</option>
+                </select></label>
+              <label style="margin:0"><span class="name">Mode</span>
+                <select name="mode">
+                  <option value="additive" {{if eq .Mode "additive"}}selected{{end}}>additive</option>
+                  <option value="mirror" {{if eq .Mode "mirror"}}selected{{end}}>mirror (deletes from M4)</option>
+                </select></label>
+              <label style="margin:0"><span class="name">Enabled</span>
+                <input type="hidden" name="enabled" value="false">
+                <input type="checkbox" name="enabled" value="true" {{if .Enabled}}checked{{end}}></label>
+              <button type="submit" {{if not $.Authed}}disabled{{end}}>Save</button>
+            </div>
+          </form>
+          <form method="post" action="/api/pairs/delete" class="row">
+            <input type="hidden" name="id" value="{{.ID}}">
+            <button class="danger" type="submit" {{if not $.Authed}}disabled{{end}}>Remove this pair</button>
+            <span class="note">Forgets what was recorded about it. Nothing under {{.LocalPath}} is touched.</span>
+          </form>
+        </details>
+      </div>
+    {{end}}
+
+    <details>
+      <summary>Add a pair</summary>
+      <form method="post" action="/api/pairs">
+        <div class="grid2">
+          <label><span class="name">Name</span>
+            <input type="text" name="name" placeholder="media" autocomplete="off"></label>
+          <label><span class="name">Publisher directory</span>
+            <span class="help">Relative to the WebDAV base URL. Empty means its root.</span>
+            <input type="text" name="remotePath" placeholder="Filme" autocomplete="off"></label>
+          <label><span class="name">Directory here</span>
+            <span class="help">Absolute, inside the container — the volume mount, not the path on the NAS.</span>
+            <input type="text" name="localPath" placeholder="/mnt/media/Filme" autocomplete="off"></label>
+          <label><span class="name">Excludes</span>
+            <span class="help">Globs, comma separated. Optional.</span>
+            <input type="text" name="excludes" placeholder="**/*.tmp, Serien/Trash/**" autocomplete="off"></label>
+        </div>
+        <input type="hidden" name="type" value="raw">
+        <input type="hidden" name="mode" value="additive">
+        <input type="hidden" name="enabled" value="true">
+        <button type="submit" {{if not .Authed}}disabled{{end}}>Add</button>
+      </form>
+    </details>
+
+    {{if .Runs.History}}
+      <h3>Recent runs</h3>
+      <div class="scroll"><table>
+        <tr><th>when</th><th>what</th><th>pair</th><th>took</th><th>result</th></tr>
+        {{range .Runs.History}}
+          <tr>
+            <td class="mono">{{clock .StartedAt}}</td>
+            <td>{{.Kind}}</td>
+            <td>{{.PairName}}</td>
+            <td class="mono">{{elapsed .Elapsed}}</td>
+            <td>{{if .Error}}<span class="bad">{{.Error}}</span>{{else}}{{.Summary}}{{end}}</td>
+          </tr>
+        {{end}}
+      </table></div>
+
+      {{with (index .Runs.History 0).Plan}}
+        {{if .Entries}}
+          <h3>What the last plan would do</h3>
+          <div class="scroll"><table>
+            <tr><th>op</th><th>size</th><th>path</th></tr>
+            {{range .Entries}}
+              <tr>
+                <td>{{.Op}}</td>
+                <td class="mono">{{if eq .Op "delete"}}{{bytes .SizeBefore}}{{else}}{{bytes .Size}}{{end}}</td>
+                <td class="mono">{{.Path}}</td>
+              </tr>
+            {{end}}
+          </table></div>
+          {{if .Truncated}}<p class="note">Only the first entries are listed.</p>{{end}}
+          {{if .Vanished}}<p class="note">The {{comma .Vanished}} vanished file(s) are counted and never
+            deleted: this is an additive mirror until M4 brings the deletion guards with it.</p>{{end}}
+        {{end}}
+      {{end}}
     {{end}}
   </section>
 

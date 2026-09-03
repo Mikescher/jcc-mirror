@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestConfigDefaultsAndSet(t *testing.T) {
@@ -175,6 +176,144 @@ func TestEveryKeyIsInAGroup(t *testing.T) {
 	for _, d := range Keys() {
 		if d.Group == "" || d.Label == "" {
 			t.Errorf("%s has no group or label, so the setup view cannot render it", d.Name)
+		}
+	}
+}
+
+func TestParseSize(t *testing.T) {
+	sizes := map[string]int64{
+		"64MiB":    64 << 20,
+		"64M":      64 << 20,
+		"64 GB":    64 << 30,
+		"67108864": 67108864,
+		"1k":       1 << 10,
+		"2T":       2 << 40,
+		" 8 MiB ":  8 << 20,
+	}
+	for in, want := range sizes {
+		got, err := ParseSize(in)
+		if err != nil {
+			t.Errorf("ParseSize(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("ParseSize(%q) = %d, want %d", in, got, want)
+		}
+	}
+
+	for _, in := range []string{"", "   ", "sixty-four megs", "64XB", "0", "-5", "64MiB extra"} {
+		if got, err := ParseSize(in); err == nil {
+			t.Errorf("ParseSize(%q) = %d, want an error", in, got)
+		}
+	}
+}
+
+func TestValueGetters(t *testing.T) {
+	v := Values{
+		KeyScanWorkers:    " 12 ",
+		KeyMTimeTolerance: "5s",
+		KeyChunkSize:      "8MiB",
+		KeyHashAfterCopy:  "true",
+	}
+	if got := v.Int(KeyScanWorkers); got != 12 {
+		t.Errorf("Int = %d, want 12", got)
+	}
+	if got := v.Duration(KeyMTimeTolerance); got != 5*time.Second {
+		t.Errorf("Duration = %v, want 5s", got)
+	}
+	if got := v.Size(KeyChunkSize); got != 8<<20 {
+		t.Errorf("Size = %d, want %d", got, 8<<20)
+	}
+	if got := v.Bool(KeyHashAfterCopy); !got {
+		t.Error("Bool = false, want true")
+	}
+}
+
+// A stored value is validated before it is written, so a parse failure here means
+// the table was edited by hand. The registry's default is a better answer than a
+// zero: zero workers never scan and a zero mtime tolerance re-transfers 30 TB.
+func TestValueGettersFallBackToTheDefault(t *testing.T) {
+	v := Values{
+		KeyScanWorkers:    "lots",
+		KeyMTimeTolerance: "soon",
+		KeyChunkSize:      "huge",
+		KeyTransferChunks: "",
+	}
+	if got := v.Int(KeyScanWorkers); got != 8 {
+		t.Errorf("Int = %d, want the default 8", got)
+	}
+	if got := v.Duration(KeyMTimeTolerance); got != 2*time.Second {
+		t.Errorf("Duration = %v, want the default 2s", got)
+	}
+	if got := v.Size(KeyChunkSize); got != 64<<20 {
+		t.Errorf("Size = %d, want the default %d", got, 64<<20)
+	}
+	if got := v.Int(KeyTransferChunks); got != 4 {
+		t.Errorf("Int of an empty value = %d, want the default 4", got)
+	}
+}
+
+func TestConfigDefaultsAreUsable(t *testing.T) {
+	values, err := newStore(t).Config(context.Background())
+	if err != nil {
+		t.Fatalf("Config: %v", err)
+	}
+
+	if got := values.Duration(KeyMTimeTolerance); got < time.Second {
+		t.Errorf("mtime tolerance = %v; WebDAV dates carry whole seconds, so it must never be below one", got)
+	}
+	if got := values.Int(KeyScanWorkers); got < 1 {
+		t.Errorf("scan workers = %d, want at least 1", got)
+	}
+	if got := values.Int(KeyTransferChunks); got < 1 {
+		t.Errorf("transfer chunks = %d, want at least 1", got)
+	}
+	if got := values.Int(KeyMaxAttempts); got < 1 {
+		t.Errorf("max attempts = %d, want at least 1", got)
+	}
+	if got := values.Size(KeyChunkSize); got < 1 {
+		t.Errorf("chunk size = %d, want a positive default", got)
+	}
+	if got := values.Duration(KeyRetryBackoff); got <= 0 {
+		t.Errorf("retry backoff = %v, want a positive default", got)
+	}
+	if values.Bool(KeyHashAfterCopy) {
+		t.Error("hashing after copy defaults to on; it costs a second read of 30 TB")
+	}
+}
+
+// A default the registry itself would reject is a setting that cannot be saved
+// from the setup view without being changed first.
+func TestKeyDefaultsPassTheirOwnValidator(t *testing.T) {
+	for _, d := range Keys() {
+		if d.Default == "" || d.Validate == nil {
+			continue
+		}
+		t.Run(d.Name, func(t *testing.T) {
+			if err := d.Validate(d.Default); err != nil {
+				t.Errorf("default %q is rejected by its own validator: %v", d.Default, err)
+			}
+		})
+	}
+}
+
+// Every tunable the engine reads through a typed getter needs a default: without
+// one an unconfigured mirror runs with a zero.
+func TestTunablesHaveDefaults(t *testing.T) {
+	for _, name := range []string{
+		KeyScanWorkers, KeyMTimeTolerance, KeyTransferChunks,
+		KeyChunkSize, KeyMaxAttempts, KeyRetryBackoff, KeyHashAfterCopy,
+	} {
+		d, ok := Key(name)
+		if !ok {
+			t.Errorf("%s is not in the registry", name)
+			continue
+		}
+		if d.Default == "" {
+			t.Errorf("%s has no default", name)
+		}
+		if d.Validate == nil {
+			t.Errorf("%s has no validator, so the setup view accepts anything", name)
 		}
 	}
 }

@@ -26,6 +26,13 @@ const (
 	KindTunnelUp      = "tunnel.up"
 	KindTunnelDown    = "tunnel.down"
 	KindRemoteProbe   = "remote.probe"
+	KindPairChanged   = "pair.changed"
+	KindScanStarted   = "scan.started"
+	KindScanFinished  = "scan.finished"
+	KindSyncStarted   = "sync.started"
+	KindSyncFinished  = "sync.finished"
+	KindTransferFail  = "transfer.failed"
+	KindAdopted       = "adopt.finished"
 	KindError         = "error"
 )
 

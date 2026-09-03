@@ -170,6 +170,27 @@ func TestAgreesWithWebDAV(t *testing.T) {
 			t.Errorf("read from offset %d differs between the two remotes", offset)
 		}
 	}
+
+	// The bounded form is the one the transfer engine actually issues, several at
+	// a time into one file: a chunk that came back longer or shorter here than it
+	// does against DSM would be written straight over its neighbour.
+	for _, c := range []struct{ offset, length int64 }{
+		{0, 1024},
+		{4096, 8192},
+		{int64(len(payload)) - 10, 10},
+		{0, int64(len(payload))},
+		{1, int64(len(payload))}, // longer than what is left, which a last chunk never is but a shrunk file makes
+	} {
+		a := readRange(t, fake, "Filme A-Z/Grüße.mkv", c.offset, c.length)
+		b := readRange(t, real, "Filme A-Z/Grüße.mkv", c.offset, c.length)
+		want := payload[c.offset:min(c.offset+c.length, int64(len(payload)))]
+		if !reflect.DeepEqual(a, b) {
+			t.Errorf("range %d+%d differs between the two remotes: %d vs %d bytes", c.offset, c.length, len(a), len(b))
+		}
+		if !reflect.DeepEqual(a, want) {
+			t.Errorf("range %d+%d returned %d bytes, want %d", c.offset, c.length, len(a), len(want))
+		}
+	}
 }
 
 func listSorted(ctx context.Context, r remote.Remote, dir string) ([]remote.Entry, error) {
@@ -187,6 +208,21 @@ func sortEntries(entries []remote.Entry) {
 			entries[j], entries[j-1] = entries[j-1], entries[j]
 		}
 	}
+}
+
+func readRange(t *testing.T, r remote.RangeReader, path string, offset, length int64) []byte {
+	t.Helper()
+	rc, _, err := r.OpenRange(context.Background(), path, offset, length)
+	if err != nil {
+		t.Fatalf("open %q at %d+%d: %v", path, offset, length, err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read %q: %v", path, err)
+	}
+	return data
 }
 
 func readAll(t *testing.T, r remote.Remote, path string, offset int64) []byte {

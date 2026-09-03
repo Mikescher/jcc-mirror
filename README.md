@@ -4,11 +4,17 @@ One-way replication of a jClipCorn collection from the publisher's NAS to the
 subscriber's Synology. See `DESIGN.md` for the design; this README covers what is
 built so far.
 
-**Status: M1.** The skeleton. The binary is a daemon now: sqlite state, a config
+**Status: M2.** It mirrors. On top of M1's skeleton — sqlite state, a config
 table with an audit trail, a setup view, the `Remote` interface with a WebDAV
-implementation and a local fake, an event log and `/healthz`. It configures
-itself and reports on itself — it does not yet scan, diff or transfer anything.
-That is M2.
+implementation and a local fake, an event log and `/healthz` — there is now an
+engine: a resumable walk that builds the manifest the publisher does not have, a
+differ, and a transfer with ranged GETs, `.part` files, verification, an atomic
+rename and a per-file job queue with retries. Plus adopt mode, without which the
+30 TB USB bootstrap could not be recognised.
+
+It is driven from the CLI and it never deletes anything. The schedule and the
+bandwidth cap are M3, deletion and its guards are M4, the `ClipCornDB.db` lock
+gate is M5 and the dashboard is M6.
 
 ## Running it
 
@@ -46,8 +52,117 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 |---|---|
 | `GET /` | Setup view |
 | `GET /healthz` | Status as JSON; 503 only when the database has stopped answering |
-| `GET /api/status` · `/api/config` · `/api/config/audit` · `/api/events` | Read views. Secrets are never returned |
+| `GET /api/status` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/pairs` · `/api/runs` | Read views. Secrets are never returned |
 | `POST /api/config` · `/api/remote/probe` · `/api/login` | Token required |
+| `POST /api/pairs` · `/api/pairs/update` · `/api/pairs/delete` | Token required. JSON or a form; a JSON body may carry one key and changes only that |
+| `POST /api/runs` (`kind`, `pair`) · `/api/runs/cancel` | Token required. Answers as soon as the run has started, never when it has finished |
+
+## The mirror
+
+Two ways in, on the same state: the dashboard and the CLI.
+
+**From the dashboard.** The setup view has a Mirror section: the pairs with how
+far behind each one is, an editor for them, and a Plan / Scan / Adopt / Sync
+button each. A run happens in the background and the page refreshes itself while
+one is going, so a sync that takes a day and a half is watchable from a phone.
+One runs at a time — the transfer engine moves one file at a time by design, and
+M3's scheduler will walk the pairs in priority order for the same reason. Stop is
+always safe: a walk stays resumable and every transfer keeps its place in the
+file.
+
+This is the route to use if the container's shell is awkward to reach, which on a
+Synology it usually is. It is throwaway UI — M6 replaces it with the real
+dashboard — but the bootstrap has to be reachable long before M6.
+
+**From the CLI.** Every command takes `-data`, so they all work on the same sqlite
+state the daemon runs on, and `-remote-dir` points any of them at a local
+directory instead of the publisher's share — the whole milestone can be exercised
+with no NAS, no tunnel and no WebDAV server.
+
+A pair is one directory over there mapped onto one directory here. Nothing is
+mirrored until one exists:
+
+```bash
+jcc-mirror pairs add -data /data -name media \
+    -remote "Filme" -local /mnt/media/Filme -mode additive \
+    -exclude "**/*.tmp,Serien/Trash/**"
+jcc-mirror pairs -data /data
+```
+
+Then the three steps, in order. They are separate commands because each answers
+a different question, and because the first weeks are meant to be run by hand:
+
+```bash
+jcc-mirror scan  -data /data -pair media     # what does the publisher have?
+jcc-mirror plan  -data /data -pair media     # what would a sync do? changes nothing
+jcc-mirror sync  -data /data -pair media     # do it
+jcc-mirror jobs  -data /data -pair media -state failed
+```
+
+**The bootstrap.** The first ~30 TB comes across by USB, not down the wire — that
+part is done by hand and jcc-mirror has no part in it. What it does have a part
+in is recognising the result. Once the copy is on the Synology, `adopt` matches
+the local tree against the manifest **on size alone** and records the matches as
+already mirrored. Skipping it is expensive: the first sync would find an empty
+`files` table, conclude it has nothing, and pull all 30 TB down the wire.
+
+```bash
+jcc-mirror scan  -data /data -pair media
+jcc-mirror adopt -data /data -pair media
+jcc-mirror plan  -data /data -pair media     # should now want almost nothing
+```
+
+Sizes, not mtimes: a USB copy that did not preserve timestamps would otherwise
+make all 30 TB look changed. What `adopt` records as the local timestamp is the
+publisher's, so the next diff agrees with the manifest. Run `plan` afterwards —
+if it still wants tens of thousands of files, the adoption did not match and it
+is better to find that out before the transfer starts.
+
+### How it works, and what it refuses to do
+
+**The scan** builds the manifest that does not exist on the other side: one
+PROPFIND per directory, breadth-first, eight in flight. The frontier is the
+manifest table itself rather than the walker's memory, so a walk interrupted
+after ten minutes — a restart, a Ctrl-C, a transfer window closing in M3 —
+resumes where it stopped instead of starting over. `Depth: infinity` is not used
+even where a server honours it: on a tree this size it would return the whole
+collection as one XML document.
+
+A walk that stops early is `interrupted`, not `failed`, and it is only a
+completed walk that sweeps the manifest rows it did not find. That asymmetry is
+the deletion-safety rule of `DESIGN.md` §2.5: a share that has been unmounted on
+the publisher's side answers every PROPFIND with an empty directory, and a scan
+that finds no files at all is refused rather than believed.
+
+**The diff** is a join between the manifest and local truth, on size and mtime,
+with a two-second tolerance — WebDAV dates carry whole seconds and local ones
+carry nanoseconds, and comparing them for equality would make every file look
+changed on every scan, forever. The other two halves of that trap are handled in
+the transfer: the downloaded file is stamped with the publisher's mtime *before*
+the rename, and both sides of the comparison are NFC-normalized so a title with
+an umlaut that passed through macOS does not look new.
+
+**The transfer** takes one file at a time, in two to four ranged streams within
+that file, into `<local>/.jccmirror/<sha256(relpath)>.part`. The name is a hash
+of the path rather than something random, because a random name cannot be found
+again after a restart — which is the whole of resume. Each round of chunks
+advances a watermark in the `jobs` row, so an interrupted 40 GB file continues
+within one round of where it stopped. The finished file is verified against the
+size the manifest reported, timestamped, and `rename(2)`d into place from inside
+the same directory tree, so it appears atomically or not at all.
+
+Every file is a row in `jobs` with its own state machine and retry budget, which
+is what makes a transfer retriable rather than an in-memory loop that dies with
+the process. Anything a crash left `running` is requeued by the next run.
+
+**What M2 will not do yet**, so it does not come as a surprise:
+
+| | |
+|---|---|
+| **Nothing is ever deleted.** | Files the publisher no longer has are counted and reported by `plan`, and that is all. Mirror mode, the deletion threshold, the quarantine and the guards are M4 — deliberately after the diff has been watched for a while. |
+| **No schedule and no bandwidth cap.** | A `sync` runs until the queue is empty. The 7×24 grid, the limiter and the free-space preflight are M3. |
+| **A `jcc` pair refuses to transfer.** | Its hard exclusions and the lock gate on `ClipCornDB.db` are M5, and without them a sync would overwrite this side's own `ClipCornUserData.db`. Scanning one is allowed; it is read-only. |
+| **No real dashboard.** | The setup view can now start and watch the four operations and edit the pairs, which is enough to run the mirror without a shell. The six views, the SSE stream, the bandwidth charts and the notifications are still M6. |
 
 ## The M0 diagnostics
 
@@ -112,6 +227,13 @@ Two settings are generated at first start and never typed by hand: the WireGuard
 private key and the dashboard token. The private key therefore exists in exactly
 one place and never passes through a compose file, a shell history or `ps`.
 
+The engine's settings live in the same table and appear in the same setup view,
+because the key registry is what the form is generated from: walk concurrency and
+the mtime tolerance under **Scan**, and streams per file, chunk size, attempts,
+retry backoff and post-copy hashing under **Transfer**. The pairs themselves are
+the exception — they are rows of their own, edited with `jcc-mirror pairs` until
+the dashboard grows an editor in M6.
+
 ## Publisher-side setup
 
 Nothing of ours runs there. Enable the stock DSM **WebDAV Server** package,
@@ -135,18 +257,34 @@ whole-second timestamps, so a test cannot pass on fidelity the real remote does
 not have. `TestAgreesWithWebDAV` holds the two implementations to the same
 answers, which is the reason `remote.Remote` is an interface at all.
 
+The engine tests are a whole mirror in a temporary directory: one tree standing
+in for the publisher's share, one for the Synology, and the sqlite state between
+them. The same thing works by hand, which is the fastest way to try something:
+
+```bash
+./jcc-mirror pairs add -data ./data -name demo -local "$PWD/dst" -remote ""
+./jcc-mirror scan -data ./data -pair demo -remote-dir ./src
+./jcc-mirror sync -data ./data -pair demo -remote-dir ./src
+```
+
 ## Structure
 
 ```
-main.go        command dispatch, shared flags for the diagnostics
+main.go        command dispatch, the flags every command shares
 static.go      the settings that are compiled in, and why
 cmd_serve.go   the daemon
-cmd_*.go       one file per diagnostic command
+cmd_engine.go  what the mirror commands share: store, remote, engine
+cmd_*.go       one file per command, mirror and diagnostic alike
 app/           the running daemon: tunnel lifecycle, dashboard, setup view
-store/         sqlite state: migrations, config with audit, events
+engine/        the mirror: scan.go walks, diff.go plans, transfer.go moves
+               bytes, adopt.go recognises the USB bootstrap, filter.go is the
+               path globbing
+store/         sqlite state: migrations, config with audit, events, and the
+               engine's tables - pairs, manifest, scans, files, jobs, changes
 wg/            wireguard-go + netstack: the tunnel, ping and device status
 webdav/        PROPFIND, HEAD and ranged GET; propfind.go is the pure decoder
-remote/        the three-method interface the engine talks to
+remote/        the three-method interface the engine talks to, plus the ranged
+               read it needs on top of it
 remote/localfs/  a local directory as a Remote, for tests and development
 logs/ format/  the leveled logger and the number formatting everything shares
 deploy/        Dockerfile and compose for running it on the Synology

@@ -34,3 +34,16 @@ type Remote interface {
 	// otherwise a resume writes the start of the file into the middle of it.
 	Open(ctx context.Context, path string, offset int64) (io.ReadCloser, error)
 }
+
+// RangeReader is a Remote that can serve a bounded range. The transfer engine
+// requires it: without a length, parallel streams within one file would each run
+// to the end of it, and the whole file would come down once per stream. It is
+// kept out of Remote itself so the three-method interface stays the thing a
+// diagnostic or a fake has to implement.
+//
+// length <= 0 means "to the end". The second return value is the file's total
+// size, or -1 where the server did not say.
+type RangeReader interface {
+	Remote
+	OpenRange(ctx context.Context, path string, offset, length int64) (io.ReadCloser, int64, error)
+}

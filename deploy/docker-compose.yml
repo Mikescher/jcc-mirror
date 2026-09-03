@@ -18,5 +18,8 @@ services:
     # without it every transfer fails at its last syscall, the rename.
     user: "1026:100"
 
-    # The diagnostics run in the same image and read the same settings:
-    #   docker compose run --rm jcc-mirror walk -data /data -workers 8
+    # The mirror and the diagnostics run in the same image and read the same
+    # settings, so neither needs anything passing to it twice:
+    #   docker compose run --rm jcc-mirror pairs -data /data
+    #   docker compose run --rm jcc-mirror sync  -data /data -pair media
+    #   docker compose run --rm jcc-mirror walk  -data /data -workers 8
