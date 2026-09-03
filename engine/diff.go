@@ -42,9 +42,17 @@ type Plan struct {
 	Guard         string `json:"guard,omitempty"`
 	Approved      bool   `json:"approved,omitempty"`
 
-	// Excluded counts the differences the pair's globs dropped, so a plan that is
-	// unexpectedly small says why.
+	// Excluded counts the differences the plan dropped rather than acted on: what
+	// the pair's globs no longer cover, and for a jcc pair the hard exclusions and
+	// a database the publisher has stopped listing. A plan that is unexpectedly
+	// small says why.
 	Excluded int `json:"excluded"`
+
+	// Database is the jcc pair's shared database when the diff wants it. It is
+	// counted in Add or Replace like any other file, but it is never queued: it
+	// goes through the lock gate of DESIGN.md §3, as a phase of its own after the
+	// queue has run.
+	Database *PlanEntry `json:"database,omitempty"`
 
 	RemoteFiles int64 `json:"remoteFiles"`
 	RemoteBytes int64 `json:"remoteBytes"`
@@ -87,9 +95,7 @@ func (e *Engine) Plan(ctx context.Context, pair store.Pair, sample int) (Plan, e
 // file whose remote copy changed since it was queued loses its resume watermark,
 // because the bytes in its .part file belong to a version that no longer exists.
 func (e *Engine) Enqueue(ctx context.Context, pair store.Pair) (Plan, error) {
-	if err := Transferable(pair); err != nil {
-		return Plan{}, err
-	}
+	gated := e.gated(pair)
 
 	var queued int
 	p, err := e.plan(ctx, pair, 0, func(entry PlanEntry) error {
@@ -97,6 +103,12 @@ func (e *Engine) Enqueue(ctx context.Context, pair store.Pair) (Plan, error) {
 			// Counted by the plan, never queued. A deletion is not a transfer with a
 			// retry budget: it is the phase Reap runs once the whole queue has landed,
 			// behind the guards of DESIGN.md §2.5.
+			return nil
+		}
+		if entry.Path == gated {
+			// Counted too, and also not a job. The database is copied between two
+			// pairs of lock probes and staged beside itself, which is not something
+			// the queue's retry budget and .part files can express (DESIGN.md §3).
 			return nil
 		}
 		if _, err := e.store.EnqueueJob(ctx, store.Job{
@@ -145,7 +157,8 @@ func (e *Engine) plan(ctx context.Context, pair store.Pair, sample int, fn func(
 		p.Free = space.Free
 	}
 
-	f := newFilter(pair)
+	f := newFilter(pair, e.opts.JCC)
+	gated := e.gated(pair)
 	keep := func(entry PlanEntry) error {
 		if len(p.Entries) < sample {
 			p.Entries = append(p.Entries, entry)
@@ -173,6 +186,10 @@ func (e *Engine) plan(ctx context.Context, pair store.Pair, sample int, fn func(
 			p.Add++
 			p.AddBytes += d.Size
 		}
+		if d.Path == gated {
+			gatedEntry := entry
+			p.Database = &gatedEntry
+		}
 		return keep(entry)
 	})
 	if err != nil {
@@ -183,6 +200,14 @@ func (e *Engine) plan(ctx context.Context, pair store.Pair, sample int, fn func(
 	// stops mirroring it, it does not empty it.
 	err = e.store.VanishedFiles(ctx, pair.ID, func(relpath string, size int64) error {
 		if !f.allows(relpath) {
+			p.Excluded++
+			return nil
+		}
+		// The database is never deleted here, whatever the walk says it found: a
+		// walk that missed it is far likelier than a collection that lost it
+		// (DESIGN.md §3).
+		if relpath == gated {
+			e.log.Warnf("plan: the publisher no longer lists %s, and it is not something this deletes", relpath)
 			p.Excluded++
 			return nil
 		}

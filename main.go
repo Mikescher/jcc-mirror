@@ -68,6 +68,7 @@ var commands = []command{
 	{"adopt", groupMirror, "recognise a USB bootstrap already on disk, matched on size", cmdAdopt},
 	{"delete", groupMirror, "quarantine what the publisher no longer has, behind the guards", cmdDelete},
 	{"trash", groupMirror, "list, restore from and empty the quarantine", cmdTrash},
+	{"db", groupMirror, "the jCC database: its lock gate, the copies kept, and the way back", cmdDB},
 	{"jobs", groupMirror, "inspect the transfer queue, including what failed and why", cmdJobs},
 	{"schedule", groupMirror, "show or set the 7x24 transfer and scan windows", cmdSchedule},
 

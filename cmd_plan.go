@@ -105,6 +105,11 @@ func printPlan(p engine.Plan) error {
 			fmt.Printf("=> the %s vanished file(s) move to .jccmirror/trash on the next sync, once the\n   additions have landed, and are removed for good when the retention runs out.\n", format.Comma(int64(p.Vanished)))
 		}
 	}
+	if p.Database != nil {
+		// The one file of a plan that is not a job. Saying so here is what keeps a
+		// queue that is one shorter than the plan from looking like a bug.
+		fmt.Printf("=> %s is the jCC database: it is counted above but never queued. A sync copies\n   it at the end of its run, between two lock probes, and `jcc-mirror db -pair %s`\n   says whether either side has it open right now.\n", p.Database.Path, p.PairName)
+	}
 	if p.Transfers() > 0 && p.Shortfall == 0 {
 		fmt.Printf("=> `jcc-mirror sync -pair %s` queues and transfers this.\n", p.PairName)
 	}

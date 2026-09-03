@@ -46,7 +46,10 @@ type Client struct {
 	nonNFC atomic.Int64
 }
 
-var _ remote.Remote = (*Client)(nil)
+var (
+	_ remote.Remote = (*Client)(nil)
+	_ remote.Prober = (*Client)(nil)
+)
 
 // New builds a client for baseURL. The base path is the remote root: every path
 // passed to and returned from this client is relative to it.
@@ -238,8 +241,8 @@ func (c *Client) ProbeDepthInfinity(ctx context.Context, dir string) (bool, stri
 	return false, fmt.Sprintf("%s: %s", resp.Status, strings.TrimSpace(string(snippet))), nil
 }
 
-// Exists reports whether path is present. This is the lock-file probe of §3, and
-// an existence check is all it ever is: the body of a .~lock is a PID written by
+// Exists implements remote.Prober. This is the lock-file probe of §3, and an
+// existence check is all it ever is: the body of a .~lock is a PID written by
 // another machine, which is uninterpretable here and deliberately never read.
 func (c *Client) Exists(ctx context.Context, p string) (bool, error) {
 	req, err := c.newRequest(ctx, http.MethodHead, c.urlFor(p, false), nil)

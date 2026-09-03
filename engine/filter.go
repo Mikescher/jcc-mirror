@@ -22,17 +22,30 @@ import (
 // A pattern is matched segment by segment: "*" and "?" and "[a-z]" stay inside
 // one segment, "**" spans any number of them. "Serien/**" and "Serien" therefore
 // both mean the whole subtree.
+//
+// A jcc pair carries a set of refusals in front of all of that: the per-user
+// databases and the transient files beside them are never transferred, and no
+// configuration makes that wrong (DESIGN.md §3).
 type filter struct {
 	includes []string
 	excludes []string
+	jcc      *JCC // the hard exclusions, for a jcc pair; nil for any other
 }
 
-func newFilter(p store.Pair) filter {
-	return filter{includes: p.Includes, excludes: p.Excludes}
+func newFilter(p store.Pair, jcc JCC) filter {
+	f := filter{includes: p.Includes, excludes: p.Excludes}
+	if p.Type == store.PairJCC {
+		filled := jcc.fill()
+		f.jcc = &filled
+	}
+	return f
 }
 
 // allows reports whether a file belongs to the pair.
 func (f filter) allows(rel string) bool {
+	if f.refused(rel) {
+		return false
+	}
 	if f.excluded(rel) {
 		return false
 	}
@@ -46,7 +59,13 @@ func (f filter) allows(rel string) bool {
 // excludes apply: a directory that matches no include may still hold one, and
 // the alternative is guessing which prefixes of a pattern could match later.
 func (f filter) allowsDir(rel string) bool {
-	return rel == "" || !f.excluded(rel)
+	return rel == "" || (!f.refused(rel) && !f.excluded(rel))
+}
+
+// refused is the jcc pair's hard exclusions, which are not patterns and not
+// negotiable.
+func (f filter) refused(rel string) bool {
+	return f.jcc != nil && f.jcc.refuses(rel) != ""
 }
 
 func (f filter) excluded(rel string) bool {

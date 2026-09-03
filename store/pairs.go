@@ -15,9 +15,9 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// Pair types. A jcc pair is the ClipCornDB directory, which carries the hard
-// exclusions and the lock gate of DESIGN.md §3; until M5 implements those it
-// behaves exactly like a raw one.
+// Pair types. A jcc pair is the ClipCornDB directory: it never transfers the
+// per-user databases beside the shared one, and the shared one itself is copied
+// through a lock gate rather than through the job queue (DESIGN.md §3).
 const (
 	PairRaw = "raw"
 	PairJCC = "jcc"

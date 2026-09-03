@@ -57,6 +57,7 @@ func (cfg *config) openEngine(ctx context.Context, logger *logs.Logger) (*engine
 	}
 
 	opts := engine.OptionsFrom(values)
+	opts.DataDir = cfg.dataDir
 	if opts.Limiter, err = cfg.limiter(values, logger); err != nil {
 		closeFn()
 		return nil, nil, func() {}, err
@@ -68,6 +69,33 @@ func (cfg *config) openEngine(ctx context.Context, logger *logs.Logger) (*engine
 		return nil, nil, func() {}, err
 	}
 	return eng, st, closeFn, nil
+}
+
+// openLocalEngine builds an engine with no publisher behind it, for the
+// operations that touch nothing over there. The tunnel being down is one of the
+// reasons to want a database rollback, so needing the remote to build one would
+// be the wrong dependency (DESIGN.md S5).
+func (cfg *config) openLocalEngine(ctx context.Context, logger *logs.Logger) (*engine.Engine, *store.Store, func(), error) {
+	st, err := cfg.openStore(ctx)
+	if err != nil {
+		return nil, nil, func() {}, err
+	}
+
+	values, err := st.Config(ctx)
+	if err != nil {
+		st.Close()
+		return nil, nil, func() {}, err
+	}
+
+	opts := engine.OptionsFrom(values)
+	opts.DataDir = cfg.dataDir
+
+	eng, err := engine.NewOffline(st, logger, opts)
+	if err != nil {
+		st.Close()
+		return nil, nil, func() {}, err
+	}
+	return eng, st, func() { st.Close() }, nil
 }
 
 // limiter is the bandwidth cap a hand-run command gets. The grid's cap applies

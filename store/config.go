@@ -51,6 +51,11 @@ const (
 	KeyDeletePercent   = "delete.max_percent"
 	KeyDeleteRetention = "delete.retention"
 
+	KeyJCCDBDir     = "jcc.db_dir"
+	KeyJCCDBName    = "jcc.db_name"
+	KeyJCCLockStale = "jcc.lock_stale"
+	KeyJCCBackups   = "jcc.backups"
+
 	KeyDashboardToken = "dashboard.token"
 	KeyTimezone       = "general.timezone"
 )
@@ -219,6 +224,30 @@ var keyDefs = []KeyDef{
 		Help:     "How long deleted files stay in .jccmirror/trash before they are really gone. Nothing is ever unlinked directly, so a deletion that should not have happened is a move back for this long.",
 		Default:  "168h",
 		Validate: validateDuration,
+	},
+
+	{
+		Name: KeyJCCDBName, Group: "jCC", Label: "Database name",
+		Help:     "jClipCorn's dbName. The shared database is <name>.db and its lock is <name>.db.~lock; the per-user databases beside them are never synced, whatever this says.",
+		Default:  "ClipCornDB",
+		Validate: validateFileName,
+	},
+	{
+		Name: KeyJCCDBDir, Group: "jCC", Label: "Database directory",
+		Help:     "Where the databases sit inside a jcc pair. Empty means the pair is the ClipCornDB directory itself, which is the usual setup.",
+		Validate: validateRelPath,
+	},
+	{
+		Name: KeyJCCLockStale, Group: "jCC", Label: "Stale lock after",
+		Help:     "How long a lock file may sit unchanged before it is reported as stale. jClipCorn deletes its lock on a clean shutdown, so one older than this is a crash nobody restarted - and until someone overrides it the database silently never syncs.",
+		Default:  "24h",
+		Validate: validateDuration,
+	},
+	{
+		Name: KeyJCCBackups, Group: "jCC", Label: "Database backups kept",
+		Help:     "How many copies of the previous database to keep in the data volume. A few MB each, and the whole recovery story for a bad transfer.",
+		Default:  "5",
+		Validate: validatePositiveInt,
 	},
 
 	{
@@ -602,6 +631,36 @@ func validatePercent(s string) error {
 	}
 	if n < 0 || n > 100 {
 		return errors.New("must be between 0 and 100")
+	}
+	return nil
+}
+
+// validateFileName takes one path segment. A name with a separator in it would
+// silently move the database out of the pair it belongs to.
+func validateFileName(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return errors.New("required")
+	}
+	if strings.ContainsAny(s, `/\`) || s == "." || s == ".." {
+		return errors.New("a plain file name, without a path")
+	}
+	return nil
+}
+
+// validateRelPath takes a directory inside a pair. Empty is the pair root.
+func validateRelPath(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if strings.HasPrefix(s, "/") {
+		return errors.New("relative to the pair, so it cannot start with /")
+	}
+	for _, seg := range strings.Split(s, "/") {
+		if seg == ".." {
+			return errors.New("cannot climb out of the pair with ..")
+		}
 	}
 	return nil
 }

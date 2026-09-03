@@ -32,6 +32,12 @@ type PairView struct {
 	// deleting is otherwise invisible until someone reads the event log
 	// (DESIGN.md §2.5).
 	Approval *store.DeleteApproval
+
+	// Backups are the kept copies of a jcc pair's database, newest first. They
+	// are read from the table rather than probed over the tunnel: what the
+	// publisher holds and whether a lock is out is a question with a cost, and
+	// the answer belongs to the db run rather than to a page load (DESIGN.md §3).
+	Backups []store.DBBackup
 }
 
 // IncludesText and ExcludesText render the globs for the form field they are
@@ -82,6 +88,11 @@ func (a *App) PairViews(ctx context.Context) ([]PairView, error) {
 			return nil, err
 		} else if ok {
 			v.Approval = &ap
+		}
+		if p.Type == store.PairJCC {
+			if v.Backups, err = a.store.DBBackups(ctx, p.ID, 0); err != nil {
+				return nil, err
+			}
 		}
 		out = append(out, v)
 	}

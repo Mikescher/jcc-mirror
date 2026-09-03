@@ -51,7 +51,7 @@ func (e *Engine) Scan(ctx context.Context, pair store.Pair, resume bool) (ScanRe
 	e.event(ctx, store.LevelInfo, store.KindScanStarted, pair.ID,
 		fmt.Sprintf("scan %s for %q", verb, pair.Name), map[string]any{"scanId": sc.ID, "resumed": resumed})
 
-	w := &walk{engine: e, pair: pair, scanID: sc.ID, filter: newFilter(pair)}
+	w := &walk{engine: e, pair: pair, scanID: sc.ID, filter: newFilter(pair, e.opts.JCC)}
 	stop := w.report()
 	walkErr := w.run(ctx)
 	stop()

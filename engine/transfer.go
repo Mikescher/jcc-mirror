@@ -46,10 +46,6 @@ func (e *Engine) Sync(ctx context.Context, pair store.Pair) (SyncResult, error) 
 	started := time.Now()
 	res := SyncResult{PairID: pair.ID, PairName: pair.Name}
 
-	if err := Transferable(pair); err != nil {
-		return res, err
-	}
-
 	// Anything left running belonged to a process that is gone: a crash, a
 	// restart, a self-update or a transfer window that closed.
 	requeued, err := e.store.RequeueRunning(ctx, pair.ID)
@@ -212,7 +208,7 @@ func (e *Engine) runJob(ctx context.Context, pair store.Pair, job store.Job) (mo
 
 	if e.matchesOnDisk(dst, job) {
 		e.log.Debugf("sync: %q is already on disk, adopting it", job.Path)
-		if err := e.recordFile(ctx, pair, job, "", store.FileAdopted); err != nil {
+		if err := e.recordFile(ctx, pair, job.Path, job.BytesTotal, job.MTime, "", store.FileAdopted); err != nil {
 			return false, err
 		}
 		return false, e.store.SetJobState(ctx, job.ID, store.JobDone)
@@ -312,7 +308,7 @@ func (e *Engine) runJob(ctx context.Context, pair store.Pair, job store.Job) (mo
 		return false, fmt.Errorf("move the finished file into place: %w", err)
 	}
 
-	if err := e.recordFile(ctx, pair, job, hash, store.FileSynced); err != nil {
+	if err := e.recordFile(ctx, pair, job.Path, job.BytesTotal, job.MTime, hash, store.FileSynced); err != nil {
 		return false, err
 	}
 	if err := e.store.SetJobState(ctx, job.ID, store.JobDone); err != nil {
@@ -324,35 +320,35 @@ func (e *Engine) runJob(ctx context.Context, pair store.Pair, job store.Job) (mo
 }
 
 // recordFile writes local truth and the per-file history in one place, so a
-// transfer and an in-place adoption cannot drift apart.
-func (e *Engine) recordFile(ctx context.Context, pair store.Pair, job store.Job, hash, state string) error {
+// transfer, an in-place adoption and the database's own gate cannot drift apart.
+func (e *Engine) recordFile(ctx context.Context, pair store.Pair, relpath string, size int64, mtime time.Time, hash, state string) error {
 	var (
 		op        = store.ChangeAdd
 		before    *int64
 		unchanged bool
 	)
-	old, have, err := e.store.FileAt(ctx, pair.ID, job.Path)
+	old, have, err := e.store.FileAt(ctx, pair.ID, relpath)
 	if err != nil {
 		return err
 	}
 	if have {
 		op = store.ChangeReplace
-		size := old.Size
-		before = &size
+		oldSize := old.Size
+		before = &oldSize
 
 		// The row already describes this exact file, so the queue was out of date
 		// with local truth rather than the file being out of date with the
 		// publisher. A file this process transferred keeps saying 'synced': that
 		// provenance is the whole value of the state column to a later scrub.
-		unchanged = old.Size == job.BytesTotal && within(old.MTime, job.MTime, e.opts.MTimeTolerance)
+		unchanged = old.Size == size && within(old.MTime, mtime, e.opts.MTimeTolerance)
 		if unchanged {
 			state = old.State
 		}
 	}
 
 	if err := e.store.PutFile(ctx, store.File{
-		PairID: pair.ID, Path: job.Path, Size: job.BytesTotal,
-		MTime: job.MTime, Hash: hash, State: state, VerifiedAt: time.Now(),
+		PairID: pair.ID, Path: relpath, Size: size,
+		MTime: mtime, Hash: hash, State: state, VerifiedAt: time.Now(),
 	}); err != nil {
 		return err
 	}
@@ -360,9 +356,9 @@ func (e *Engine) recordFile(ctx context.Context, pair store.Pair, job store.Job,
 		return nil // nothing moved, so the history has nothing to record
 	}
 
-	after := job.BytesTotal
+	after := size
 	e.change(ctx, &store.Change{
-		PairID: pair.ID, Path: job.Path, Op: op,
+		PairID: pair.ID, Path: relpath, Op: op,
 		SizeBefore: before, SizeAfter: &after,
 	})
 	return nil

@@ -119,6 +119,9 @@ func printPairState(ctx context.Context, st *store.Store, p store.Pair) error {
 	fmt.Printf("  publisher      %s files, %s\n", format.Comma(remoteFiles), format.Bytes(remoteBytes))
 	fmt.Printf("  here           %s files, %s\n", format.Comma(localFiles), format.Bytes(localBytes))
 	fmt.Printf("  queue          %s\n", queueLine(queue))
+	if p.Type == store.PairJCC {
+		fmt.Printf("  database       gated: copied only while neither side has it open, and never\n                 through the queue; `jcc-mirror db -pair %s` says where it stands\n", p.Name)
+	}
 	return nil
 }
 
@@ -290,7 +293,7 @@ func pairFlags(fs *flag.FlagSet) (*store.Pair, *bool) {
 	p := &store.Pair{}
 
 	fs.StringVar(&p.Name, "name", "", "what the pair is called; every other command refers to it by this or by its id")
-	fs.StringVar(&p.Type, "type", store.PairRaw, "\"raw\", or \"jcc\" for the ClipCornDB directory, which grows its lock gate in M5")
+	fs.StringVar(&p.Type, "type", store.PairRaw, "\"raw\", or \"jcc\" for the ClipCornDB directory: hard exclusions and a lock gate on the database")
 	fs.StringVar(&p.RemotePath, "remote", "", "directory on the publisher's share, relative to the WebDAV base URL; empty means its root")
 	fs.StringVar(&p.LocalPath, "local", "", "absolute directory here that the pair mirrors into")
 	fs.StringVar(&p.Mode, "mode", store.ModeAdditive, "\"additive\" or \"mirror\"; a mirror pair quarantines what the publisher drops, behind the guards")

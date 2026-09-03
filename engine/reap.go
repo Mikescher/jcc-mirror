@@ -60,12 +60,6 @@ func (e *Engine) Reap(ctx context.Context, pair store.Pair) (res ReapResult, err
 		res.Skipped = "the pair is additive: nothing here is ever deleted"
 		return res, nil
 	}
-	// A jcc pair carries hard exclusions that do not exist yet, and this side's own
-	// ClipCornUserData.db is exactly the kind of file they exist to protect.
-	if err := Transferable(pair); err != nil {
-		return res, err
-	}
-
 	scan, ok, err := e.store.LastCompletedScan(ctx, pair.ID)
 	if err != nil {
 		return res, err
@@ -232,7 +226,8 @@ const vanishedPage = 1000
 // the guards, once to act - because the alternative is holding six figures of
 // paths in memory to save an indexed join.
 func (e *Engine) vanished(ctx context.Context, pair store.Pair, fn func(relpath string, size int64) error) (files, bytes int64, err error) {
-	f := newFilter(pair)
+	f := newFilter(pair, e.opts.JCC)
+	gated := e.gated(pair)
 
 	for after := ""; ; {
 		page, err := e.store.VanishedPage(ctx, pair.ID, after, vanishedPage)
@@ -248,6 +243,12 @@ func (e *Engine) vanished(ctx context.Context, pair store.Pair, fn func(relpath 
 			// A file the globs no longer cover is not a deletion: excluding a subtree
 			// stops mirroring it, it does not empty it.
 			if !f.allows(v.Path) {
+				continue
+			}
+			// Nor is a database the publisher no longer lists. It is the one file
+			// here that is worth more than one walk's opinion of it, and the plan
+			// says so where a person reads it (DESIGN.md §3).
+			if v.Path == gated {
 				continue
 			}
 			files++

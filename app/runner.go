@@ -17,11 +17,12 @@ import (
 // get to, and the bootstrap adoption in particular has to happen exactly once,
 // before anything else works.
 const (
-	RunPlan   = "plan"
-	RunScan   = "scan"
-	RunAdopt  = "adopt"
-	RunSync   = "sync"
-	RunDelete = "delete"
+	RunPlan     = "plan"
+	RunScan     = "scan"
+	RunAdopt    = "adopt"
+	RunSync     = "sync"
+	RunDelete   = "delete"
+	RunDatabase = "db"
 )
 
 // runHistory is how many finished runs the page keeps. They live in memory only:
@@ -34,15 +35,19 @@ const planSample = 50
 
 // Run is one operation, running or finished.
 type Run struct {
-	Kind       string       `json:"kind"`
-	Auto       bool         `json:"auto,omitempty"` // started by the scheduler rather than by a person
-	PairID     int64        `json:"pairId"`
-	PairName   string       `json:"pair"`
-	StartedAt  time.Time    `json:"startedAt"`
-	FinishedAt *time.Time   `json:"finishedAt,omitempty"`
-	Summary    string       `json:"summary,omitempty"`
-	Error      string       `json:"error,omitempty"`
-	Plan       *engine.Plan `json:"plan,omitempty"`
+	Kind string `json:"kind"`
+	Auto bool   `json:"auto,omitempty"` // started by the scheduler rather than by a person
+	// Force is the override a person had to give: the lock gate's, for a lock
+	// that has gone stale and will not clear on its own (DESIGN.md §3).
+	Force      bool             `json:"force,omitempty"`
+	PairID     int64            `json:"pairId"`
+	PairName   string           `json:"pair"`
+	StartedAt  time.Time        `json:"startedAt"`
+	FinishedAt *time.Time       `json:"finishedAt,omitempty"`
+	Summary    string           `json:"summary,omitempty"`
+	Error      string           `json:"error,omitempty"`
+	Plan       *engine.Plan     `json:"plan,omitempty"`
+	Database   *engine.DBResult `json:"database,omitempty"`
 }
 
 // Done reports whether the run has ended.
@@ -84,21 +89,21 @@ func (s RunState) Busy() bool { return s.Current != nil }
 // StartRun begins one operation in the background and returns as soon as it has
 // started. The HTTP request that started it is long gone by the time a sync
 // finishes - a transfer of the collection runs for days.
-func (a *App) StartRun(ctx context.Context, kind string, pairID int64) (Run, error) {
+func (a *App) StartRun(ctx context.Context, kind string, pairID int64, force bool) (Run, error) {
 	pair, err := a.store.PairByID(ctx, pairID)
 	if err != nil {
 		return Run{}, err
 	}
-	return a.startRun(ctx, kind, pair, false)
+	return a.startRun(ctx, kind, pair, false, force)
 }
 
 // startRun is StartRun with the pair already resolved, and with auto saying who
 // asked. The scheduler only ever stops its own runs: a sync someone started by
 // hand is a person at the console who wants bytes moved now, and a window
 // boundary is not an answer to that.
-func (a *App) startRun(ctx context.Context, kind string, pair store.Pair, auto bool) (Run, error) {
+func (a *App) startRun(ctx context.Context, kind string, pair store.Pair, auto, force bool) (Run, error) {
 	switch kind {
-	case RunPlan, RunScan, RunAdopt, RunSync, RunDelete:
+	case RunPlan, RunScan, RunAdopt, RunSync, RunDelete, RunDatabase:
 	default:
 		return Run{}, fmt.Errorf("unknown operation %q", kind)
 	}
@@ -122,7 +127,7 @@ func (a *App) startRun(ctx context.Context, kind string, pair store.Pair, auto b
 			c.Kind, c.PairName, format.Duration(c.Elapsed()))
 	}
 
-	run := &Run{Kind: kind, Auto: auto, PairID: pair.ID, PairName: pair.Name, StartedAt: time.Now()}
+	run := &Run{Kind: kind, Auto: auto, Force: force, PairID: pair.ID, PairName: pair.Name, StartedAt: time.Now()}
 	runCtx, cancel := context.WithCancel(base)
 	a.runs.current, a.runs.engine, a.runs.cancel, a.runs.reason = run, eng, cancel, ""
 
@@ -166,19 +171,20 @@ func (a *App) runContext() context.Context {
 }
 
 func (a *App) execute(ctx context.Context, eng *engine.Engine, pair store.Pair, run *Run) {
-	summary, plan, err := runOperation(ctx, eng, pair, run.Kind)
+	out := runOperation(ctx, eng, pair, run.Kind, run.Force)
 
 	a.runs.mu.Lock()
 	defer a.runs.mu.Unlock()
 
 	finished := time.Now()
+	err := out.err
 	stopped := errors.Is(err, context.Canceled)
 	run.FinishedAt = &finished
-	run.Summary, run.Plan = summary, plan
+	run.Summary, run.Plan, run.Database = out.summary, out.plan, out.database
 
 	switch {
 	case err == nil:
-		a.log.Infof("run: %s of %q finished: %s", run.Kind, run.PairName, summary)
+		a.log.Infof("run: %s of %q finished: %s", run.Kind, run.PairName, out.summary)
 	case stopped && a.runs.reason != "":
 		// A run that was stopped on purpose is not a failure, and reads better as
 		// the reason it was stopped than as "context canceled".
@@ -198,64 +204,123 @@ func (a *App) execute(ctx context.Context, eng *engine.Engine, pair store.Pair, 
 	if run.Auto {
 		a.noteScheduledRun(run.PairID, err != nil && !stopped)
 	}
+	// A database the gate left alone is not a failure and not a thing that has
+	// finished either: the lock clears when user 1 closes jClipCorn, and nothing
+	// walks the tree in the meantime to notice (DESIGN.md §3).
+	a.noteDatabaseRun(run.PairID, out.database)
 }
 
-// runOperation is the switch the buttons come down to. The engine writes
-// the durable record itself, so all that is wanted back is a line to read.
-func runOperation(ctx context.Context, eng *engine.Engine, pair store.Pair, kind string) (string, *engine.Plan, error) {
+// outcome is what a run leaves behind: a line to read, and the structured halves
+// the page and the scheduler go on to use.
+type outcome struct {
+	summary  string
+	plan     *engine.Plan
+	database *engine.DBResult
+	err      error
+}
+
+func failed(err error) outcome { return outcome{err: err} }
+
+// runOperation is the switch the buttons come down to. The engine writes the
+// durable record itself, so all that is wanted back is a line to read.
+func runOperation(ctx context.Context, eng *engine.Engine, pair store.Pair, kind string, force bool) outcome {
 	switch kind {
 	case RunPlan:
 		p, err := eng.Plan(ctx, pair, planSample)
 		if err != nil {
-			return "", nil, err
+			return failed(err)
 		}
-		return planSummary(p), &p, nil
+		return outcome{summary: planSummary(p), plan: &p}
 
 	case RunScan:
 		res, err := eng.Scan(ctx, pair, true)
 		if err != nil {
-			return "", nil, err
+			return failed(err)
 		}
-		return fmt.Sprintf("%s directories, %s files, %s; %s manifest rows swept",
+		return outcome{summary: fmt.Sprintf("%s directories, %s files, %s; %s manifest rows swept",
 			format.Comma(res.Scan.Dirs), format.Comma(res.Scan.Files),
-			format.Bytes(res.Scan.Bytes), format.Comma(res.Swept)), nil, nil
+			format.Bytes(res.Scan.Bytes), format.Comma(res.Swept))}
 
 	case RunAdopt:
 		res, err := eng.Adopt(ctx, pair)
 		if err != nil {
-			return "", nil, err
+			return failed(err)
 		}
-		return fmt.Sprintf("%s files matched on size (%s); %s differ in size, %s missing here, %s extra",
+		return outcome{summary: fmt.Sprintf("%s files matched on size (%s); %s differ in size, %s missing here, %s extra",
 			format.Comma(int64(res.Matched)), format.Bytes(res.MatchedBytes),
 			format.Comma(int64(res.SizeMismatch)), format.Comma(int64(res.Missing)),
-			format.Comma(int64(res.Extra))), nil, nil
+			format.Comma(int64(res.Extra)))}
 
 	case RunSync:
 		p, err := eng.Enqueue(ctx, pair)
 		if err != nil {
-			return "", nil, err
+			return failed(err)
 		}
 		res, syncErr := eng.Sync(ctx, pair)
-		summary := fmt.Sprintf("%s queued; %s files transferred (%s), %s already here, %s failed, %s still queued",
+		out := outcome{summary: fmt.Sprintf("%s queued; %s files transferred (%s), %s already here, %s failed, %s still queued",
 			format.Comma(int64(p.Queued)), format.Comma(int64(res.Files)), format.Bytes(res.Bytes),
-			format.Comma(int64(res.InPlace)), format.Comma(int64(res.Failed)), format.Comma(res.Pending))
+			format.Comma(int64(res.InPlace)), format.Comma(int64(res.Failed)), format.Comma(res.Pending))}
 		if syncErr != nil {
-			return summary, nil, syncErr
+			out.err = syncErr
+			return out
+		}
+
+		// The database, once the ordinary files of the pair have landed. It has a
+		// phase of its own because it is copied between two pairs of lock probes,
+		// not because it is large (DESIGN.md §3).
+		if pair.Type == store.PairJCC {
+			db, err := eng.SyncDatabase(ctx, pair, force)
+			out.summary += "; " + databaseSummary(db)
+			out.database = &db
+			if err != nil {
+				out.err = err
+				return out
+			}
 		}
 
 		// The deletion phase, and only after a sync that finished: the tree shrinks
 		// once the additions have landed, never before (DESIGN.md §2.5).
 		reaped, err := eng.Reap(ctx, pair)
-		return summary + "; " + reapSummary(reaped), nil, err
+		out.summary += "; " + reapSummary(reaped)
+		out.err = err
+		return out
+
+	case RunDatabase:
+		res, err := eng.SyncDatabase(ctx, pair, force)
+		if err != nil {
+			return failed(err)
+		}
+		return outcome{summary: databaseSummary(res), database: &res}
 
 	case RunDelete:
 		res, err := eng.Reap(ctx, pair)
 		if err != nil {
-			return "", nil, err
+			return failed(err)
 		}
-		return reapSummary(res), nil, nil
+		return outcome{summary: reapSummary(res)}
 	}
-	return "", nil, fmt.Errorf("unknown operation %q", kind)
+	return failed(fmt.Errorf("unknown operation %q", kind))
+}
+
+// databaseSummary is the lock gate in one line.
+func databaseSummary(r engine.DBResult) string {
+	switch {
+	case r.Deferred != "":
+		return r.Path + " was left alone: " + r.Deferred
+	case r.Skipped != "":
+		return "the database was not copied — " + r.Skipped
+	case r.Replaced:
+		out := fmt.Sprintf("%s replaced (%s)", r.Path, format.Bytes(r.Bytes))
+		if r.Backup != nil {
+			out += ", the previous one kept"
+		}
+		if r.Forced {
+			out += ", overriding a held lock"
+		}
+		return out
+	default:
+		return "nothing happened to the database"
+	}
 }
 
 func planSummary(p engine.Plan) string {

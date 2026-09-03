@@ -115,7 +115,7 @@ func TestFilterAllows(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newFilter(store.Pair{Includes: tt.includes, Excludes: tt.excludes})
+			f := newFilter(store.Pair{Includes: tt.includes, Excludes: tt.excludes}, JCC{})
 			if got := f.allows(tt.path); got != tt.want {
 				t.Errorf("allows(%q) = %v, want %v (includes %q, excludes %q)", tt.path, got, tt.want, tt.includes, tt.excludes)
 			}
@@ -146,7 +146,7 @@ func TestFilterAllowsDir(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newFilter(store.Pair{Includes: tt.includes, Excludes: tt.excludes})
+			f := newFilter(store.Pair{Includes: tt.includes, Excludes: tt.excludes}, JCC{})
 			if got := f.allowsDir(tt.dir); got != tt.want {
 				t.Errorf("allowsDir(%q) = %v, want %v (includes %q, excludes %q)", tt.dir, got, tt.want, tt.includes, tt.excludes)
 			}

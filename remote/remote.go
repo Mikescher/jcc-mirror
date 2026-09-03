@@ -35,6 +35,24 @@ type Remote interface {
 	Open(ctx context.Context, path string, offset int64) (io.ReadCloser, error)
 }
 
+// Prober is a Remote that can answer "is this one file there" without listing the
+// directory around it. The lock gate of DESIGN.md §3 is what needs it: the lock
+// sits beside a database that may share a directory with ten thousand covers, and
+// an existence check is all the gate ever wants - the body of a .~lock is a PID
+// from another machine and is deliberately never read.
+//
+// Like RangeReader it is kept out of Remote, so the three-method interface stays
+// what a fake has to implement.
+type Prober interface {
+	Remote
+
+	// Exists reports whether path is present. A path that is not there is false
+	// and no error; anything else - a refused request, a tunnel that is down - is
+	// an error, because the gate must never read "cannot tell" as "nobody is
+	// using it".
+	Exists(ctx context.Context, path string) (bool, error)
+}
+
 // RangeReader is a Remote that can serve a bounded range. The transfer engine
 // requires it: without a length, parallel streams within one file would each run
 // to the end of it, and the whole file would come down once per stream. It is

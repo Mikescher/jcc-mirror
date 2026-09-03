@@ -5,13 +5,14 @@
 // transfer window (DESIGN.md §2.3, §2.4).
 //
 // It moves bytes and does not know what is in them. The one exception the design
-// allows - the lock gate on ClipCornDB.db - is M5 and is not here.
+// allows is the lock gate on the jCC pair's database, which lives in jcc.go.
 package engine
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"path/filepath"
 	"sync"
@@ -30,6 +31,11 @@ const PartDir = ".jccmirror"
 
 // Options are the engine's settings, read from the config table.
 type Options struct {
+	// DataDir is the volume the daemon's own state lives in. The database
+	// backups of DESIGN.md S5 go there rather than beside the pair, because the
+	// volume is what a rebuilt container keeps.
+	DataDir string
+
 	ScanWorkers    int
 	MTimeTolerance time.Duration
 	Chunks         int
@@ -45,6 +51,10 @@ type Options struct {
 	// percentage guard off - the per-pair file count still applies.
 	DeletePercent  int
 	TrashRetention time.Duration
+
+	// JCC is the jCC pair's half of the settings: which database is gated, and
+	// what is kept of the one it replaces (DESIGN.md §3).
+	JCC JCC
 
 	// Limiter is the bandwidth cap, and is shared rather than owned: the
 	// scheduler holds the same one and changes it live at a window boundary. A
@@ -65,6 +75,12 @@ func OptionsFrom(v store.Values) Options {
 		Reserve:        v.Size(store.KeyReserve),
 		DeletePercent:  v.Int(store.KeyDeletePercent),
 		TrashRetention: v.Duration(store.KeyDeleteRetention),
+		JCC: JCC{
+			DBDir:     v.Get(store.KeyJCCDBDir),
+			DBName:    v.Get(store.KeyJCCDBName),
+			LockStale: v.Duration(store.KeyJCCLockStale),
+			Backups:   v.Int(store.KeyJCCBackups),
+		},
 	}
 }
 
@@ -94,6 +110,7 @@ func (o *Options) fill() {
 	if o.TrashRetention <= 0 {
 		o.TrashRetention = 7 * 24 * time.Hour
 	}
+	o.JCC = o.JCC.fill()
 }
 
 // Engine runs one pair at a time against one remote.
@@ -121,6 +138,31 @@ func New(st *store.Store, rem remote.Remote, log *logs.Logger, opts Options) (*E
 	opts.fill()
 	return &Engine{store: st, remote: rr, log: log, opts: opts}, nil
 }
+
+// NewOffline builds an engine that has no publisher to talk to. It exists for
+// the one operation that has to work when the tunnel is down: rolling a database
+// back to a copy that is already here (DESIGN.md S5). Anything that does reach
+// for the remote says so rather than dereferencing nothing.
+func NewOffline(st *store.Store, log *logs.Logger, opts Options) (*Engine, error) {
+	return New(st, offlineRemote{}, log, opts)
+}
+
+// errOffline is what the stand-in answers with.
+var errOffline = errors.New("this engine has no remote: it was built for the operations that touch nothing on the publisher")
+
+type offlineRemote struct{}
+
+func (offlineRemote) List(context.Context, string) ([]remote.Entry, error) { return nil, errOffline }
+func (offlineRemote) Stat(context.Context, string) (remote.Entry, error) {
+	return remote.Entry{}, errOffline
+}
+func (offlineRemote) Open(context.Context, string, int64) (io.ReadCloser, error) {
+	return nil, errOffline
+}
+func (offlineRemote) OpenRange(context.Context, string, int64, int64) (io.ReadCloser, int64, error) {
+	return nil, 0, errOffline
+}
+func (offlineRemote) Exists(context.Context, string) (bool, error) { return false, errOffline }
 
 // Options returns the settings in force, with the defaults filled in.
 func (e *Engine) Options() Options { return e.opts }
@@ -214,20 +256,6 @@ func remotePath(p store.Pair, rel string) string {
 // localPath is where a pair-relative path lands here.
 func localPath(p store.Pair, rel string) string {
 	return filepath.Join(p.LocalPath, filepath.FromSlash(rel))
-}
-
-// Transferable refuses to move bytes for a pair whose type needs machinery that
-// is not built yet. A jcc pair carries hard exclusions and a lock gate
-// (DESIGN.md §3) that arrive in M5, and without them a sync of the ClipCornDB
-// directory would overwrite the subscriber's own ClipCornUserData.db and
-// ClipCornHistory.db - both per-user, and neither ever synced - and could copy
-// the shared database out from under a running jClipCorn. Scanning one is
-// harmless and stays allowed; transferring it is not.
-func Transferable(p store.Pair) error {
-	if p.Type == store.PairJCC {
-		return fmt.Errorf("pair %q is a jcc pair: its hard exclusions and lock gate are M5, and transferring one without them would overwrite this side's own ClipCornUserData.db and ClipCornHistory.db", p.Name)
-	}
-	return nil
 }
 
 // errNoManifest is what every operation that reads the manifest returns before

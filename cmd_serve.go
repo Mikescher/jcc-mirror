@@ -40,7 +40,9 @@ func cmdServe(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
-	a := app.New(st, logger, app.Options{Version: version, BuildStamp: buildStamp, TunnelPort: *tunnelPort})
+	a := app.New(st, logger, app.Options{
+		Version: version, BuildStamp: buildStamp, TunnelPort: *tunnelPort, DataDir: *dataDir,
+	})
 	handler := a.Handler()
 	a.SetHandler(handler)
 

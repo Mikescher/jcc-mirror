@@ -22,6 +22,12 @@ const schedulerInterval = 30 * time.Second
 // every half minute.
 const failureBackoff = 15 * time.Minute
 
+// databaseRetry is how long the scheduler waits before probing a lock again. The
+// gate's answer to a held lock is "not this cycle" (DESIGN.md §3), and nothing
+// else brings the pair back around: its queue is empty and its manifest is
+// unchanged, so without this the database would wait for the next walk.
+const databaseRetry = 10 * time.Minute
+
 // scheduler is the daemon's own hand on the buttons: it walks the pairs in
 // priority order inside the windows the 7x24 grid opens, and it carries the
 // current cell's cap into the transfer that is already running (DESIGN.md §6).
@@ -42,6 +48,10 @@ type scheduler struct {
 
 	// held is when a pair whose scheduled run failed may be tried again.
 	held map[int64]time.Time
+
+	// dbRetry is when a jcc pair whose database the gate deferred may be probed
+	// again.
+	dbRetry map[int64]time.Time
 }
 
 // scheduleSettings is the schedule half of the configuration, resolved into the
@@ -234,7 +244,7 @@ func (a *App) startDueRun(ctx context.Context, cfg scheduleSettings, now time.Ti
 		return
 	}
 	for _, p := range pairs {
-		if !a.eligible(p, now) || engine.Transferable(p) != nil {
+		if !a.eligible(p, now) {
 			continue
 		}
 		if why, scanID, due := a.syncDue(ctx, p); due {
@@ -243,6 +253,48 @@ func (a *App) startDueRun(ctx context.Context, cfg scheduleSettings, now time.Ti
 			return
 		}
 	}
+
+	// Last, because it is the cheapest thing here and the only one that comes
+	// back on its own: a database the gate deferred is retried until the lock
+	// clears, without anything else about the pair having changed.
+	for _, p := range pairs {
+		if !a.eligible(p, now) || p.Type != store.PairJCC {
+			continue
+		}
+		if a.databaseDue(p, now) {
+			a.startScheduled(ctx, RunDatabase, p, "its database was left alone last time a lock was probed")
+			return
+		}
+	}
+}
+
+// databaseDue reports whether a deferred lock probe is worth repeating yet.
+func (a *App) databaseDue(p store.Pair, now time.Time) bool {
+	a.sched.mu.Lock()
+	defer a.sched.mu.Unlock()
+
+	at, ok := a.sched.dbRetry[p.ID]
+	return ok && !now.Before(at)
+}
+
+// noteDatabaseRun records what the gate made of a pair's database: a deferred one
+// is put on the retry clock, and anything else takes it off again.
+func (a *App) noteDatabaseRun(pairID int64, res *engine.DBResult) {
+	if res == nil {
+		return
+	}
+
+	a.sched.mu.Lock()
+	defer a.sched.mu.Unlock()
+
+	if res.Deferred == "" {
+		delete(a.sched.dbRetry, pairID)
+		return
+	}
+	if a.sched.dbRetry == nil {
+		a.sched.dbRetry = map[int64]time.Time{}
+	}
+	a.sched.dbRetry[pairID] = time.Now().Add(databaseRetry)
 }
 
 // eligible drops the pairs the scheduler must not touch right now: the disabled
@@ -312,7 +364,7 @@ func (a *App) syncDue(ctx context.Context, p store.Pair) (string, int64, bool) {
 }
 
 func (a *App) startScheduled(ctx context.Context, kind string, pair store.Pair, why string) {
-	if _, err := a.startRun(ctx, kind, pair, true); err != nil {
+	if _, err := a.startRun(ctx, kind, pair, true, false); err != nil {
 		a.log.Warnf("schedule: %s of %q could not start: %v", kind, pair.Name, err)
 		a.noteScheduledRun(pair.ID, true)
 		return

@@ -309,8 +309,55 @@
           {{if eq .Mode "mirror"}}
             <button class="ghost" name="kind" value="delete" {{if $off}}disabled{{end}}>Delete</button>
           {{end}}
+          {{if eq .Type "jcc"}}
+            <button class="ghost" name="kind" value="db" {{if $off}}disabled{{end}}>Database</button>
+          {{end}}
           <button name="kind" value="sync" {{if $off}}disabled{{end}}>Sync</button>
         </form>
+
+        {{if eq .Type "jcc"}}
+          <details>
+            <summary>The database of this pair</summary>
+            <p class="note">ClipCornDB.db is copied only while neither side has it open — no lock
+              file means a clean shutdown, which is what makes a plain byte copy of a database
+              consistent. The lock is probed again after the copy, so jClipCorn starting
+              mid-transfer costs the attempt rather than the database. The per-user
+              ClipCornUserData.db and ClipCornHistory.db are never copied at all.</p>
+            {{if .Backups}}
+              <div class="scroll"><table>
+                <tr><th>kept</th><th>size</th><th>of the database dated</th><th>why</th><th></th></tr>
+                {{range .Backups}}
+                  <tr>
+                    <td class="mono">{{clock .TS}}</td>
+                    <td>{{bytes .Size}}</td>
+                    <td class="mono">{{clock .MTime}}</td>
+                    <td>{{.Reason}}</td>
+                    <td>
+                      <form method="post" action="/api/pairs/database/rollback">
+                        <input type="hidden" name="id" value="{{$pair.ID}}">
+                        <input type="hidden" name="backup" value="{{.ID}}">
+                        <button class="ghost" type="submit" {{if not $.Authed}}disabled{{end}}>Roll back to this</button>
+                      </form>
+                    </td>
+                  </tr>
+                {{end}}
+              </table></div>
+              <p class="note">A rollback puts that copy back and keeps what it displaced, so it is
+                undoable. The next sync then compares it against the publisher's and fetches his
+                again — which is what you want when the transfer was the problem.</p>
+            {{else}}
+              <p class="note">No copies kept yet: nothing has replaced this pair's database.</p>
+            {{end}}
+            <form method="post" action="/api/runs" class="row">
+              <input type="hidden" name="pair" value="{{.ID}}">
+              <input type="hidden" name="kind" value="db">
+              <input type="hidden" name="force" value="true">
+              <button class="danger" type="submit" {{if $off}}disabled{{end}}>Copy it although a lock is held</button>
+              <span class="note">For a lock left behind by a jClipCorn that crashed. It will never
+                clear on its own, and until someone overrides it the database silently never syncs.</span>
+            </form>
+          </details>
+        {{end}}
 
         <details>
           <summary>Edit this pair</summary>
@@ -339,7 +386,7 @@
               <label style="margin:0"><span class="name">Type</span>
                 <select name="type">
                   <option value="raw" {{if eq .Type "raw"}}selected{{end}}>raw</option>
-                  <option value="jcc" {{if eq .Type "jcc"}}selected{{end}}>jcc (M5)</option>
+                  <option value="jcc" {{if eq .Type "jcc"}}selected{{end}}>jcc (the ClipCornDB directory)</option>
                 </select></label>
               <label style="margin:0"><span class="name">Mode</span>
                 <select name="mode">

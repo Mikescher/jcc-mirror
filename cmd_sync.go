@@ -10,6 +10,7 @@ import (
 	"blackforestbytes.com/jcc-mirror/engine"
 	"blackforestbytes.com/jcc-mirror/format"
 	"blackforestbytes.com/jcc-mirror/logs"
+	"blackforestbytes.com/jcc-mirror/store"
 )
 
 // planOnlySample is how many entries -plan-only lists. `plan` is the command for
@@ -30,6 +31,7 @@ func cmdSync(ctx context.Context, args []string) error {
 	ref := fs.String("pair", "", "the pair to transfer, by name or id")
 	planOnly := fs.Bool("plan-only", false, "print what would happen and stop: nothing is queued and no byte is moved")
 	noDelete := fs.Bool("no-delete", false, "transfer only, and leave the deletion phase of a mirror pair for later")
+	force := fs.Bool("force", false, "copy a jcc pair's database although a lock is held - for one that has gone stale")
 	progress := fs.Duration("progress", 5*time.Second, "how often to report where the transfer is, 0 to disable")
 	fs.StringVar(&cfg.limit, "limit", "", "bandwidth cap, e.g. 5MiB or off; the schedule's current cap is used when this is left out")
 	if err := fs.Parse(args); err != nil {
@@ -80,6 +82,18 @@ func cmdSync(ctx context.Context, args []string) error {
 		}
 		return syncErr
 	}
+
+	// The database, once the ordinary files of the pair have landed. It goes
+	// before the failure check on purpose: it is gated on its own conditions and a
+	// cover that would not transfer says nothing about it (DESIGN.md §3).
+	if pair.Type == store.PairJCC {
+		db, err := eng.SyncDatabase(ctx, pair, *force)
+		if err != nil {
+			return err
+		}
+		printDatabaseRun(pair, db)
+	}
+
 	if res.Failed > 0 {
 		return fmt.Errorf("%s file(s) failed for good; `jcc-mirror jobs -pair %s -state failed` says why", format.Comma(int64(res.Failed)), pair.Name)
 	}

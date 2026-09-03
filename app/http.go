@@ -42,6 +42,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/pairs/update", a.requireToken(a.handleUpdatePair))
 	mux.HandleFunc("POST /api/pairs/delete", a.requireToken(a.handleDeletePair))
 	mux.HandleFunc("POST /api/pairs/deletions", a.requireToken(a.handleDecideDeletion))
+	mux.HandleFunc("POST /api/pairs/database/rollback", a.requireToken(a.handleRollbackDatabase))
 	mux.HandleFunc("POST /api/runs", a.requireToken(a.handleStartRun))
 	mux.HandleFunc("POST /api/runs/cancel", a.requireToken(a.handleCancelRun))
 
@@ -320,7 +321,11 @@ func (a *App) handleStartRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := a.StartRun(r.Context(), strings.TrimSpace(fields["kind"]), id)
+	// The override is only ever the lock gate's, and only ever a person's: a
+	// scheduled run never sets it (DESIGN.md §3).
+	force, _ := strconv.ParseBool(strings.TrimSpace(fields["force"]))
+
+	run, err := a.StartRun(r.Context(), strings.TrimSpace(fields["kind"]), id, force)
 	if err != nil {
 		// 409 is the interesting one - something else is already running. A pair
 		// that is not there is an ordinary mistake and should not read like one.

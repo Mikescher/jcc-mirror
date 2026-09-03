@@ -40,6 +40,10 @@ type Options struct {
 	Version    string
 	BuildStamp string
 	TunnelPort int
+	// DataDir is the volume mount. The engine wants it for the database backups
+	// of DESIGN.md S5, which live with the rest of the state rather than beside
+	// the pair.
+	DataDir string
 }
 
 // App owns the daemon's mutable state. Every exported method is safe to call

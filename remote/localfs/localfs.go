@@ -9,8 +9,10 @@ package localfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -27,7 +29,10 @@ type FS struct {
 	root string
 }
 
-var _ remote.RangeReader = (*FS)(nil)
+var (
+	_ remote.RangeReader = (*FS)(nil)
+	_ remote.Prober      = (*FS)(nil)
+)
 
 // New serves root, which must be an existing directory.
 func New(root string) (*FS, error) {
@@ -97,6 +102,28 @@ func (f *FS) Stat(ctx context.Context, p string) (remote.Entry, error) {
 		return remote.Entry{}, fmt.Errorf("stat %q: %w", p, err)
 	}
 	return entryOf(rel, st), nil
+}
+
+// Exists implements remote.Prober, which is what the jcc pair's lock gate probes
+// with. A directory counts as present: the gate asks about one named file, and
+// answering "no" for something that is there would be the wrong kind of wrong.
+func (f *FS) Exists(ctx context.Context, p string) (bool, error) {
+	_, full, err := f.resolve(p)
+	if err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
+	switch _, err := os.Lstat(full); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	default:
+		return false, fmt.Errorf("stat %q: %w", p, err)
+	}
 }
 
 // Open implements remote.Remote.

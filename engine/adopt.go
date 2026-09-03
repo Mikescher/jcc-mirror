@@ -59,7 +59,7 @@ func (e *Engine) Adopt(ctx context.Context, pair store.Pair) (res AdoptResult, e
 		return res, fmt.Errorf("pair %q: %w", pair.Name, errNoManifest)
 	}
 
-	f := newFilter(pair)
+	f := newFilter(pair, e.opts.JCC)
 	if err = e.store.RemoteFiles(ctx, pair.ID, func(entry store.ManifestEntry) error {
 		if f.allows(entry.Path) {
 			res.RemoteFiles++

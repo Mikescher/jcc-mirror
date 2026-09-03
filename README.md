@@ -4,24 +4,27 @@ One-way replication of a jClipCorn collection from the publisher's NAS to the
 subscriber's Synology. See `DESIGN.md` for the design; this README covers what is
 built so far.
 
-**Status: M4.** It mirrors, on a schedule, at a rate you choose, and it can now
-shrink as well as grow. On top of M1's skeleton — sqlite state, a config table
-with an audit trail, a setup view, the `Remote` interface with a WebDAV
-implementation and a local fake, an event log and `/healthz` — M2's engine — a
-resumable walk that builds the manifest the publisher does not have, a differ, a
-transfer with ranged GETs, `.part` files, verification, an atomic rename and a
-per-file job queue with retries, plus adopt mode for the USB bootstrap — and M3's
-scheduler — one 7×24 grid that says both when bytes may move and how fast, a
-shared limiter that a window boundary adjusts mid-transfer, and a free-space
-preflight — there is now deletion, behind every guard of `DESIGN.md` §2.5: mirror
-mode per pair, two thresholds that hold a large deletion for one approval, a
-dated quarantine with a retention instead of an unlink, and the assertion that an
-empty manifest is a publisher who is not there rather than one who deleted
-everything.
+**Status: M5.** It mirrors, on a schedule, at a rate you choose; it can shrink as
+well as grow; and it now handles the jClipCorn database itself. On top of M1's
+skeleton — sqlite state, a config table with an audit trail, a setup view, the
+`Remote` interface with a WebDAV implementation and a local fake, an event log
+and `/healthz` — M2's engine — a resumable walk that builds the manifest the
+publisher does not have, a differ, a transfer with ranged GETs, `.part` files,
+verification, an atomic rename and a per-file job queue with retries, plus adopt
+mode for the USB bootstrap — M3's scheduler — one 7×24 grid that says both when
+bytes may move and how fast, a shared limiter that a window boundary adjusts
+mid-transfer, and a free-space preflight — and M4's deletion, behind every guard
+of `DESIGN.md` §2.5 — mirror mode per pair, two thresholds that hold a large
+deletion for one approval, a dated quarantine with a retention instead of an
+unlink, and the assertion that an empty manifest is a publisher who is not there
+— there is now the **jCC pair**: hard exclusions that never copy the per-user
+databases, a lock gate on the shared one that is re-checked after the copy, and a
+numbered backup of every database it replaces, with a rollback that works even
+with the tunnel down.
 
 A pair is additive until it is told otherwise, which is the point: run
-additive-only until the diff is trusted. The `ClipCornDB.db` lock gate is M5, the
-dashboard is M6 and self-update is M7.
+additive-only until the diff is trusted. The dashboard is M6 and self-update is
+M7.
 
 ## Running it
 
@@ -62,7 +65,8 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 | `GET /api/status` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/pairs` · `/api/runs` | Read views. Secrets are never returned; `status` carries the current window and cap |
 | `POST /api/config` · `/api/remote/probe` · `/api/login` | Token required |
 | `POST /api/pairs` · `/api/pairs/update` · `/api/pairs/delete` | Token required. JSON or a form; a JSON body may carry one key and changes only that |
-| `POST /api/runs` (`kind`, `pair`) · `/api/runs/cancel` | Token required. Answers as soon as the run has started, never when it has finished |
+| `POST /api/pairs/database/rollback` (`id`, optional `backup`) | Token required. Puts a kept copy of a jcc pair's database back; answers when it is done |
+| `POST /api/runs` (`kind`, `pair`, optional `force`) | Token required. Answers as soon as the run has started, never when it has finished. `force` is the lock-gate override |
 
 ## The mirror
 
@@ -70,9 +74,11 @@ Two ways in, on the same state: the dashboard and the CLI.
 
 **From the dashboard.** The setup view has a Mirror section: the pairs with how
 far behind each one is, an editor for them, and a Plan / Scan / Adopt / Delete /
-Sync button each — plus, when a deletion is over a threshold, the two buttons
-that answer it. A run happens in the background and the page refreshes itself while
-one is going, so a sync that takes a day and a half is watchable from a phone.
+Database / Sync button each — plus, when a deletion is over a threshold, the two
+buttons that answer it, and for a jcc pair the copies of its database with a
+rollback beside each one. A run happens in the background and the page refreshes
+itself while one is going, so a sync that takes a day and a half is watchable
+from a phone.
 One runs at a time — the transfer engine moves one file at a time by design, and
 the scheduler walks the pairs in priority order for the same reason. Stop is
 always safe: a walk stays resumable and every transfer keeps its place in the
@@ -107,8 +113,9 @@ jcc-mirror sync  -data /data -pair media     # do it
 jcc-mirror jobs  -data /data -pair media -state failed
 ```
 
-A `sync` of a mirror pair ends with the deletion phase; `-no-delete` leaves it
-out, and `jcc-mirror delete` runs it on its own.
+A `sync` of a jcc pair ends with the lock gate on its database and a mirror pair
+with the deletion phase; `-no-delete` leaves the second out, and `jcc-mirror db`
+and `jcc-mirror delete` run either on its own.
 
 Once that has been watched for a while, `jcc-mirror schedule` hands the same
 three steps to the daemon; see **The schedule** below.
@@ -206,13 +213,89 @@ jcc-mirror trash  -data /data -pair media -restore "Filme/x.mkv"
 A restored file is yours: no row of local truth is written for it, so the next
 mirror run leaves it alone rather than quarantining it again.
 
+### The jCC pair
+
+`-type jcc` is the `ClipCornDB` directory, and it is an ordinary directory sync
+plus two rules. Everything else about it — the covers, the walk, the diff, the
+job queue — is the same machinery as a media pair.
+
+**1 · Hard exclusions.** Refusals, not patterns, because no configuration makes
+them correct. The walk drops them, so they never reach the manifest and nothing
+downstream can queue them:
+
+| | |
+|---|---|
+| `ClipCornUserData.db` · `ClipCornHistory.db` | Per-user. Copying the publisher's over destroys this side's own ratings, tags, filters and history. There are three databases in that directory, not two. |
+| `*-journal` · `*-wal` · `*-shm` | Transient, and worse than useless apart from the exact database they belong to. |
+| `*.~lock` | Belongs to whoever is running. |
+
+**2 · A lock gate on the shared database.** `ClipCornDB.db` is the one file
+jcc-mirror never puts through the job queue. It is copied as a phase of its own
+at the end of a sync, in the order `DESIGN.md` §3 sets out:
+
+```
+1. HEAD  <remote>/ClipCornDB.db.~lock   → present ⇒ skip this cycle, note it
+2. stat  <local>/ClipCornDB.db.~lock    → present ⇒ skip this cycle, note it
+3. GET   the database → .ClipCornDB.db.incoming, staged in the target directory
+4. verify its size against what the PROPFIND said
+5. HEAD  the remote lock again          → appeared ⇒ discard, try later
+6. stat  the local lock again           → appeared ⇒ discard, try later
+7. keep the current database as a numbered backup
+8. rename(.ClipCornDB.db.incoming → ClipCornDB.db)
+```
+
+The reasoning is one sentence long: jClipCorn writes the lock on open and deletes
+it on a clean shutdown, so no lock means no writer and no hot journal, which is
+what makes a plain byte copy of the `.db` file consistent. jcc-mirror never opens
+the database and never reads a lock file's contents — the body is a PID from
+another machine, and only its existence means anything.
+
+Steps 5 and 6 are the non-obvious ones: user 1 can launch jClipCorn while the
+copy runs, and one extra request each closes that window. Steps 3 and 8 stage in
+the *target* directory, so the rename is same-filesystem and atomic — the local
+exposure is one syscall rather than the length of a copy.
+
+```bash
+jcc-mirror pairs add -data /data -name clipcorn -type jcc \
+    -remote "ClipCornDB" -local /mnt/clipcorn/ClipCornDB
+jcc-mirror db -data /data -pair clipcorn            # both sides, both locks, the copies
+jcc-mirror db -data /data -pair clipcorn -sync      # run the gate now
+jcc-mirror db -data /data -pair clipcorn -rollback  # put the newest copy back
+```
+
+A held lock is not a failure: nothing is touched, the reason is recorded once
+rather than once per attempt, and the scheduler comes back to it every ten
+minutes until it clears. What will not clear on its own is a **stale** lock —
+user 1's jClipCorn crashed and was never restarted — so one that has not moved
+for `jcc.lock_stale` is reported as such, with `-force` (or the button on the
+page) as the only way past it. It is never stolen automatically.
+
+**Backups and the way back** (S5). Every replacement keeps a copy of the database
+it displaced, in the data volume, with its hash and the publisher's timestamp;
+`jcc.backups` — five by default — is how many are kept, at a few MB each. That is
+the whole recovery story for a bad transfer, which once the gate has ruled out a
+torn database is the only realistic failure left:
+
+```bash
+jcc-mirror db -data /data -pair clipcorn -rollback -backup 3
+```
+
+A rollback verifies the copy against its recorded size and hash before it moves
+anything, keeps what it displaces so it is itself undoable, and needs neither the
+publisher nor the tunnel — which is exactly when one is wanted. It does check
+this side's lock. Afterwards the next sync compares the restored database against
+the publisher's and fetches his again: what you want when the transfer was the
+problem, and not when it was not — disable the pair first in that case.
+
+A mirror pair never quarantines the database either. A walk that missed it is far
+likelier than a collection that lost it.
+
 **What is still not built**, so it does not come as a surprise:
 
 | | |
 |---|---|
 | **An additive pair is still never shrunk.** | `additive` is the default and means what it says: files the publisher no longer has are counted by `plan` and kept. Deletion is opt-in per pair, with `-mode mirror`. |
-| **A `jcc` pair refuses to transfer.** | Its hard exclusions and the lock gate on `ClipCornDB.db` are M5, and without them a sync would overwrite this side's own `ClipCornUserData.db` and `ClipCornHistory.db` — both per-user, and neither is ever synced. Scanning one is allowed; it is read-only, and the scheduler does scan them. |
-| **No real dashboard.** | The setup view can now start and watch the operations, answer a held deletion, edit the pairs and draw the schedule, which is enough to run the mirror without a shell. The six views, the SSE stream, the bandwidth charts and the notifications are still M6. |
+| **No real dashboard.** | The setup view can now start and watch the operations, answer a held deletion, override a stale lock, roll a database back, edit the pairs and draw the schedule, which is enough to run the mirror without a shell. The six views, the SSE stream, the bandwidth charts and the notifications are still M6. |
 
 ## The schedule
 
@@ -335,9 +418,11 @@ because the key registry is what the form is generated from: the two grids, the
 unattended switch and the scan interval under **Schedule**, walk concurrency and
 the mtime tolerance under **Scan**, and streams per file, chunk size, attempts,
 retry backoff, post-copy hashing and the free-space reserve under **Transfer**,
-and the deletion threshold and quarantine retention under **Deletion**. The pairs themselves are
-the exception — they are rows of their own, edited with `jcc-mirror pairs` until
-the dashboard grows an editor in M6.
+the deletion threshold and quarantine retention under **Deletion**, and the
+database's name and directory, the stale-lock threshold and how many copies to
+keep under **jCC**. The pairs themselves are the exception — they are rows of
+their own, edited with `jcc-mirror pairs` until the dashboard grows an editor in
+M6.
 
 ## Publisher-side setup
 
@@ -386,12 +471,13 @@ schedule/      the 7x24 grid: parsing, rendering, and when the answer next
                changes
 engine/        the mirror: scan.go walks, diff.go plans, transfer.go moves
                bytes, adopt.go recognises the USB bootstrap, reap.go deletes
-               behind the guards and trash.go is the quarantine, filter.go is
-               the path globbing, limiter.go is the shared bandwidth cap and
-               space.go the free-space preflight
+               behind the guards and trash.go is the quarantine, jcc.go is the
+               jCC pair's refusals and lock gate, filter.go is the path
+               globbing, limiter.go is the shared bandwidth cap and space.go
+               the free-space preflight
 store/         sqlite state: migrations, config with audit, events, and the
                engine's tables - pairs, manifest, scans, files, jobs, changes,
-               delete_approvals
+               delete_approvals, db_backups
 wg/            wireguard-go + netstack: the tunnel, ping and device status
 webdav/        PROPFIND, HEAD and ranged GET; propfind.go is the pure decoder
 remote/        the three-method interface the engine talks to, plus the ranged
