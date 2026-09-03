@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"blackforestbytes.com/jcc-mirror/schedule"
 	"blackforestbytes.com/jcc-mirror/store"
 	"blackforestbytes.com/jcc-mirror/wg"
 )
@@ -22,15 +23,34 @@ const (
 // Status is what /healthz answers and what the dashboard renders. It is the
 // shape the diagnostics view will keep using (DESIGN.md §4).
 type Status struct {
-	Version    string       `json:"version"`
-	BuildStamp string       `json:"buildStamp,omitempty"`
-	StartedAt  time.Time    `json:"startedAt"`
-	UptimeSec  int64        `json:"uptimeSeconds"`
-	Database   string       `json:"database"`
-	PublicKey  string       `json:"publicKey,omitempty"`
-	Tunnel     TunnelStatus `json:"tunnel"`
-	Remote     RemoteStatus `json:"remote"`
+	Version    string         `json:"version"`
+	BuildStamp string         `json:"buildStamp,omitempty"`
+	StartedAt  time.Time      `json:"startedAt"`
+	UptimeSec  int64          `json:"uptimeSeconds"`
+	Database   string         `json:"database"`
+	PublicKey  string         `json:"publicKey,omitempty"`
+	Tunnel     TunnelStatus   `json:"tunnel"`
+	Remote     RemoteStatus   `json:"remote"`
+	Schedule   ScheduleStatus `json:"schedule"`
 }
+
+// ScheduleStatus is what the grid says right now, in the zone it is expressed
+// in. NextOpen is only filled when transfers are closed, which is the one moment
+// anyone wants to know it.
+type ScheduleStatus struct {
+	Timezone  string          `json:"timezone"`
+	Now       time.Time       `json:"now"`
+	Automatic bool            `json:"automatic"`
+	ScanEvery string          `json:"scanEvery"`
+	Transfer  schedule.Window `json:"transfer"`
+	Scan      schedule.Window `json:"scan"`
+	NextOpen  *time.Time      `json:"nextOpen,omitempty"`
+	Error     string          `json:"error,omitempty"`
+}
+
+// Describe is the transfer window in one line, which is what the page and the
+// CLI both print.
+func (s ScheduleStatus) Describe() string { return s.Transfer.Describe() }
 
 type TunnelStatus struct {
 	State      string   `json:"state"`
@@ -88,6 +108,8 @@ func (a *App) Status(ctx context.Context) Status {
 		st.Remote.Error = err.Error()
 	}
 
+	st.Schedule = a.ScheduleStatus()
+
 	a.mu.Lock()
 	tun, tunErr := a.tunnel, a.tunnelErr
 	a.mu.Unlock()
@@ -102,6 +124,43 @@ func (a *App) Status(ctx context.Context) Status {
 		st.Tunnel = tunnelStatus(tun)
 	}
 	return st
+}
+
+// ScheduleStatus answers the grid at this moment. It is separate from Status so
+// the setup view can render the grid without collecting the tunnel's counters.
+func (a *App) ScheduleStatus() ScheduleStatus {
+	a.sched.mu.Lock()
+	cfg, cfgErr := a.sched.cfg, a.sched.cfgErr
+	a.sched.mu.Unlock()
+
+	loc := cfg.loc
+	if loc == nil {
+		loc = time.Local
+	}
+	now := time.Now().In(loc)
+
+	out := ScheduleStatus{
+		Timezone:  loc.String(),
+		Now:       now,
+		Automatic: cfg.automatic,
+		ScanEvery: cfg.scanEvery.String(),
+		Transfer:  cfg.transfer.At(now),
+		Scan:      cfg.scan.At(now),
+		Error:     cfgErr,
+	}
+	if !out.Transfer.Open {
+		if next, ok := cfg.transfer.NextOpen(now); ok {
+			out.NextOpen = &next
+		}
+	}
+	return out
+}
+
+// Schedules hands out the grids themselves, for the view that draws them.
+func (a *App) Schedules() (transfer, scan schedule.Schedule) {
+	a.sched.mu.Lock()
+	defer a.sched.mu.Unlock()
+	return a.sched.cfg.transfer, a.sched.cfg.scan
 }
 
 func tunnelStatus(tun *wg.Tunnel) TunnelStatus {

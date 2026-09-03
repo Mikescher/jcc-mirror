@@ -34,6 +34,7 @@ const planSample = 50
 // Run is one operation, running or finished.
 type Run struct {
 	Kind       string       `json:"kind"`
+	Auto       bool         `json:"auto,omitempty"` // started by the scheduler rather than by a person
 	PairID     int64        `json:"pairId"`
 	PairName   string       `json:"pair"`
 	StartedAt  time.Time    `json:"startedAt"`
@@ -56,13 +57,14 @@ func (r Run) Elapsed() time.Duration {
 
 // runner holds the one operation that may be in flight. One at a time is not a
 // limitation to work around later: the transfer engine moves one file at a time
-// by design, and M3's scheduler walks the pairs in priority order for the same
+// by design, and the scheduler walks the pairs in priority order for the same
 // reason.
 type runner struct {
 	mu      sync.Mutex
 	current *Run
 	engine  *engine.Engine
 	cancel  context.CancelFunc
+	reason  string // why the current run was stopped, for the record it leaves
 	history []Run
 }
 
@@ -82,15 +84,22 @@ func (s RunState) Busy() bool { return s.Current != nil }
 // started. The HTTP request that started it is long gone by the time a sync
 // finishes - a transfer of the collection runs for days.
 func (a *App) StartRun(ctx context.Context, kind string, pairID int64) (Run, error) {
+	pair, err := a.store.PairByID(ctx, pairID)
+	if err != nil {
+		return Run{}, err
+	}
+	return a.startRun(ctx, kind, pair, false)
+}
+
+// startRun is StartRun with the pair already resolved, and with auto saying who
+// asked. The scheduler only ever stops its own runs: a sync someone started by
+// hand is a person at the console who wants bytes moved now, and a window
+// boundary is not an answer to that.
+func (a *App) startRun(ctx context.Context, kind string, pair store.Pair, auto bool) (Run, error) {
 	switch kind {
 	case RunPlan, RunScan, RunAdopt, RunSync:
 	default:
 		return Run{}, fmt.Errorf("unknown operation %q", kind)
-	}
-
-	pair, err := a.store.PairByID(ctx, pairID)
-	if err != nil {
-		return Run{}, err
 	}
 	if !pair.Enabled {
 		return Run{}, fmt.Errorf("pair %q is disabled", pair.Name)
@@ -112,11 +121,13 @@ func (a *App) StartRun(ctx context.Context, kind string, pairID int64) (Run, err
 			c.Kind, c.PairName, format.Duration(c.Elapsed()))
 	}
 
-	run := &Run{Kind: kind, PairID: pair.ID, PairName: pair.Name, StartedAt: time.Now()}
+	run := &Run{Kind: kind, Auto: auto, PairID: pair.ID, PairName: pair.Name, StartedAt: time.Now()}
 	runCtx, cancel := context.WithCancel(base)
-	a.runs.current, a.runs.engine, a.runs.cancel = run, eng, cancel
+	a.runs.current, a.runs.engine, a.runs.cancel, a.runs.reason = run, eng, cancel, ""
 
-	a.log.Infof("run: %s of %q started from the dashboard", kind, pair.Name)
+	if !auto {
+		a.log.Infof("run: %s of %q started from the dashboard", kind, pair.Name)
+	}
 	go a.execute(runCtx, eng, pair, run)
 
 	return *run, nil
@@ -134,7 +145,11 @@ func (a *App) newEngine(ctx context.Context) (*engine.Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return engine.New(a.store, client, a.log, engine.OptionsFrom(values))
+	opts := engine.OptionsFrom(values)
+	// The limiter is the daemon's, not the run's: the scheduler changes the cap
+	// at a window boundary and the transfer already in flight has to feel it.
+	opts.Limiter = a.limiter
+	return engine.New(a.store, client, a.log, opts)
 }
 
 // runContext is what a run's lifetime hangs off: the daemon's own context, so a
@@ -156,20 +171,32 @@ func (a *App) execute(ctx context.Context, eng *engine.Engine, pair store.Pair, 
 	defer a.runs.mu.Unlock()
 
 	finished := time.Now()
+	stopped := errors.Is(err, context.Canceled)
 	run.FinishedAt = &finished
 	run.Summary, run.Plan = summary, plan
-	if err != nil {
+
+	switch {
+	case err == nil:
+		a.log.Infof("run: %s of %q finished: %s", run.Kind, run.PairName, summary)
+	case stopped && a.runs.reason != "":
+		// A run that was stopped on purpose is not a failure, and reads better as
+		// the reason it was stopped than as "context canceled".
+		run.Error = a.runs.reason
+		a.log.Infof("run: %s of %q %s", run.Kind, run.PairName, a.runs.reason)
+	default:
 		run.Error = err.Error()
 		a.log.Errorf("run: %s of %q: %v", run.Kind, run.PairName, err)
-	} else {
-		a.log.Infof("run: %s of %q finished: %s", run.Kind, run.PairName, summary)
 	}
 
 	a.runs.history = append([]Run{*run}, a.runs.history...)
 	if len(a.runs.history) > runHistory {
 		a.runs.history = a.runs.history[:runHistory]
 	}
-	a.runs.current, a.runs.engine, a.runs.cancel = nil, nil, nil
+	a.runs.current, a.runs.engine, a.runs.cancel, a.runs.reason = nil, nil, nil, ""
+
+	if run.Auto {
+		a.noteScheduledRun(run.PairID, err != nil && !stopped)
+	}
 }
 
 // runOperation is the switch the four buttons come down to. The engine writes
@@ -217,24 +244,32 @@ func runOperation(ctx context.Context, eng *engine.Engine, pair store.Pair, kind
 }
 
 func planSummary(p engine.Plan) string {
-	return fmt.Sprintf("%s to add (%s), %s to replace (%s), %s vanished (%s, never deleted before M4)",
+	out := fmt.Sprintf("%s to add (%s), %s to replace (%s), %s vanished (%s, never deleted before M4)",
 		format.Comma(int64(p.Add)), format.Bytes(p.AddBytes),
 		format.Comma(int64(p.Replace)), format.Bytes(p.ReplaceBytes),
 		format.Comma(int64(p.Vanished)), format.Bytes(p.VanishedBytes))
+	if p.Shortfall > 0 {
+		out += fmt.Sprintf(" — and it does not fit: %s short of the free-space reserve", format.Bytes(p.Shortfall))
+	}
+	return out
 }
 
-// CancelRun stops whatever is running. Stopping is routine and safe: a scan is
-// left resumable and a transfer keeps its watermark, so the next run carries on
-// rather than starting over.
-func (a *App) CancelRun() error {
+// CancelRun stops whatever is running, and records reason as what the run says
+// it ended for. Stopping is routine and safe: a scan is left resumable and a
+// transfer keeps its watermark, so the next run carries on rather than starting
+// over.
+func (a *App) CancelRun(reason string) error {
 	a.runs.mu.Lock()
 	cancel, current := a.runs.cancel, a.runs.current
+	if cancel != nil {
+		a.runs.reason = reason
+	}
 	a.runs.mu.Unlock()
 
 	if cancel == nil {
 		return errors.New("nothing is running")
 	}
-	a.log.Infof("run: stopping %s of %q on request", current.Kind, current.PairName)
+	a.log.Infof("run: %s of %q %s", current.Kind, current.PairName, reason)
 	cancel()
 	return nil
 }

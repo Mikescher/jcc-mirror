@@ -38,7 +38,11 @@ func newMirror(t *testing.T) *mirror {
 	srv := httptest.NewServer(&xwebdav.Handler{FileSystem: xwebdav.Dir(src), LockSystem: xwebdav.NewMemLS()})
 	t.Cleanup(srv.Close)
 
-	if rec := postForm(t, h, "/api/config", token, url.Values{store.KeyRemoteURL: {srv.URL}}); rec.Code != http.StatusOK {
+	// The reserve is set to nothing: the default keeps 50 GiB free on the
+	// destination volume, and whether the machine running the tests has that much
+	// is not something these tests are about.
+	form := url.Values{store.KeyRemoteURL: {srv.URL}, store.KeyReserve: {"1"}}
+	if rec := postForm(t, h, "/api/config", token, form); rec.Code != http.StatusOK {
 		t.Fatalf("configure the remote: %d %s", rec.Code, rec.Body)
 	}
 

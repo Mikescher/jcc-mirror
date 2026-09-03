@@ -37,6 +37,12 @@ type Options struct {
 	MaxAttempts    int
 	RetryBackoff   time.Duration
 	HashAfterCopy  bool
+	Reserve        int64 // free space to leave on the destination volume (S4)
+
+	// Limiter is the bandwidth cap, and is shared rather than owned: the
+	// scheduler holds the same one and changes it live at a window boundary. A
+	// nil one is no cap at all.
+	Limiter *Limiter
 }
 
 // OptionsFrom reads the settings out of a config snapshot.
@@ -49,6 +55,7 @@ func OptionsFrom(v store.Values) Options {
 		MaxAttempts:    v.Int(store.KeyMaxAttempts),
 		RetryBackoff:   v.Duration(store.KeyRetryBackoff),
 		HashAfterCopy:  v.Bool(store.KeyHashAfterCopy),
+		Reserve:        v.Size(store.KeyReserve),
 	}
 }
 
@@ -195,15 +202,16 @@ func localPath(p store.Pair, rel string) string {
 	return filepath.Join(p.LocalPath, filepath.FromSlash(rel))
 }
 
-// transferable refuses to move bytes for a pair whose type needs machinery that
+// Transferable refuses to move bytes for a pair whose type needs machinery that
 // is not built yet. A jcc pair carries hard exclusions and a lock gate
 // (DESIGN.md §3) that arrive in M5, and without them a sync of the ClipCornDB
-// directory would overwrite the subscriber's own ClipCornUserData.db and could
-// copy the shared database out from under a running jClipCorn. Scanning one is
+// directory would overwrite the subscriber's own ClipCornUserData.db and
+// ClipCornHistory.db - both per-user, and neither ever synced - and could copy
+// the shared database out from under a running jClipCorn. Scanning one is
 // harmless and stays allowed; transferring it is not.
-func transferable(p store.Pair) error {
+func Transferable(p store.Pair) error {
 	if p.Type == store.PairJCC {
-		return fmt.Errorf("pair %q is a jcc pair: its hard exclusions and lock gate are M5, and transferring one without them would overwrite this side's per-user databases", p.Name)
+		return fmt.Errorf("pair %q is a jcc pair: its hard exclusions and lock gate are M5, and transferring one without them would overwrite this side's own ClipCornUserData.db and ClipCornHistory.db", p.Name)
 	}
 	return nil
 }

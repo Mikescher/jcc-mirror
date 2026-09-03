@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -22,12 +23,14 @@ const planOnlySample = 25
 // Interrupting it is routine and costs nothing. The claimed job goes back to
 // pending with its resume watermark intact, so a 40 GB file stopped at 39 GB
 // carries on from 39 GB in the next run - which is also what a closed transfer
-// window and a self-update will look like from M3 on.
+// window looks like to the scheduler, and what a self-update will look like in
+// M7.
 func cmdSync(ctx context.Context, args []string) error {
 	fs, cfg := newFlagSet("sync")
 	ref := fs.String("pair", "", "the pair to transfer, by name or id")
 	planOnly := fs.Bool("plan-only", false, "print what would happen and stop: nothing is queued and no byte is moved")
 	progress := fs.Duration("progress", 5*time.Second, "how often to report where the transfer is, 0 to disable")
+	fs.StringVar(&cfg.limit, "limit", "", "bandwidth cap, e.g. 5MiB or off; the schedule's current cap is used when this is left out")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -62,6 +65,12 @@ func cmdSync(ctx context.Context, args []string) error {
 	res, syncErr := eng.Sync(ctx, pair)
 	stop()
 
+	// A plan refused for want of room never started, so there is nothing to
+	// summarize - only the reason (DESIGN.md §2.6).
+	var noSpace *engine.SpaceError
+	if errors.As(syncErr, &noSpace) {
+		return syncErr
+	}
 	printSync(res)
 
 	if syncErr != nil {

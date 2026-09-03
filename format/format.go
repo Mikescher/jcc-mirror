@@ -1,9 +1,10 @@
 // Package format renders the numbers this project deals in - sizes spanning a
 // lock file and thirty terabytes, rates quoted against a line speed, entry counts
-// compared by eye between runs.
+// compared by eye between runs - and reads back the ones an operator types.
 package format
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -75,4 +76,60 @@ func Comma(n int64) string {
 		return "-" + b.String()
 	}
 	return b.String()
+}
+
+// Size renders a byte count so that ParseSize reads it back unchanged. It is the
+// form a setting is stored and edited in, where Bytes is the form it is read in:
+// "5MiB" round-trips, "5.00 MiB" does not.
+func Size(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	units := []string{"KiB", "MiB", "GiB", "TiB"}
+	out, unit := n, ""
+	for i := 0; i < len(units); i++ {
+		if out%1024 != 0 {
+			break
+		}
+		out, unit = out/1024, units[i]
+	}
+	return strconv.FormatInt(out, 10) + unit
+}
+
+// ParseSize reads a byte count, with or without a binary suffix: "67108864",
+// "64MiB" and "64M" are the same number. Sizes in this project are quoted in
+// whichever of the two an operator happens to reach for.
+func ParseSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("required")
+	}
+
+	digits := strings.TrimRight(s, "kKmMgGtTiIbB \t")
+	suffix := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(s, digits)))
+	suffix = strings.TrimSuffix(strings.TrimSuffix(suffix, "b"), "i")
+
+	n, err := strconv.ParseInt(strings.TrimSpace(digits), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("not a size like \"64MiB\": %w", err)
+	}
+
+	mult := int64(1)
+	switch suffix {
+	case "":
+	case "k":
+		mult = 1 << 10
+	case "m":
+		mult = 1 << 20
+	case "g":
+		mult = 1 << 30
+	case "t":
+		mult = 1 << 40
+	default:
+		return 0, fmt.Errorf("unknown size suffix %q", suffix)
+	}
+	if n <= 0 {
+		return 0, errors.New("must be positive")
+	}
+	return n * mult, nil
 }

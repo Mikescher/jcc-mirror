@@ -13,6 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"blackforestbytes.com/jcc-mirror/format"
+	"blackforestbytes.com/jcc-mirror/schedule"
 )
 
 // The keys of the config table. Everything jcc-mirror can be told is one of
@@ -31,6 +34,11 @@ const (
 	KeyRemoteUser     = "remote.user"
 	KeyRemotePassword = "remote.password"
 
+	KeySchedule     = "schedule.transfer"
+	KeyScanSchedule = "schedule.scan"
+	KeyAutomatic    = "schedule.automatic"
+	KeyScanInterval = "schedule.scan_interval"
+
 	KeyScanWorkers    = "scan.workers"
 	KeyMTimeTolerance = "scan.mtime_tolerance"
 	KeyTransferChunks = "transfer.chunks"
@@ -38,6 +46,7 @@ const (
 	KeyMaxAttempts    = "transfer.max_attempts"
 	KeyRetryBackoff   = "transfer.retry_backoff"
 	KeyHashAfterCopy  = "transfer.hash"
+	KeyReserve        = "transfer.reserve"
 
 	KeyDashboardToken = "dashboard.token"
 	KeyTimezone       = "general.timezone"
@@ -123,6 +132,29 @@ var keyDefs = []KeyDef{
 	},
 
 	{
+		Name: KeySchedule, Group: "Schedule", Label: "Transfer window",
+		Help:     `When bytes may move and how fast, as rules over a 7x24 grid: "* * = 5MiB; * 2-8 = full" is unlimited from 02:00 to 08:00 and 5 MiB/s the rest of the time. Later rules win. Empty means always, at full speed. The caps apply to every transfer, scheduled or started by hand.`,
+		Validate: validateSchedule,
+	},
+	{
+		Name: KeyScanSchedule, Group: "Schedule", Label: "Scan window",
+		Help:     `When a walk of the publisher's tree may run - the coarser schedule, open or closed only: "* 3-6 = on; * 6-3 = off". A scan costs real time but no bandwidth worth capping.`,
+		Validate: validateScanSchedule,
+	},
+	{
+		Name: KeyAutomatic, Group: "Schedule", Label: "Run unattended",
+		Help:     "Whether the scheduler starts scans and syncs by itself inside the windows above. Off means the mirror only runs when someone presses a button; the bandwidth caps apply either way.",
+		Default:  "false",
+		Validate: validateBool,
+	},
+	{
+		Name: KeyScanInterval, Group: "Schedule", Label: "Scan every",
+		Help:     "How stale the manifest may get before the scheduler walks the publisher's tree again. A full walk costs minutes, so this is a floor rather than a promise.",
+		Default:  "24h",
+		Validate: validateDuration,
+	},
+
+	{
 		Name: KeyScanWorkers, Group: "Scan", Label: "Walk concurrency",
 		Help:     "PROPFINDs in flight. The walk is latency-bound, so a little parallelism helps a lot and more helps nothing.",
 		Default:  "8",
@@ -164,6 +196,13 @@ var keyDefs = []KeyDef{
 		Help:     "sha256 every file once it has landed and keep it for a future scrub. It costs a second read of everything transferred.",
 		Default:  "false",
 		Validate: validateBool,
+	},
+
+	{
+		Name: KeyReserve, Group: "Transfer", Label: "Free space reserve",
+		Help:     "How much room to leave on the destination volume. A sync whose completion would eat into it is refused before it starts, and again before every file - a plan can run for days. A full volume on a Synology is its own kind of bad day.",
+		Default:  "50GiB",
+		Validate: validateSize,
 	},
 
 	{
@@ -241,9 +280,9 @@ func (v Values) Duration(key string) time.Duration {
 }
 
 func (v Values) Size(key string) int64 {
-	n, err := ParseSize(v[key])
+	n, err := format.ParseSize(v[key])
 	if err != nil {
-		n, _ = ParseSize(keyByName[key].Default)
+		n, _ = format.ParseSize(keyByName[key].Default)
 	}
 	return n
 }
@@ -552,7 +591,7 @@ func validateDuration(s string) error {
 }
 
 func validateSize(s string) error {
-	_, err := ParseSize(s)
+	_, err := format.ParseSize(s)
 	return err
 }
 
@@ -563,42 +602,14 @@ func validateBool(s string) error {
 	return nil
 }
 
-// ParseSize reads a byte count, with or without a binary suffix: "67108864",
-// "64MiB" and "64M" are the same number. Sizes in this project are quoted in
-// whichever of the two an operator happens to reach for.
-func ParseSize(s string) (int64, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, errors.New("required")
-	}
+func validateSchedule(s string) error {
+	_, err := schedule.Parse(s)
+	return err
+}
 
-	digits := strings.TrimRight(s, "kKmMgGtTiIbB \t")
-	suffix := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(s, digits)))
-	suffix = strings.TrimSuffix(strings.TrimSuffix(suffix, "b"), "i")
-
-	n, err := strconv.ParseInt(strings.TrimSpace(digits), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("not a size like \"64MiB\": %w", err)
-	}
-
-	mult := int64(1)
-	switch suffix {
-	case "":
-	case "k":
-		mult = 1 << 10
-	case "m":
-		mult = 1 << 20
-	case "g":
-		mult = 1 << 30
-	case "t":
-		mult = 1 << 40
-	default:
-		return 0, fmt.Errorf("unknown size suffix %q", suffix)
-	}
-	if n <= 0 {
-		return 0, errors.New("must be positive")
-	}
-	return n * mult, nil
+func validateScanSchedule(s string) error {
+	_, err := schedule.ParseGate(s)
+	return err
 }
 
 func validateTimezone(s string) error {

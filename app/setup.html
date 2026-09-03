@@ -66,6 +66,20 @@
   details[open] > summary { margin-bottom: .6rem; }
   .running { border-left: 3px solid var(--accent); padding: .6rem .85rem; border-radius: 4px;
              background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  table.grid { width: auto; border-collapse: collapse; }
+  table.grid th { font-size: .65rem; font-weight: 400; text-align: center;
+                  padding: 0 1px; border: 0; color: var(--muted); }
+  table.grid th.day { text-align: right; padding-right: .4rem; }
+  table.grid td { width: 1.1rem; height: 1.1rem; padding: 0; border: 1px solid var(--card);
+                  border-radius: 2px; }
+  .cell-off  { background: var(--line); }
+  .cell-cap  { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+  .cell-full { background: var(--accent); }
+  .cell-now  { outline: 2px solid var(--warn); outline-offset: -2px; }
+  .legend { display: flex; gap: .9rem; align-items: center; flex-wrap: wrap;
+            color: var(--muted); font-size: .8rem; margin-top: .5rem; }
+  .legend i { display: inline-block; width: .8rem; height: .8rem; border-radius: 2px;
+              vertical-align: -1px; margin-right: .25rem; }
 </style>
 
 <main>
@@ -159,13 +173,63 @@
 
 
   <section>
+    <h2>Schedule</h2>
+    {{with .Status.Schedule}}
+      {{if .Error}}<div class="banner">{{.Error}}</div>{{end}}
+      <div class="cards">
+        <div class="card">
+          <div class="k">Transfers now</div>
+          <div class="v">
+            {{if .Transfer.Open}}<span class="pill ok">{{.Transfer.Describe}}</span>
+            {{else}}<span class="pill">closed</span>{{end}}
+          </div>
+          <div class="note">until {{clock .Transfer.Until}}{{if .NextOpen}} · opens {{clock .NextOpen}}{{end}}</div>
+        </div>
+        <div class="card">
+          <div class="k">Scans now</div>
+          <div class="v">{{if .Scan.Open}}<span class="pill ok">open</span>{{else}}<span class="pill">closed</span>{{end}}</div>
+          <div class="note">every {{.ScanEvery}} · until {{clock .Scan.Until}}</div>
+        </div>
+        <div class="card">
+          <div class="k">Unattended</div>
+          <div class="v">{{if .Automatic}}<span class="pill ok">on</span>{{else}}<span class="pill warn">off</span>{{end}}</div>
+          <div class="note">{{if .Automatic}}The scheduler starts scans and syncs by itself.{{else}}Runs only start when someone presses a button. The caps still apply.{{end}}</div>
+        </div>
+        <div class="card">
+          <div class="k">Timezone</div>
+          <div class="v mono">{{.Timezone}}</div>
+          <div class="note">{{clock .Now}} — the grid is drawn in this zone</div>
+        </div>
+      </div>
+    {{end}}
+
+    {{range .Grids}}
+      <h3>{{.Name}} window</h3>
+      <div class="scroll"><table class="grid">
+        <tr><th></th>{{range .Hours}}<th>{{.}}</th>{{end}}</tr>
+        {{range .Rows}}
+          <tr><th class="day">{{.Day}}</th>
+            {{range .Cells}}<td class="{{.Class}}" title="{{.Title}}"></td>{{end}}
+          </tr>
+        {{end}}
+      </table></div>
+      <div class="legend">
+        <span><i class="cell-full"></i>no limit</span>
+        <span><i class="cell-cap"></i>capped</span>
+        <span><i class="cell-off"></i>closed</span>
+        <span class="mono">{{.Rules}}</span>
+      </div>
+    {{end}}
+  </section>
+
+  <section>
     <h2>Mirror</h2>
 
     {{with .Runs.Current}}
       <div class="running">
         <div class="row">
           <strong>{{.Kind}}</strong>
-          <span>of <strong>{{.PairName}}</strong>, running for {{elapsed .Elapsed}}</span>
+          <span>of <strong>{{.PairName}}</strong>, running for {{elapsed .Elapsed}}{{if .Auto}}, started by the schedule{{end}}</span>
           <form method="post" action="/api/runs/cancel" style="margin-left:auto">
             <button class="ghost" type="submit" {{if not $.Authed}}disabled{{end}}>Stop</button>
           </form>
@@ -209,6 +273,7 @@
           <dt>here</dt><dd class="mono">{{.LocalPath}} — {{comma .LocalFiles}} files, {{bytes .LocalBytes}}</dd>
           <dt>last scan</dt><dd>{{if .LastScan}}{{clock .LastScan}}{{else}}never — nothing can be planned until one finishes{{end}}</dd>
           <dt>queue</dt><dd>{{comma (index .Queue.Counts "pending")}} pending, {{comma (index .Queue.Counts "failed")}} failed, {{bytes .Queue.PendingBytes}} to go</dd>
+          {{if .Space.Total}}<dt>free here</dt><dd>{{bytes .Space.Free}} of {{bytes .Space.Total}} on {{.Space.Path}}</dd>{{end}}
           {{if .Excludes}}<dt>excludes</dt><dd class="mono">{{.ExcludesText}}</dd>{{end}}
           {{if .Includes}}<dt>includes</dt><dd class="mono">{{.IncludesText}}</dd>{{end}}
         </dl>
@@ -301,7 +366,7 @@
         {{range .Runs.History}}
           <tr>
             <td class="mono">{{clock .StartedAt}}</td>
-            <td>{{.Kind}}</td>
+            <td>{{.Kind}}{{if .Auto}} <span class="note">(scheduled)</span>{{end}}</td>
             <td>{{.PairName}}</td>
             <td class="mono">{{elapsed .Elapsed}}</td>
             <td>{{if .Error}}<span class="bad">{{.Error}}</span>{{else}}{{.Summary}}{{end}}</td>

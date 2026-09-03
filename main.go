@@ -20,6 +20,12 @@ import (
 	"sync"
 	"syscall"
 
+	// The timezone the schedule is read in is a setting of its own, so the zone
+	// database has to be in the binary: a distroless image or a bare NAS may not
+	// carry one, and a grid that silently fell back to UTC would run at the wrong
+	// hours twice a year (DESIGN.md §6).
+	_ "time/tzdata"
+
 	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/remote"
 	"blackforestbytes.com/jcc-mirror/remote/localfs"
@@ -61,6 +67,7 @@ var commands = []command{
 	{"sync", groupMirror, "queue the plan and transfer it", cmdSync},
 	{"adopt", groupMirror, "recognise a USB bootstrap already on disk, matched on size", cmdAdopt},
 	{"jobs", groupMirror, "inspect the transfer queue, including what failed and why", cmdJobs},
+	{"schedule", groupMirror, "show or set the 7x24 transfer and scan windows", cmdSchedule},
 
 	{"pubkey", groupDiagnostics, "derive the public key of -wg-key, for the rootserver peer entry", cmdPubkey},
 	{"ping", groupDiagnostics, "ICMP-ping a WireGuard address through the tunnel (M0 step 1)", cmdPing},
@@ -150,6 +157,10 @@ type config struct {
 
 	dataDir string
 	verbose bool
+
+	// limit is registered by sync alone, since it is the only command that moves
+	// bytes, but it is read where the engine is built.
+	limit string
 
 	stored     store.Values
 	storedOnce sync.Once

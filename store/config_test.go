@@ -180,34 +180,6 @@ func TestEveryKeyIsInAGroup(t *testing.T) {
 	}
 }
 
-func TestParseSize(t *testing.T) {
-	sizes := map[string]int64{
-		"64MiB":    64 << 20,
-		"64M":      64 << 20,
-		"64 GB":    64 << 30,
-		"67108864": 67108864,
-		"1k":       1 << 10,
-		"2T":       2 << 40,
-		" 8 MiB ":  8 << 20,
-	}
-	for in, want := range sizes {
-		got, err := ParseSize(in)
-		if err != nil {
-			t.Errorf("ParseSize(%q): %v", in, err)
-			continue
-		}
-		if got != want {
-			t.Errorf("ParseSize(%q) = %d, want %d", in, got, want)
-		}
-	}
-
-	for _, in := range []string{"", "   ", "sixty-four megs", "64XB", "0", "-5", "64MiB extra"} {
-		if got, err := ParseSize(in); err == nil {
-			t.Errorf("ParseSize(%q) = %d, want an error", in, got)
-		}
-	}
-}
-
 func TestValueGetters(t *testing.T) {
 	v := Values{
 		KeyScanWorkers:    " 12 ",

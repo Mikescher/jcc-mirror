@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"blackforestbytes.com/jcc-mirror/engine"
+	"blackforestbytes.com/jcc-mirror/format"
 	"blackforestbytes.com/jcc-mirror/logs"
+	"blackforestbytes.com/jcc-mirror/schedule"
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
@@ -53,12 +56,59 @@ func (cfg *config) openEngine(ctx context.Context, logger *logs.Logger) (*engine
 		st.Close()
 	}
 
-	eng, err := engine.New(st, rem, logger, engine.OptionsFrom(values))
+	opts := engine.OptionsFrom(values)
+	if opts.Limiter, err = cfg.limiter(values, logger); err != nil {
+		closeFn()
+		return nil, nil, func() {}, err
+	}
+
+	eng, err := engine.New(st, rem, logger, opts)
 	if err != nil {
 		closeFn()
 		return nil, nil, func() {}, err
 	}
 	return eng, st, closeFn, nil
+}
+
+// limiter is the bandwidth cap a hand-run command gets. The grid's cap applies
+// whoever started the transfer - it is there to protect the link, and the link
+// does not care who pressed the button - but the window itself does not: a
+// command typed at a console is an override by definition, and there is no
+// meaningful number to apply to an hour that was meant to move nothing.
+func (cfg *config) limiter(values store.Values, logger *logs.Logger) (*engine.Limiter, error) {
+	if cfg.limit != "" {
+		switch strings.ToLower(strings.TrimSpace(cfg.limit)) {
+		case "0", "off", "none", "full":
+			logger.Infof("transfer: no bandwidth cap")
+			return engine.NewLimiter(0), nil
+		}
+		n, err := format.ParseSize(cfg.limit)
+		if err != nil {
+			return nil, fmt.Errorf("-limit %q: %w", cfg.limit, err)
+		}
+		logger.Infof("transfer: capped at %s/s (%s)", format.Size(n), format.Rate(n, time.Second))
+		return engine.NewLimiter(n), nil
+	}
+
+	sched, err := schedule.Parse(values.Get(store.KeySchedule))
+	if err != nil {
+		return nil, fmt.Errorf("the stored transfer window will not parse: %w", err)
+	}
+	loc, err := time.LoadLocation(values.Get(store.KeyTimezone))
+	if err != nil {
+		return nil, fmt.Errorf("timezone %q: %w", values.Get(store.KeyTimezone), err)
+	}
+
+	w := sched.At(time.Now().In(loc))
+	if !w.Open {
+		logger.Warnf("transfer: the window is closed right now - running anyway, with no cap")
+		return engine.NewLimiter(0), nil
+	}
+	if w.Limit > 0 {
+		logger.Infof("transfer: capped at %s/s (%s) until %s, from the schedule",
+			format.Size(w.Limit), format.Rate(w.Limit, time.Second), w.Until.Format("Mon 15:04"))
+	}
+	return engine.NewLimiter(w.Limit), nil
 }
 
 // openPair resolves the pair an operator named, by name or by id.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"blackforestbytes.com/jcc-mirror/format"
+	"blackforestbytes.com/jcc-mirror/schedule"
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
@@ -58,6 +59,7 @@ func percent(done, total int64) int {
 
 type pageData struct {
 	Status     Status
+	Grids      []gridView
 	Groups     []configGroup
 	Pairs      []PairView
 	Runs       RunState
@@ -77,6 +79,56 @@ type configField struct {
 	store.KeyDef
 	Value string
 	IsSet bool
+}
+
+// gridView is one 7x24 schedule as the page draws it: a coloured cell per
+// weekday-hour, plus the rules it renders back to. The colours say the shape at
+// a glance and the rules say the exact numbers, which is the split that keeps
+// twenty-four columns readable on a phone.
+type gridView struct {
+	Name  string
+	Rules string
+	Hours []int
+	Rows  []gridRow
+}
+
+type gridRow struct {
+	Day   string
+	Cells []gridCell
+}
+
+type gridCell struct {
+	Class string
+	Title string
+}
+
+func newGrid(name string, s schedule.Schedule, now time.Time) gridView {
+	g := gridView{Name: name, Rules: s.String()}
+	for h := 0; h < schedule.Hours; h++ {
+		g.Hours = append(g.Hours, h)
+	}
+
+	days := []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday,
+		time.Friday, time.Saturday, time.Sunday}
+	for _, d := range days {
+		row := gridRow{Day: d.String()[:2]}
+		for h := 0; h < schedule.Hours; h++ {
+			cell := s.Cell(d, h)
+			c := gridCell{Class: "cell-off", Title: fmt.Sprintf("%s %02d:00 — closed", d, h)}
+			switch {
+			case cell.Open && cell.Limit == 0:
+				c = gridCell{Class: "cell-full", Title: fmt.Sprintf("%s %02d:00 — no limit", d, h)}
+			case cell.Open:
+				c = gridCell{Class: "cell-cap", Title: fmt.Sprintf("%s %02d:00 — %s", d, h, format.Rate(cell.Limit, time.Second))}
+			}
+			if d == now.Weekday() && h == now.Hour() {
+				c.Class += " cell-now"
+			}
+			row.Cells = append(row.Cells, c)
+		}
+		g.Rows = append(g.Rows, row)
+	}
+	return g
 }
 
 func (a *App) handleSetupPage(w http.ResponseWriter, r *http.Request) {
@@ -100,6 +152,12 @@ func (a *App) renderSetupPage(w http.ResponseWriter, r *http.Request, code int, 
 	}
 	data.Groups = groupFields(values)
 	data.Runs = a.Runs(ctx)
+
+	transfer, scan := a.Schedules()
+	data.Grids = []gridView{
+		newGrid("Transfer", transfer, data.Status.Schedule.Now),
+		newGrid("Scan", scan, data.Status.Schedule.Now),
+	}
 
 	if data.Pairs, err = a.PairViews(ctx); err != nil {
 		a.log.Errorf("dashboard: %v", err)
@@ -158,7 +216,9 @@ func groupRank(name string) int {
 		return 0
 	case "Remote":
 		return 1
-	default:
+	case "Schedule":
 		return 2
+	default:
+		return 3
 	}
 }

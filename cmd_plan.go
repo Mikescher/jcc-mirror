@@ -65,6 +65,9 @@ func printPlan(p engine.Plan) error {
 	fmt.Printf("  to transfer    %s files, %s\n", format.Comma(int64(p.Transfers())), format.Bytes(p.TransferBytes()))
 	fmt.Printf("\n  publisher      %s files, %s\n", format.Comma(p.RemoteFiles), format.Bytes(p.RemoteBytes))
 	fmt.Printf("  here           %s files, %s\n", format.Comma(p.LocalFiles), format.Bytes(p.LocalBytes))
+	if p.Free > 0 {
+		fmt.Printf("  free here      %s, keeping %s in reserve\n", format.Bytes(p.Free), format.Bytes(p.Reserve))
+	}
 
 	if len(p.Entries) > 0 {
 		fmt.Println()
@@ -82,12 +85,17 @@ func printPlan(p engine.Plan) error {
 	}
 
 	fmt.Printf("\n=> nothing was changed here and nothing at all was asked of the publisher.\n")
+	if p.Shortfall > 0 {
+		// The preflight refuses this plan, so saying so here is what makes a dry
+		// run worth doing (DESIGN.md §2.6).
+		fmt.Printf("=> this does not fit: %s short. A sync would be refused before it started;\n   narrow the pair with excludes, or lower the reserve.\n", format.Bytes(p.Shortfall))
+	}
 	if p.Vanished > 0 {
 		// The count is the point of it: a diff that has gone wrong shows up as a
 		// vanished count in the thousands long before M4 could act on one.
 		fmt.Printf("=> the %s vanished file(s) are counted and will not be deleted: M2 is additive\n   and deletion is M4, behind the guards of DESIGN.md §2.5.\n", format.Comma(int64(p.Vanished)))
 	}
-	if p.Transfers() > 0 {
+	if p.Transfers() > 0 && p.Shortfall == 0 {
 		fmt.Printf("=> `jcc-mirror sync -pair %s` queues and transfers this.\n", p.PairName)
 	}
 	return nil

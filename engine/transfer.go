@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,7 +46,7 @@ func (e *Engine) Sync(ctx context.Context, pair store.Pair) (SyncResult, error) 
 	started := time.Now()
 	res := SyncResult{PairID: pair.ID, PairName: pair.Name}
 
-	if err := transferable(pair); err != nil {
+	if err := Transferable(pair); err != nil {
 		return res, err
 	}
 
@@ -63,6 +64,13 @@ func (e *Engine) Sync(ctx context.Context, pair store.Pair) (SyncResult, error) 
 	if err != nil {
 		return res, err
 	}
+	// Before a byte moves: a plan that cannot land is better refused than run
+	// until the volume is full (DESIGN.md §2.6).
+	if err := e.checkSpace(pair, queue.PendingBytes); err != nil {
+		e.event(ctx, store.LevelError, store.KindSpaceLow, pair.ID,
+			"sync of "+pair.Name+" refused: "+err.Error(), map[string]any{"need": queue.PendingBytes})
+		return res, err
+	}
 	e.beginRun(pair, int(queue.Counts[store.JobPending]), queue.PendingBytes)
 	defer e.endRun()
 
@@ -71,7 +79,10 @@ func (e *Engine) Sync(ctx context.Context, pair store.Pair) (SyncResult, error) 
 			pair.Name, format.Comma(queue.Counts[store.JobPending]), format.Bytes(queue.PendingBytes)),
 		map[string]any{"files": queue.Counts[store.JobPending], "bytes": queue.PendingBytes})
 
-	var consecutive int
+	var (
+		consecutive int
+		noSpace     *SpaceError
+	)
 	for ctx.Err() == nil {
 		job, ok, err := e.store.ClaimJob(ctx, pair.ID, time.Now())
 		if err != nil {
@@ -106,6 +117,17 @@ func (e *Engine) Sync(ctx context.Context, pair store.Pair) (SyncResult, error) 
 			if rerr := e.store.ReleaseJob(context.WithoutCancel(ctx), job.ID); rerr != nil {
 				e.log.Errorf("sync: %v", rerr)
 			}
+		case errors.As(err, &noSpace):
+			// Not this file's fault, and not something more attempts can fix. The
+			// run ends with its retry budget untouched.
+			if rerr := e.store.ReleaseJob(ctx, job.ID); rerr != nil {
+				e.log.Errorf("sync: %v", rerr)
+			}
+			e.event(ctx, store.LevelError, store.KindSpaceLow, pair.ID,
+				"sync of "+pair.Name+" stopped: "+err.Error(), map[string]any{"path": job.Path})
+			res.Duration = time.Since(started)
+			e.finishSync(ctx, pair, &res, err)
+			return res, err
 		default:
 			consecutive++
 			retrying, ferr := e.store.FailJob(ctx, job.ID, err, e.opts.MaxAttempts, e.opts.RetryBackoff)
@@ -223,6 +245,11 @@ func (e *Engine) runJob(ctx context.Context, pair store.Pair, job store.Job) (mo
 
 	from, err := resumeOffset(f, job)
 	if err != nil {
+		return false, err
+	}
+	// Again per file: the run may have started days ago, and something else on
+	// the NAS can fill the volume while it works.
+	if err := e.checkSpace(pair, job.BytesTotal-from); err != nil {
 		return false, err
 	}
 	if from > 0 {
@@ -465,7 +492,7 @@ func (e *Engine) fetchChunk(ctx context.Context, f *os.File, src string, c chunk
 
 	// WriteAt through an offset writer: the chunks of a round share the file and
 	// each one owns its own region of it.
-	n, err := io.Copy(io.NewOffsetWriter(f, c.off), &countingReader{r: body, engine: e})
+	n, err := io.Copy(io.NewOffsetWriter(f, c.off), &countingReader{r: body, ctx: ctx, engine: e})
 	if err != nil {
 		return fmt.Errorf("transfer bytes %d-%d: %w", c.off, c.off+c.length-1, err)
 	}
@@ -479,6 +506,7 @@ func (e *Engine) fetchChunk(ctx context.Context, f *os.File, src string, c chunk
 // anything locked: every chunk stream touches them on every read.
 type countingReader struct {
 	r      io.Reader
+	ctx    context.Context
 	engine *Engine
 }
 
@@ -487,6 +515,13 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	if n > 0 {
 		c.engine.runBytes.Add(int64(n))
 		c.engine.fileDone.Add(int64(n))
+		// After the read rather than before it: what shapes the rate is the pause
+		// before the next one, and the connection's own window absorbs the wait.
+		// The limiter is shared, so the cap is the sum over every stream of the
+		// file, not one cap each.
+		if werr := c.engine.opts.Limiter.wait(c.ctx, n); werr != nil && err == nil {
+			err = werr
+		}
 	}
 	return n, err
 }

@@ -45,6 +45,14 @@ type Plan struct {
 	LocalFiles  int64 `json:"localFiles"`
 	LocalBytes  int64 `json:"localBytes"`
 
+	// The free-space picture at the destination (DESIGN.md §2.6). Shortfall is
+	// how much more room the plan needs than there is; anything above zero means
+	// a sync would be refused, which is worth knowing from a dry run rather than
+	// from the run that stops.
+	Free      int64 `json:"free"`
+	Reserve   int64 `json:"reserve"`
+	Shortfall int64 `json:"shortfall"`
+
 	Entries   []PlanEntry `json:"entries,omitempty"`
 	Truncated bool        `json:"truncated,omitempty"`
 
@@ -73,7 +81,7 @@ func (e *Engine) Plan(ctx context.Context, pair store.Pair, sample int) (Plan, e
 // file whose remote copy changed since it was queued loses its resume watermark,
 // because the bytes in its .part file belong to a version that no longer exists.
 func (e *Engine) Enqueue(ctx context.Context, pair store.Pair) (Plan, error) {
-	if err := transferable(pair); err != nil {
+	if err := Transferable(pair); err != nil {
 		return Plan{}, err
 	}
 
@@ -125,6 +133,10 @@ func (e *Engine) plan(ctx context.Context, pair store.Pair, sample int, fn func(
 	if p.LocalFiles, p.LocalBytes, err = e.store.FileStats(ctx, pair.ID); err != nil {
 		return Plan{}, err
 	}
+	p.Reserve = e.opts.Reserve
+	if space, err := FreeSpace(pair.LocalPath); err == nil {
+		p.Free = space.Free
+	}
 
 	f := newFilter(pair)
 	keep := func(entry PlanEntry) error {
@@ -173,6 +185,14 @@ func (e *Engine) plan(ctx context.Context, pair store.Pair, sample int, fn func(
 	})
 	if err != nil {
 		return Plan{}, err
+	}
+
+	// A replace stages its .part beside the file it replaces, so what it needs is
+	// the new file in full - not the difference between the two.
+	if p.Free > 0 {
+		if short := p.TransferBytes() + p.Reserve - p.Free; short > 0 {
+			p.Shortfall = short
+		}
 	}
 	return p, nil
 }

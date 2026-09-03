@@ -4,17 +4,19 @@ One-way replication of a jClipCorn collection from the publisher's NAS to the
 subscriber's Synology. See `DESIGN.md` for the design; this README covers what is
 built so far.
 
-**Status: M2.** It mirrors. On top of M1's skeleton — sqlite state, a config
-table with an audit trail, a setup view, the `Remote` interface with a WebDAV
-implementation and a local fake, an event log and `/healthz` — there is now an
-engine: a resumable walk that builds the manifest the publisher does not have, a
-differ, and a transfer with ranged GETs, `.part` files, verification, an atomic
-rename and a per-file job queue with retries. Plus adopt mode, without which the
-30 TB USB bootstrap could not be recognised.
+**Status: M3.** It mirrors, on a schedule, at a rate you choose. On top of M1's
+skeleton — sqlite state, a config table with an audit trail, a setup view, the
+`Remote` interface with a WebDAV implementation and a local fake, an event log
+and `/healthz` — and M2's engine — a resumable walk that builds the manifest the
+publisher does not have, a differ, a transfer with ranged GETs, `.part` files,
+verification, an atomic rename and a per-file job queue with retries, plus adopt
+mode for the USB bootstrap — there is now a scheduler: one 7×24 grid that says
+both when bytes may move and how fast, a shared limiter that a window boundary
+adjusts mid-transfer, and a free-space preflight that refuses a plan which
+cannot land.
 
-It is driven from the CLI and it never deletes anything. The schedule and the
-bandwidth cap are M3, deletion and its guards are M4, the `ClipCornDB.db` lock
-gate is M5 and the dashboard is M6.
+It still never deletes anything. Deletion and its guards are M4, the
+`ClipCornDB.db` lock gate is M5, the dashboard is M6 and self-update is M7.
 
 ## Running it
 
@@ -52,7 +54,7 @@ curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
 |---|---|
 | `GET /` | Setup view |
 | `GET /healthz` | Status as JSON; 503 only when the database has stopped answering |
-| `GET /api/status` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/pairs` · `/api/runs` | Read views. Secrets are never returned |
+| `GET /api/status` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/pairs` · `/api/runs` | Read views. Secrets are never returned; `status` carries the current window and cap |
 | `POST /api/config` · `/api/remote/probe` · `/api/login` | Token required |
 | `POST /api/pairs` · `/api/pairs/update` · `/api/pairs/delete` | Token required. JSON or a form; a JSON body may carry one key and changes only that |
 | `POST /api/runs` (`kind`, `pair`) · `/api/runs/cancel` | Token required. Answers as soon as the run has started, never when it has finished |
@@ -66,7 +68,7 @@ far behind each one is, an editor for them, and a Plan / Scan / Adopt / Sync
 button each. A run happens in the background and the page refreshes itself while
 one is going, so a sync that takes a day and a half is watchable from a phone.
 One runs at a time — the transfer engine moves one file at a time by design, and
-M3's scheduler will walk the pairs in priority order for the same reason. Stop is
+the scheduler walks the pairs in priority order for the same reason. Stop is
 always safe: a walk stays resumable and every transfer keeps its place in the
 file.
 
@@ -99,6 +101,9 @@ jcc-mirror sync  -data /data -pair media     # do it
 jcc-mirror jobs  -data /data -pair media -state failed
 ```
 
+Once that has been watched for a while, `jcc-mirror schedule` hands the same
+three steps to the daemon; see **The schedule** below.
+
 **The bootstrap.** The first ~30 TB comes across by USB, not down the wire — that
 part is done by hand and jcc-mirror has no part in it. What it does have a part
 in is recognising the result. Once the copy is on the Synology, `adopt` matches
@@ -123,7 +128,7 @@ is better to find that out before the transfer starts.
 **The scan** builds the manifest that does not exist on the other side: one
 PROPFIND per directory, breadth-first, eight in flight. The frontier is the
 manifest table itself rather than the walker's memory, so a walk interrupted
-after ten minutes — a restart, a Ctrl-C, a transfer window closing in M3 —
+after ten minutes — a restart, a Ctrl-C, a transfer window closing —
 resumes where it stopped instead of starting over. `Depth: infinity` is not used
 even where a server honours it: on a tree this size it would return the whole
 collection as one XML document.
@@ -155,14 +160,66 @@ Every file is a row in `jobs` with its own state machine and retry budget, which
 is what makes a transfer retriable rather than an in-memory loop that dies with
 the process. Anything a crash left `running` is requeued by the next run.
 
-**What M2 will not do yet**, so it does not come as a surprise:
+**What is still not built**, so it does not come as a surprise:
 
 | | |
 |---|---|
 | **Nothing is ever deleted.** | Files the publisher no longer has are counted and reported by `plan`, and that is all. Mirror mode, the deletion threshold, the quarantine and the guards are M4 — deliberately after the diff has been watched for a while. |
-| **No schedule and no bandwidth cap.** | A `sync` runs until the queue is empty. The 7×24 grid, the limiter and the free-space preflight are M3. |
-| **A `jcc` pair refuses to transfer.** | Its hard exclusions and the lock gate on `ClipCornDB.db` are M5, and without them a sync would overwrite this side's own `ClipCornUserData.db`. Scanning one is allowed; it is read-only. |
-| **No real dashboard.** | The setup view can now start and watch the four operations and edit the pairs, which is enough to run the mirror without a shell. The six views, the SSE stream, the bandwidth charts and the notifications are still M6. |
+| **A `jcc` pair refuses to transfer.** | Its hard exclusions and the lock gate on `ClipCornDB.db` are M5, and without them a sync would overwrite this side's own `ClipCornUserData.db` and `ClipCornHistory.db` — both per-user, and neither is ever synced. Scanning one is allowed; it is read-only, and the scheduler does scan them. |
+| **No real dashboard.** | The setup view can now start and watch the four operations, edit the pairs and draw the schedule, which is enough to run the mirror without a shell. The six views, the SSE stream, the bandwidth charts and the notifications are still M6. |
+
+## The schedule
+
+One 7×24 grid, one cell per weekday-hour, each carrying **both** "may transfer"
+and a bandwidth cap. Keeping them together is what makes "unlimited 02:00–08:00,
+5 MB/s otherwise" a single setting rather than two that can disagree:
+
+```bash
+jcc-mirror schedule -data /data                                    # draw both grids
+jcc-mirror schedule -data /data -set "* * = 5MiB; * 2-8 = full"    # the line above
+jcc-mirror schedule -data /data -scan -set "* * = off; * 3-6 = on" # walk at night only
+jcc-mirror schedule -data /data -automatic                         # run unattended
+```
+
+Rules are separated by `;`, and later ones win, so the first is the base and the
+rest are the exceptions — the order a schedule is usually thought about in. Days
+are `mon`…`sun`, `mon-fri`, `sat,sun` or `*`; hours are half-open spans that may
+wrap over midnight (`22-2`), a single hour (`13`), or `*`; the cap is `off`,
+`full`, or a rate (`5MiB`, `500k`, `5MiB/s`). An empty schedule is always open at
+full speed, which is what an install that has never set one gets. The grid is
+read in the configured timezone — `general.timezone`, deliberately not the
+container's `TZ` — and `jcc-mirror schedule` draws it in that zone so a rule can
+be checked against the week it actually produces.
+
+Two things follow from the split between the grid and the switch:
+
+- **The caps always apply.** A `sync` typed at a console is capped by the current
+  cell too, because the cap is there to protect the link and the link does not
+  care who pressed the button. `-limit 5MiB` overrides it, `-limit off` removes
+  it.
+- **The windows only gate the scheduler.** A hand-run command is an override by
+  definition, so a closed window does not refuse one — it warns and runs uncapped.
+
+`schedule.automatic` is off by default: updating the binary must not start
+mirroring 30 TB on its own. With it on, the scheduler walks the enabled pairs in
+priority order, scans one whose manifest is older than `schedule.scan_interval`,
+then syncs one that has something to transfer, one run at a time. Crossing a
+boundary mid-transfer is ordinary: a cap that changes is applied to the streams
+already running, and a window that closes stops the run — the walk stays
+resumable and every file keeps its watermark, so the next window carries on
+rather than starting over. A run someone started by hand is never stopped by a
+boundary.
+
+**Free space** (S4) is checked before a plan starts and again before every file,
+since a plan can run for days. A transfer whose completion would eat into
+`transfer.reserve` — 50 GiB by default — is refused rather than run until the
+volume is full, and `plan` says so first:
+
+```
+  free here      406.29 GiB, keeping 50.00 GiB in reserve
+=> this does not fit: 3.60 TiB short. A sync would be refused before it started;
+   narrow the pair with excludes, or lower the reserve.
+```
 
 ## The M0 diagnostics
 
@@ -228,9 +285,10 @@ private key and the dashboard token. The private key therefore exists in exactly
 one place and never passes through a compose file, a shell history or `ps`.
 
 The engine's settings live in the same table and appear in the same setup view,
-because the key registry is what the form is generated from: walk concurrency and
+because the key registry is what the form is generated from: the two grids, the
+unattended switch and the scan interval under **Schedule**, walk concurrency and
 the mtime tolerance under **Scan**, and streams per file, chunk size, attempts,
-retry backoff and post-copy hashing under **Transfer**. The pairs themselves are
+retry backoff, post-copy hashing and the free-space reserve under **Transfer**. The pairs themselves are
 the exception — they are rows of their own, edited with `jcc-mirror pairs` until
 the dashboard grows an editor in M6.
 
@@ -275,10 +333,14 @@ static.go      the settings that are compiled in, and why
 cmd_serve.go   the daemon
 cmd_engine.go  what the mirror commands share: store, remote, engine
 cmd_*.go       one file per command, mirror and diagnostic alike
-app/           the running daemon: tunnel lifecycle, dashboard, setup view
+app/           the running daemon: tunnel lifecycle, scheduler, dashboard,
+               setup view
+schedule/      the 7x24 grid: parsing, rendering, and when the answer next
+               changes
 engine/        the mirror: scan.go walks, diff.go plans, transfer.go moves
                bytes, adopt.go recognises the USB bootstrap, filter.go is the
-               path globbing
+               path globbing, limiter.go is the shared bandwidth cap and
+               space.go the free-space preflight
 store/         sqlite state: migrations, config with audit, events, and the
                engine's tables - pairs, manifest, scans, files, jobs, changes
 wg/            wireguard-go + netstack: the tunnel, ping and device status

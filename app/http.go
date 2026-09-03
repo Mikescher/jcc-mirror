@@ -338,7 +338,7 @@ func (a *App) handleStartRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleCancelRun(w http.ResponseWriter, r *http.Request) {
-	if err := a.CancelRun(); err != nil {
+	if err := a.CancelRun("stopped from the dashboard"); err != nil {
 		a.fail(w, r, http.StatusConflict, err)
 		return
 	}

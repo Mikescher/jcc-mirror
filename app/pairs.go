@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"blackforestbytes.com/jcc-mirror/engine"
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
@@ -24,6 +25,7 @@ type PairView struct {
 	LocalBytes  int64
 	Queue       store.JobQueue
 	LastScan    *time.Time
+	Space       engine.Space
 }
 
 // IncludesText and ExcludesText render the globs for the form field they are
@@ -59,6 +61,11 @@ func (a *App) PairViews(ctx context.Context) ([]PairView, error) {
 		}
 		if v.Queue, err = a.store.Queue(ctx, p.ID); err != nil {
 			return nil, err
+		}
+		// The volume, not the directory: what a sync is refused for is the room
+		// left where the files land (DESIGN.md §2.6).
+		if space, err := engine.FreeSpace(p.LocalPath); err == nil {
+			v.Space = space
 		}
 		if sc, ok, err := a.store.LastCompletedScan(ctx, p.ID); err != nil {
 			return nil, err

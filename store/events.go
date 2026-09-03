@@ -33,6 +33,8 @@ const (
 	KindSyncFinished  = "sync.finished"
 	KindTransferFail  = "transfer.failed"
 	KindAdopted       = "adopt.finished"
+	KindWindow        = "schedule.window"
+	KindSpaceLow      = "space.low"
 	KindError         = "error"
 )
 

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"blackforestbytes.com/jcc-mirror/engine"
 	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/store"
 	"blackforestbytes.com/jcc-mirror/webdav"
@@ -52,9 +53,16 @@ type App struct {
 	handler http.Handler
 
 	// runs is the one mirror operation that may be in flight, started from the
-	// dashboard. It has a lock of its own: a sync runs for days, and the tunnel
-	// paths must not queue behind it.
+	// dashboard or by the scheduler. It has a lock of its own: a sync runs for
+	// days, and the tunnel paths must not queue behind it.
 	runs runner
+
+	// sched is the 7x24 grid and what it has decided; limiter is the cap it
+	// carries into whatever is transferring. The limiter belongs to the daemon
+	// rather than to a run, because a window boundary has to reach a transfer
+	// that is already going (DESIGN.md §2.4, §6).
+	sched   scheduler
+	limiter *engine.Limiter
 
 	mu        sync.Mutex
 	baseCtx   context.Context // the daemon's lifetime, which a run's context hangs off
@@ -74,7 +82,7 @@ func New(st *store.Store, log *logs.Logger, opts Options) *App {
 	if opts.TunnelPort == 0 {
 		opts.TunnelPort = 8080
 	}
-	return &App{store: st, log: log, opts: opts, started: time.Now()}
+	return &App{store: st, log: log, opts: opts, started: time.Now(), limiter: engine.NewLimiter(0)}
 }
 
 // SetHandler installs the dashboard. The tunnel listener is opened and closed as
@@ -119,6 +127,7 @@ func (a *App) Start(ctx context.Context) error {
 
 	a.Reload(ctx)
 	go a.reconcileLoop(ctx)
+	go a.schedulerLoop(ctx)
 	return nil
 }
 
@@ -127,7 +136,7 @@ func (a *App) Close(ctx context.Context) {
 	// A run in flight is stopped rather than left to be killed with the process.
 	// Nothing is lost either way - a scan stays resumable and a transfer keeps its
 	// watermark - but stopping it means the run's own record gets written.
-	if err := a.CancelRun(); err == nil {
+	if err := a.CancelRun("stopped: the daemon is shutting down"); err == nil {
 		a.awaitRun(2 * time.Second)
 	}
 
@@ -163,6 +172,8 @@ func (a *App) Reload(ctx context.Context) {
 		a.log.Errorf("config: %v", err)
 		return
 	}
+
+	a.loadSchedule(values)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
