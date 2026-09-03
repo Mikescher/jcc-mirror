@@ -1,0 +1,21 @@
+# M0 spike. The commands are one-shot and take every setting as a flag, so the
+# usual way to use this is
+#   docker compose run --rm spike ping -wg-key ... -target ...
+# Settings are passed per invocation; from M1 on they live in sqlite under /data
+# and are entered in the dashboard.
+services:
+  spike:
+    image: mikescher/jcc-mirror:latest
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: "no"
+    # Owns the walk manifests and any -out file. On the Synology this wants to be
+    # a uid/gid that can write the share, or the last rename of every transfer
+    # fails at the last possible moment.
+    user: "1026:100"
+    volumes:
+      - ./data:/data
+    ports:
+      - "8080:8080"   # only needed for `serve -lan :8080`; the tunnel listener needs no mapping
+    command: ["help"]

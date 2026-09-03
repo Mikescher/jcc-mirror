@@ -1,0 +1,6 @@
+jcc-mirror
+jcc-mirror-amd64
+jcc-mirror-arm64
+*.ndjson
+*.part
+/deploy/data/

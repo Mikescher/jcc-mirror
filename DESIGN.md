@@ -402,18 +402,34 @@ private tunnel to a machine you control. Auto-update is a toggle; when off, the 
 
 ## 6. Configuration
 
-**Bootstrap** (env / mounted file): data dir, listen addresses, `TZ`, WireGuard private key + server
-peer + endpoint + address + allowed-ips, dashboard token. Only what is needed before the tunnel and
-the database exist.
+There is no bootstrap layer. Nothing is read from the environment and no config file is mounted:
+every setting is either **static** — compiled in, because it does not vary between installs — or
+**runtime**, held in sqlite and edited in the dashboard.
+
+**Static**: the data directory (`/data`, the volume mount), the two dashboard listen addresses (LAN
+and the netstack listener on the tunnel), tunnel MTU and keepalive.
+
+**Generated at first start**, into sqlite, and never typed by hand: the WireGuard private key and the
+dashboard bearer token. The token goes to the container log (§4); the dashboard shows the *public*
+half of the key, to paste into the rootserver's peer entry. So the private key exists in exactly one
+place and never passes through a compose file, a shell history or `ps`.
+
+That leaves one loop to close, and it closes itself: the LAN listener does not depend on the tunnel,
+so the dashboard answers on `:8080` before any WireGuard setting exists. A first boot against an
+empty database serves a setup view, and the tunnel comes up the moment the peer entry is saved.
+Nothing has to be known before the process starts.
 
 **Runtime** (sqlite, edited in the dashboard, every change written to an audit table):
 
+- **Tunnel**: rootserver public key, endpoint, our address inside the tunnel, allowed-ips, optional
+  preshared key. Changing any of them re-opens the tunnel in place.
 - **Pairs**: `{id, name, type: raw|jcc, remote_path, local_path, mode: mirror|additive,
   includes[], excludes[], delete_guard, priority, enabled}`.
 - **Schedule**: one 7×24 grid, one cell per weekday-hour, each carrying *both* "may transfer" and a
   bandwidth cap. The same grid answers "when to download" and "bandwidth limits", and gives
   "unlimited 02:00–08:00, 5 MB/s otherwise" for free. A separate, coarser schedule for scans, which
-  cost real time. Timezone from `TZ`; render the grid in that zone and label it.
+  cost real time. The timezone is a config value of its own, not `TZ`; render the grid in that
+  zone and label it.
 - **Remote**: WebDAV base URL, username, password. Stored in the config table and masked in the UI —
   it is a read-only account reached over a private tunnel, so plaintext at rest is proportionate.
 - **Transfer**: chunk count and size, retry and backoff, free-space reserve, walk concurrency.
@@ -461,12 +477,13 @@ services:
       - /volume1/docker/jcc-mirror:/data          # sqlite, config, wg key, binaries, db backups
       - /volume1/media:/mnt/media
       - /volume1/clipcorn:/mnt/clipcorn
-    environment: [ TZ=Europe/Berlin, PUID=1026, PGID=100 ]
+    user: "1026:100"                  # uid/gid that owns the media share; no env, see §6
 ```
 
 No `cap_add`, no `devices`, no `network_mode: host`. The Synology permissions trap: the container
 must write as a uid/gid that owns the media share, or every rename fails at the last possible
-moment — hence `PUID`/`PGID` and an entrypoint that drops privileges.
+moment — hence compose's `user:`, which Docker applies before the process starts, so there is no
+privilege-dropping entrypoint and no `PUID`/`PGID` to pass.
 
 Base image `gcr.io/distroless/static` or alpine; the binary is static (`CGO_ENABLED=0`, pure-Go
 sqlite). Module path `blackforestbytes.com/jcc-mirror`; build `linux/amd64` and `linux/arm64`.
@@ -485,7 +502,7 @@ Setup elsewhere, once:
 | # | Deliverable | Why here |
 |---|---|---|
 | **M0** | **Spike: netstack WireGuard + WebDAV.** In order: `ping` user 1's WG address to prove the rootserver forwards between spokes; join from a container on the Synology via netstack; `PROPFIND` the collection root and check whether `Depth: infinity` is honoured; **time a full metadata walk of the real tree**; then a **multi-GB ranged GET, a resume from a byte offset mid-file, and a transfer left running for hours** to see whether DSM's WebDAV holds up; confirm user 1 can reach a test listener over the tunnel. | Everything that could invalidate the design, in one afternoon. The spoke-to-spoke route and DSM's behaviour on large ranged GETs are the two most likely to bite, and the walk time sets the scan schedule. |
-| M1 | Skeleton: binary (`blackforestbytes.com/jcc-mirror`), sqlite state, config bootstrap, `Remote` interface + WebDAV implementation + local fake, events, `/healthz`. | |
+| M1 | Skeleton: binary (`blackforestbytes.com/jcc-mirror`), sqlite state, config table + setup view, `Remote` interface + WebDAV implementation + local fake, events, `/healthz`. | |
 | M2 | Scanner, differ, transfer: resumable walk, ranged GET, `.part` files, verify, rename, job state machine, retry — **and adopt mode**, without which the USB bootstrap can't be recognised. | The core, testable from the CLI with no UI. |
 | M3 | Scheduler + limiter: 7×24 grid, caps, window boundaries mid-transfer, free-space preflight. | |
 | M4 | Deletion + guards: mirror mode, threshold, quarantine, retention, non-empty assertion. | Deliberately after M2/M3 — run additive-only until the diff is trusted. |
