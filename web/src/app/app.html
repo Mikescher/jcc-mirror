@@ -11,6 +11,9 @@
         @if (!s.schedule.automatic) {
           <span class="pill warn">unattended off</span>
         }
+        @if (s.updateReady) {
+          <a class="pill warn" routerLink="/diagnostics">update available</a>
+        }
         @if (busy()) {
           <span class="pill ok">running</span>
         }

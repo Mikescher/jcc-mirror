@@ -40,6 +40,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/trash", a.handleGetTrash)
 	mux.HandleFunc("GET /api/runs", a.handleGetRuns)
 	mux.HandleFunc("GET /api/diagnostics", a.handleGetDiagnostics)
+	mux.HandleFunc("GET /api/update", a.handleGetUpdate)
 	mux.HandleFunc("GET /api/remote/list", a.handleRemoteList)
 	mux.HandleFunc("GET /api/stream", a.handleStream)
 
@@ -59,6 +60,9 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/trash/restore", a.requireToken(a.handleRestoreTrash))
 	mux.HandleFunc("POST /api/runs", a.requireToken(a.handleStartRun))
 	mux.HandleFunc("POST /api/runs/cancel", a.requireToken(a.handleCancelRun))
+	mux.HandleFunc("POST /api/update/check", a.requireToken(a.handleCheckUpdate))
+	mux.HandleFunc("POST /api/update/apply", a.requireToken(a.handleApplyUpdate))
+	mux.HandleFunc("POST /api/update/rollback", a.requireToken(a.handleRollbackUpdate))
 
 	// Everything else is the single-page app, including the deep links it routes
 	// itself. It is registered last so no API path can be shadowed by it.

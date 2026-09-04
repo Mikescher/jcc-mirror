@@ -12,6 +12,9 @@ export interface Status {
   tunnel: TunnelStatus;
   remote: RemoteStatus;
   schedule: ScheduleStatus;
+  /** The badge in the topbar. The rest of the update panel is a view of its own;
+   *  this is the only part of it worth carrying on every live frame. */
+  updateReady?: boolean;
 }
 
 export interface TunnelStatus {
@@ -367,6 +370,51 @@ export interface DiagnosticsView {
   /** The container log is where the token is printed, so the tail is the one
    *  read view that needs it back before it will answer. */
   logLocked?: boolean;
+}
+
+/** UpdateStatus is the self-updater panel: what is running, what the share has,
+ *  and which of the two buttons makes sense right now (DESIGN.md §5). */
+export interface UpdateStatus {
+  version: string;
+  buildStamp?: string;
+  builtAt?: string;
+  binary?: string;
+  /** Whether the running binary came out of the data volume rather than the
+   *  image, which is what a first install runs. */
+  managed: boolean;
+  configured: boolean;
+  source?: string;
+  auto: boolean;
+  every?: string;
+  checkedAt?: string;
+  available?: Release;
+  newer: boolean;
+  /** Set when the binary on the share is one a previous attempt rolled back, and
+   *  will therefore not be installed again on its own. */
+  blocked?: string;
+  busy?: boolean;
+  error?: string;
+  state?: UpdateState;
+  canRollBack: boolean;
+}
+
+export interface Release {
+  url: string;
+  modTime: string;
+  size: number;
+}
+
+export interface UpdateState {
+  state: 'applied' | 'confirmed' | 'rolledback';
+  updatedAt: string;
+  source?: string;
+  remoteModTime: string;
+  remoteSize?: number;
+  fromVersion?: string;
+  toVersion?: string;
+  toBuild?: string;
+  rolledBackAt?: string;
+  rollbackReason?: string;
 }
 
 export interface RemoteEntry {

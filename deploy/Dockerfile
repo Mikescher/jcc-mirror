@@ -20,5 +20,10 @@ COPY --from=build /out/jcc-mirror /usr/local/bin/jcc-mirror
 USER nonroot:nonroot
 WORKDIR /data
 
+# The entrypoint stays the bare binary so `docker compose run ... pairs -data /data`
+# reaches the CLI unchanged; the supervisor is the default command instead. It
+# runs the daemon as a child and restores the previous binary if a self-update
+# will not start - which is why it is a subcommand of ours rather than a shell
+# script: this image has no shell (DESIGN.md §5).
 ENTRYPOINT ["/usr/local/bin/jcc-mirror"]
-CMD ["serve"]
+CMD ["supervise", "serve"]

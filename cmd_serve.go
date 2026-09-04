@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"blackforestbytes.com/jcc-mirror/app"
 	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/store"
+	"blackforestbytes.com/jcc-mirror/update"
 )
 
 // cmdServe is the daemon: the sqlite state, the tunnel it is configured from and
@@ -65,15 +67,55 @@ func cmdServe(ctx context.Context, args []string) error {
 		}
 	}()
 
-	<-ctx.Done()
-	logger.Infof("shutting down")
+	// Two ways out: the container stopping, and a self-update asking to be
+	// restarted into. The second is why the exec is here rather than in the
+	// updater - everything has to be shut down first, and the listeners in
+	// particular, or the new process cannot bind the addresses this one holds
+	// (DESIGN.md §5).
+	restart, restarting := "", false
+	select {
+	case <-ctx.Done():
+		logger.Infof("shutting down")
+	case restart = <-a.Restart():
+		restarting = true
+		logger.Infof("restarting after an update")
+	}
+
+	// The event streams are told to end before the listener is drained: each one
+	// is a request that finishes only when the browser goes away, and Shutdown
+	// would wait out its whole timeout for one. The request that asked for the
+	// restart still gets to answer.
+	a.BeginShutdown()
 
 	// The shutdown context is deliberately not derived from ctx: it has already
 	// been cancelled, and the shutdown still has to record why it happened.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
 	err = srv.Shutdown(shutdownCtx)
-	a.Close(shutdownCtx)
-	return err
+
+	// And a second one of its own, because a slow drain must not leave the
+	// shutdown with no time left to write itself down.
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelClose()
+	a.Close(closeCtx)
+
+	if !restarting {
+		return err
+	}
+
+	// Neither the exec nor the exit below runs a deferred close, so the store is
+	// closed here. Closing twice is harmless.
+	if err := st.Close(); err != nil {
+		logger.Errorf("close the database: %v", err)
+	}
+
+	if restart == "" {
+		// The binary to run is the one in the image, whose path this process has no
+		// way to know. Exiting hands the choice back to the supervisor, which does.
+		logger.Infof("update: the binary in the image is what should run now; exiting for the supervisor")
+		os.Exit(update.ExitRestart)
+	}
+
+	logger.Infof("update: exec %s", restart)
+	return update.Exec(restart, os.Args[1:])
 }

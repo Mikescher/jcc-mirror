@@ -59,6 +59,8 @@ var groups = []struct {
 
 var commands = []command{
 	{"serve", groupDaemon, "run the daemon: sqlite state, tunnel, dashboard", cmdServe},
+	{"supervise", groupDaemon, "run the daemon under the supervisor that undoes a bad self-update", cmdSupervise},
+	{"update", groupDaemon, "check the share for a newer binary, install it, or step back off one", cmdUpdate},
 	{"version", groupDaemon, "print the version and build timestamp", cmdVersion},
 
 	{"pairs", groupMirror, "list, add, change and remove the directory pairs", cmdPairs},
@@ -127,7 +129,7 @@ func usage() {
 		fmt.Fprintf(os.Stderr, "\n%s:\n\n", g.title)
 		for _, c := range commands {
 			if c.group == g.id {
-				fmt.Fprintf(os.Stderr, "  %-9s %s\n", c.name, c.brief)
+				fmt.Fprintf(os.Stderr, "  %-10s %s\n", c.name, c.brief)
 			}
 		}
 	}

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -21,6 +22,15 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// The self-updater smoke-tests what it downloaded by running `--version` on
+	// it (DESIGN.md §5). This branch is what lets a copy of the test binary stand
+	// in for a release, so the update test exercises the real check rather than a
+	// stub of it.
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println("jcc-mirror v-next (built 2030-01-01T00:00:00Z)")
+		os.Exit(0)
+	}
+
 	log.SetOutput(io.Discard) // the daemon prints the token at startup
 	os.Exit(m.Run())
 }
@@ -30,20 +40,27 @@ func TestMain(m *testing.M) {
 func newApp(t *testing.T) (*App, http.Handler, string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 
 	st, err := store.OpenFile(ctx, filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("OpenFile: %v", err)
 	}
-	t.Cleanup(func() { st.Close() })
 
-	a := New(st, &logs.Logger{}, Options{Version: "test"})
+	a := New(st, &logs.Logger{}, Options{Version: "test", DataDir: t.TempDir()})
 	h := a.Handler()
 	a.SetHandler(h)
 	if err := a.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+
+	// Registered after the temp directories, so it runs before them: the daemon's
+	// loops have to be stopped and the database closed while the files they use
+	// still exist, or the cleanup races sqlite over its own journal.
+	t.Cleanup(func() {
+		cancel()
+		a.Close(context.Background())
+		st.Close()
+	})
 
 	token, err := st.ConfigGet(ctx, store.KeyDashboardToken)
 	if err != nil {

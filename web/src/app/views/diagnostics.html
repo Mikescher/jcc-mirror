@@ -479,6 +479,140 @@
 
 <section class="panel">
   <div class="spread">
+    <h2>Update</h2>
+    <div class="row">
+      @if (update(); as u) {
+        @if (u.newer && !u.blocked) {
+          <span class="pill warn">update available</span>
+        } @else if (u.blocked) {
+          <span class="pill bad">rolled back</span>
+        } @else if (u.configured && u.checkedAt) {
+          <span class="pill ok">up to date</span>
+        }
+      }
+      <button
+        class="ghost small"
+        type="button"
+        [disabled]="!authed() || updateBusy()"
+        (click)="checkUpdate()"
+      >
+        Check
+      </button>
+    </div>
+  </div>
+
+  @if (updateError()) {
+    <div class="banner">{{ updateError() }}</div>
+  }
+  @if (restarting()) {
+    <div class="hold">Restarting into the new binary — the page reconnects by itself.</div>
+  }
+
+  @if (update(); as u) {
+    <div class="cards">
+      <div class="card">
+        <div class="k">Running</div>
+        <div class="v mono">{{ u.version }}</div>
+        <div class="note">
+          built {{ u.buildStamp || 'unknown' }},
+          {{ u.managed ? 'from the data volume' : 'from the image' }}
+        </div>
+      </div>
+      <div class="card">
+        <div class="k">On the share</div>
+        @if (u.available; as rel) {
+          <div class="v">{{ fmt.clock(rel.modTime) }}</div>
+          <div class="note mono path">{{ fmt.bytes(rel.size) }} · {{ rel.url }}</div>
+        } @else {
+          <div class="v dim">{{ u.configured ? 'not checked yet' : 'no binary URL is set' }}</div>
+          @if (u.source) {
+            <div class="note mono path">{{ u.source }}</div>
+          }
+        }
+      </div>
+      <div class="card">
+        <div class="k">Checked</div>
+        <div class="v">{{ u.checkedAt ? fmt.since(u.checkedAt) + ' ago' : '—' }}</div>
+        <div class="note">
+          checked every {{ u.every || '—' }},
+          {{ u.auto ? 'installed unattended' : 'installed by hand' }}
+        </div>
+      </div>
+    </div>
+
+    @if (u.error) {
+      <div class="banner">{{ u.error }}</div>
+    }
+    @if (u.blocked) {
+      <p class="note">
+        The binary on the share is the one a previous attempt had to undo — {{ u.blocked }}. It is
+        not installed again on its own; upload a fixed one, or install it anyway.
+      </p>
+    }
+
+    <div class="row">
+      <button
+        type="button"
+        [disabled]="!authed() || updateBusy() || !u.newer || !!u.blocked"
+        (click)="applyUpdate()"
+      >
+        Install and restart
+      </button>
+      @if (u.checkedAt && (u.blocked || !u.newer)) {
+        <button
+          class="ghost"
+          type="button"
+          [disabled]="!authed() || updateBusy()"
+          (click)="applyUpdate(true)"
+        >
+          Install anyway
+        </button>
+      }
+      @if (u.canRollBack) {
+        <button
+          class="ghost"
+          type="button"
+          [disabled]="!authed() || updateBusy()"
+          (click)="rollbackUpdate()"
+        >
+          Roll back
+        </button>
+      }
+    </div>
+
+    @if (u.state; as st) {
+      <div class="card line">
+        <div class="k">Last update</div>
+        <div class="v">
+          {{ st.fromVersion || '—' }} → {{ st.toVersion || '—' }}, {{ fmt.clock(st.updatedAt) }}
+          <span
+            class="pill"
+            [class.ok]="st.state === 'confirmed'"
+            [class.warn]="st.state === 'applied'"
+            [class.bad]="st.state === 'rolledback'"
+            >{{ st.state }}</span
+          >
+        </div>
+        @if (st.rollbackReason) {
+          <div class="note">{{ st.rollbackReason }}</div>
+        }
+      </div>
+    }
+  }
+
+  <p class="note">
+    The binary is fetched from the same share the mirror reads, so the publisher needs nothing new.
+    It is checked for the ELF magic and the size the server promised, then run once with
+    <span class="mono">--version</span> before anything is renamed — the failures worth catching
+    here are a truncated download and a binary for the wrong architecture, not a malicious one: the
+    transport is a private tunnel. The daemon then re-execs, keeping its PID and its container. If
+    the new binary does not survive its first minute the supervisor puts the old one back by itself,
+    and that binary is not offered again.
+  </p>
+</section>
+
+<section class="panel">
+  <div class="spread">
     <h2>Log</h2>
     <label class="check">
       <input

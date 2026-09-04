@@ -263,12 +263,25 @@ func TestBandwidthFoldsIntoTheHeatmap(t *testing.T) {
 	a, h, _ := newApp(t)
 	ctx := context.Background()
 
-	// 22:30 UTC on a Sunday is 23:30 on the Sunday in Berlin - the same day, but
-	// the hour a naive reading would get wrong.
-	at := time.Date(2026, 3, 1, 22, 30, 0, 0, time.UTC)
-	if at.Weekday() != time.Sunday {
-		t.Fatalf("the fixture is not a Sunday: %v", at.Weekday())
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatalf("load the configured zone: %v", err)
 	}
+
+	// Yesterday at 23:30 UTC, which in Berlin is the small hours of today - a
+	// different weekday and a different hour, which is exactly what a fold done
+	// in UTC would get wrong. Yesterday rather than a fixed date because the
+	// daemon rolls minute rows older than a week into hours as it starts, and a
+	// fixture from last spring would race that.
+	yesterday := time.Now().UTC().Add(-24 * time.Hour)
+	at := time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 23, 30, 0, 0, time.UTC)
+
+	local := at.In(berlin)
+	row, hour := mondayFirst(local.Weekday()), local.Hour()
+	if row == mondayFirst(at.Weekday()) && hour == at.Hour() {
+		t.Fatalf("the fixture at %s reads the same in both zones, so it proves nothing", at)
+	}
+
 	if err := a.store.AddBandwidth(ctx, at, 4096, 128); err != nil {
 		t.Fatalf("AddBandwidth: %v", err)
 	}
@@ -285,9 +298,9 @@ func TestBandwidthFoldsIntoTheHeatmap(t *testing.T) {
 	if view.Timezone != "Europe/Berlin" {
 		t.Fatalf("timezone = %q", view.Timezone)
 	}
-	// Sunday is the last row when the week starts on Monday.
-	if got := view.Heatmap[6][23]; got != 4096 {
-		t.Errorf("Sunday 23:00 = %d, want 4096; the fold ignored the configured zone", got)
+	if got := view.Heatmap[row][hour]; got != 4096 {
+		t.Errorf("%s %02d:00 = %d, want 4096; the fold ignored the configured zone",
+			local.Weekday(), hour, got)
 	}
 }
 

@@ -4,11 +4,12 @@ One-way replication of a jClipCorn collection from the publisher's NAS to the
 subscriber's Synology. See `DESIGN.md` for the design; this README covers what is
 built so far.
 
-**Status: M6.** It mirrors, on a schedule, at a rate you choose; it can shrink as
-well as grow; it handles the jClipCorn database itself; and there is now a
-dashboard to watch all of it from. On top of M1's skeleton — sqlite state, a
-config table with an audit trail, the `Remote` interface with a WebDAV
-implementation and a local fake, an event log and `/healthz` — M2's engine — a
+**Status: M7, complete.** It mirrors, on a schedule, at a rate you choose; it can
+shrink as well as grow; it handles the jClipCorn database itself; there is a
+dashboard to watch all of it from; and it now replaces its own binary. On top of
+M1's skeleton — sqlite state, a config table with an audit trail, the `Remote`
+interface with a WebDAV implementation and a local fake, an event log and
+`/healthz` — M2's engine — a
 resumable walk that builds the manifest the publisher does not have, a differ, a
 transfer with ranged GETs, `.part` files, verification, an atomic rename and a
 per-file job queue with retries, plus adopt mode for the USB bootstrap — M3's
@@ -21,10 +22,13 @@ database it replaces — there is now the **dashboard**: an Angular build compil
 into the binary, six views fed by one Server-Sent Events stream, a per-minute
 bandwidth series that rolls itself up rather than growing without bound, every
 action behind the bearer token, and push notifications over SCN coalesced hard
-enough to live inside a daily quota.
+enough to live inside a daily quota. And on top of all of it, M7's
+**self-update**: a binary fetched from the same share the mirror already reads,
+checked, smoke-run and re-exec'd in place, with a supervisor that puts the old
+one back if the new one will not start.
 
 A pair is additive until it is told otherwise, which is the point: run
-additive-only until the diff is trusted. Self-update is M7.
+additive-only until the diff is trusted.
 
 ## Running it
 
@@ -67,7 +71,7 @@ cross-site request that could carry it.
 | `GET /` and every route under it | The dashboard. Unknown paths answer with the shell, because the router is on the client |
 | `GET /healthz` | Status as JSON; 503 only when the database has stopped answering |
 | `GET /api/stream` | Server-Sent Events: `state` frames with the status and the running operation, plus `events` and `changes` as they happen. `log` frames go only to a connection that held the token when it opened |
-| `GET /api/status` · `/api/session` · `/api/schedule` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/changes` · `/api/pairs` · `/api/jobs` · `/api/scans` · `/api/trash` · `/api/runs` · `/api/bandwidth` · `/api/diagnostics` · `/api/remote/list` | Read views. Secrets are never returned; `status` carries the current window and cap |
+| `GET /api/status` · `/api/session` · `/api/schedule` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/changes` · `/api/pairs` · `/api/jobs` · `/api/scans` · `/api/trash` · `/api/runs` · `/api/bandwidth` · `/api/diagnostics` · `/api/update` · `/api/remote/list` | Read views. Secrets are never returned; `status` carries the current window and cap |
 | `POST /api/login` · `/api/logout` | Exchanges the token for the cookie, and back |
 | `POST /api/config` · `/api/remote/probe` | Token required |
 | `POST /api/pairs` · `/api/pairs/update` · `/api/pairs/delete` | Token required. JSON or a form; a JSON body may carry one key and changes only that |
@@ -76,6 +80,8 @@ cross-site request that could carry it.
 | `POST /api/trash/restore` (`id`, `path`, optional `day`) | Token required. Takes one file back out of the quarantine |
 | `POST /api/runs` (`kind`, `pair`, optional `force`) | Token required. Answers as soon as the run has started, never when it has finished. `force` is the lock-gate override |
 | `POST /api/runs/cancel` | Token required. Stopping is routine: a walk stays resumable and every transfer keeps its watermark |
+| `GET /api/update` | The self-updater's panel: what is running, what the share has, what the last update did |
+| `POST /api/update/check` · `/api/update/apply` (optional `force`) · `/api/update/rollback` | Token required. Apply and rollback answer as soon as the binary is in place; the daemon then re-execs, so the next request reaches the new process at the same address |
 | `POST /api/diagnostics/ping` · `/api/diagnostics/throughput` | Token required. The M0 measurements, from the page rather than a shell |
 | `POST /api/notify/test` | Token required. Sends one message, ignoring the per-event toggles, and answers with what SCN said |
 
@@ -304,7 +310,6 @@ likelier than a collection that lost it.
 | | |
 |---|---|
 | **An additive pair is still never shrunk.** | `additive` is the default and means what it says: files the publisher no longer has are counted by `plan` and kept. Deletion is opt-in per pair, with `-mode mirror`. |
-| **No self-update.** | The binary is replaced by rebuilding the image and restarting the container. Fetching a newer one from the share, smoke-testing it and re-execing in place is M7, and it is deliberately last: a broken updater is the one bug that is hard to recover from remotely. |
 
 ## The schedule
 
@@ -375,7 +380,7 @@ history view share a schema rather than agreeing by accident.
 | **Events** | Scans and syncs with their durations, the database replaced or skipped for a lock, deletion guards, tunnel edges, configuration changes, errors. Each row can be expanded into the JSON it carries. |
 | **Bandwidth** | The per-minute series drawn as inline SVG, plus the 7×24 heatmap that makes the weekday/weekend shape visible. Minutes are rolled up to hours after a week and to days after a quarter — a per-minute series kept forever is half a million rows a year. |
 | **Config** | Every setting there is, generated from the key registry so a key added later costs no HTML, with the pairs editor, both schedule grids and the audit trail. |
-| **Diagnostics** | Handshake age and endpoint, RTT through the tunnel, a throughput probe, remote reachability, a raw PROPFIND explorer, free space per pair, "explain plan", the notification state and a live log tail. |
+| **Diagnostics** | Handshake age and endpoint, RTT through the tunnel, a throughput probe, remote reachability, a raw PROPFIND explorer, free space per pair, "explain plan", the notification state, the self-update panel and a live log tail. |
 
 Reading is open; every action needs the token. The one exception is the log tail
 — on `GET /api/diagnostics` and as `log` frames on the stream — which needs it
@@ -407,6 +412,7 @@ blip is free, and an alert that recurs all day collapses on the server side.
 | Source lock stale past the threshold | on | 1 | On the edge. Until someone overrides it the database silently never syncs |
 | Tunnel down longer than the grace period | on | 1 | On the edge, after `notify.tunnel_grace` — a rootserver rebooting should not wake anyone |
 | `ClipCornDB.db` replaced | on | 0 | |
+| Self-update applied, or rolled back | on | 0 / 2 | One toggle, two priorities: an update is news, an update that had to be undone is something to look at |
 | Sync run finished cleanly | off | 0 | A mirror that works is not news |
 
 "On the edge" is the discipline the quota forces: a condition that is true for
@@ -415,6 +421,103 @@ between. The state that decides it lives in sqlite rather than in memory, so a
 container that crash-loops does not spend the day's allowance re-announcing the
 same thing. A notification that fails is written to `events` and never fails the
 run that produced it — it is telemetry, not a step.
+
+## Self-update
+
+"Update in place without restarting docker" is not literally possible — the
+kernel holds the running executable's inode — but re-execing gives exactly the
+property that was wanted: same PID, same container, nothing for the orchestration
+to notice. The new binary lives on the same WebDAV share the mirror already
+reads, so the publisher still needs nothing but the stock DSM package.
+
+Point it at one under **Update** in Config. A path is relative to the WebDAV root,
+which is the usual setup and keeps the base URL written down once:
+
+```
+update.url       dist/jcc-mirror-amd64
+update.auto      false
+update.interval  6h
+```
+
+There is no version file and no manifest. The question is literally "is the file
+over there newer than mine", and `Last-Modified` answers it. What it is compared
+against is the later of this binary's compiled-in build stamp and the timestamp
+of whatever the last update installed — the second half matters, because a binary
+built at 10:00 and uploaded at 10:05 would otherwise read as newer than itself,
+forever.
+
+Then, in order:
+
+1. `HEAD` the URL. Newer ⇒ there is an update.
+2. `GET` it to `/data/bin/jcc-mirror.new`, and check it is plausible before
+   trusting it: the size the server promised, and the ELF magic in the first four
+   bytes.
+3. Run it once as `jcc-mirror.new --version` and require a sane answer. That is
+   the check the magic number cannot do: a binary for the other architecture is a
+   perfectly well-formed ELF that will not run here.
+4. Keep the current binary as `jcc-mirror.prev` and rename the new one into
+   place.
+5. Stop whatever is transferring — after the install rather than before, so a
+   sync is not interrupted for an update that turns out not to be installable.
+   Nothing is lost either way: a walk stays resumable and every transfer keeps
+   its watermark, which is what makes "just stop" an acceptable quiesce.
+6. Shut the listeners down and `exec` it.
+
+None of this is signing, and it is not meant to be. The transport is a private
+tunnel to a machine you control, so what these checks are aimed at is corruption:
+a download cut short, an HTML error page saved as a binary, the wrong
+architecture. Those are the failures that actually happen.
+
+**The safety net.** The container's command is `jcc-mirror supervise serve` — the
+supervisor is a subcommand of ours rather than a shell script, because the
+runtime image is distroless and has no shell. It runs the daemon as a child and
+watches for one thing: an update that has not yet proved itself exiting non-zero.
+When that happens it puts `jcc-mirror.prev` back — or, if the update replaced the
+image's binary and there is no previous one, removes the managed binary so the
+image's runs again — and starts that instead. The restored daemon says what
+happened, in the event log and as a notification, and **the binary that was rolled
+back is not installed again on its own**. That last part is what keeps a binary
+that crashes on startup from being fetched, installed, rolled back and fetched
+again on every check.
+
+An update proves itself by staying up for a minute. After that a crash is an
+ordinary crash and Docker's restart policy handles it, rather than the updater
+hiding it behind a rollback.
+
+From a shell, on the same state:
+
+```bash
+jcc-mirror update -data /data                    # what is running and what is installed
+jcc-mirror update -data /data -check             # and what the share has
+jcc-mirror update -data /data -apply             # install it; restart to run it
+jcc-mirror update -data /data -apply -force      # install it even if it is not newer
+jcc-mirror update -data /data -rollback          # step back off one, without the dashboard
+```
+
+The two halves that touch no network are what this is really for. `-rollback`
+needs neither the daemon, the tunnel nor the share, which is the point of it: it
+is for the case where the thing that is broken is the binary that would otherwise
+answer the button. `-check` and `-apply` reach the URL **directly** rather than
+through the tunnel — opening a second one with the daemon's identity would have
+the rootserver moving the peer's endpoint back and forth — so on the Synology,
+where the publisher is only reachable over WireGuard, installing is the
+dashboard's job.
+
+Publishing a new one is a copy:
+
+```bash
+make syno                                        # or syno-arm
+scp jcc-mirror-amd64 publisher:/volume1/dist/jcc-mirror-amd64
+```
+
+The binary directory is in the data volume, since the image's `/usr/local/bin` is
+read-only and the container is unprivileged:
+
+```
+/data/bin/jcc-mirror        in use; absent means the image's is
+/data/bin/jcc-mirror.prev   the one it replaced
+/data/bin/update.json       what the last update did, which the supervisor reads
+```
 
 ## The M0 diagnostics
 
@@ -488,8 +591,9 @@ and the free-space reserve under **Transfer**; the deletion threshold and
 quarantine retention under **Deletion**; the database's name and directory, the
 stale-lock threshold and how many copies to keep under **jCC**; the SCN
 credentials, the per-event toggles and the tunnel-down grace under
-**Notifications**; and how long the event log and the per-file history are kept
-under **Retention**, a year each by default, swept once an hour. The pairs
+**Notifications**; the binary URL, whether to install it unattended and how often
+to look under **Update**; and how long the event log and the per-file history are
+kept under **Retention**, a year each by default, swept once an hour. The pairs
 themselves are the exception — they are rows of their own, edited in the Config
 view or with `jcc-mirror pairs`.
 
@@ -548,7 +652,7 @@ them. The same thing works by hand, which is the fastest way to try something:
 ```
 main.go        command dispatch, the flags every command shares
 static.go      the settings that are compiled in, and why
-cmd_serve.go   the daemon
+cmd_serve.go   the daemon, and the re-exec a self-update ends in
 cmd_engine.go  what the mirror commands share: store, remote, engine
 cmd_*.go       one file per command, mirror and diagnostic alike
 app/           the running daemon: tunnel lifecycle, scheduler, the dashboard's
@@ -572,6 +676,8 @@ remote/        the three-method interface the engine talks to, plus the ranged
                read it needs on top of it
 remote/localfs/  a local directory as a Remote, for tests and development
 notify/        the SimpleCloudNotifier client; the coalescing above it is app/
+update/        the self-updater: the share as a source, the binary directory in
+               the data volume, and the supervisor that undoes a bad update
 web/           the Angular dashboard: src/ is the source, dist/ is the checked-in
                build the binary embeds
 logs/ format/  the leveled logger - which also keeps the last few hundred lines

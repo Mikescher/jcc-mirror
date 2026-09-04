@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -174,17 +175,26 @@ func TestOnlyItsOwnRunsAreStopped(t *testing.T) {
 		{"by hand", false, false},
 	} {
 		a, _, _ := newApp(t)
-		stopped := false
 
+		// Planted under the runner's lock and atomically, because the run is a
+		// fixture rather than a real one: the daemon's own scheduler and its
+		// shutdown reach for the same fields.
+		var stopped atomic.Bool
+		a.runs.mu.Lock()
 		a.runs.current = &Run{Kind: RunSync, Auto: tc.auto, PairName: "media", StartedAt: time.Now()}
-		a.runs.cancel = func() { stopped = true }
+		a.runs.cancel = func() { stopped.Store(true) }
+		a.runs.mu.Unlock()
 
 		if busy := a.tendRun(closed, open); !busy {
 			t.Errorf("%s: tendRun said idle while a run was in flight", tc.name)
 		}
-		if stopped != tc.want {
-			t.Errorf("%s: stopped = %v, want %v", tc.name, stopped, tc.want)
+		if stopped.Load() != tc.want {
+			t.Errorf("%s: stopped = %v, want %v", tc.name, stopped.Load(), tc.want)
 		}
+
+		a.runs.mu.Lock()
+		a.runs.current, a.runs.cancel = nil, nil
+		a.runs.mu.Unlock()
 	}
 }
 

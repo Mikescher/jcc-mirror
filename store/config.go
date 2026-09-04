@@ -68,7 +68,12 @@ const (
 	KeyNotifyLockStale     = "notify.on_lock_stale"
 	KeyNotifyTunnelDown    = "notify.on_tunnel_down"
 	KeyNotifyDBReplaced    = "notify.on_db_replaced"
+	KeyNotifyUpdate        = "notify.on_update"
 	KeyNotifyTunnelGrace   = "notify.tunnel_grace"
+
+	KeyUpdateURL      = "update.url"
+	KeyUpdateAuto     = "update.auto"
+	KeyUpdateInterval = "update.interval"
 
 	KeyRetainEvents  = "retention.events"
 	KeyRetainChanges = "retention.changes"
@@ -94,6 +99,11 @@ var notifyToggles = map[string]string{
 	NotifyLockStale:     KeyNotifyLockStale,
 	NotifyTunnelDown:    KeyNotifyTunnelDown,
 	NotifyDBReplaced:    KeyNotifyDBReplaced,
+	// Applied and rolled back are two kinds because they carry different
+	// priorities - one is news, the other is something to look at - but one
+	// toggle, because nobody wants to hear about half of an update.
+	NotifyUpdateApplied:    KeyNotifyUpdate,
+	NotifyUpdateRolledBack: KeyNotifyUpdate,
 }
 
 // SecretMask replaces a secret's value wherever one is shown or recorded. The
@@ -348,9 +358,33 @@ var keyDefs = []KeyDef{
 		Validate: validateBool,
 	},
 	{
+		Name: KeyNotifyUpdate, Group: "Notifications", Label: "Notify: self-update",
+		Help:     "A new binary was fetched from the share and put in place, or the supervisor had to put the old one back. The second is the one worth a message.",
+		Default:  "true",
+		Validate: validateBool,
+	},
+	{
 		Name: KeyNotifyTunnelGrace, Group: "Notifications", Label: "Tunnel down grace",
 		Help:     "How long the tunnel may be down before it is worth a message. A rootserver reboot should not wake anyone.",
 		Default:  "15m",
+		Validate: validateDuration,
+	},
+
+	{
+		Name: KeyUpdateURL, Group: "Update", Label: "Binary URL",
+		Help:     "Where a newer jcc-mirror is fetched from. A path like \"dist/jcc-mirror-amd64\" is relative to the WebDAV root, which is the usual setup: the binary sits on the share the mirror already reads, so the publisher needs nothing new. Empty switches updating off entirely.",
+		Validate: validateUpdateURL,
+	},
+	{
+		Name: KeyUpdateAuto, Group: "Update", Label: "Update automatically",
+		Help:     "Whether a newer binary is installed as soon as it is found. Off means the dashboard offers a button instead, which is the right setting until the updater has been watched working once.",
+		Default:  "false",
+		Validate: validateBool,
+	},
+	{
+		Name: KeyUpdateInterval, Group: "Update", Label: "Check every",
+		Help:     "How often to ask the share whether it has a newer binary. It is one HEAD request, so this can be short; it is checked at startup either way.",
+		Default:  "6h",
 		Validate: validateDuration,
 	},
 
@@ -708,6 +742,27 @@ func validateAllowedIPs(s string) error {
 		if p.Bits() == 0 {
 			return fmt.Errorf("%q would make the tunnel this container's default route; route the WG subnet, not everything", f)
 		}
+	}
+	return nil
+}
+
+// validateUpdateURL takes either an absolute URL or a path on the WebDAV share.
+// Both end up as one absolute URL fetched over the tunnel; the relative form
+// exists because that is where the binary actually lives, and repeating the base
+// URL in a second setting is a way for the two to disagree.
+func validateUpdateURL(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if strings.Contains(s, "://") {
+		return validateHTTPURL(s)
+	}
+	if err := validateRelPath(s); err != nil {
+		return err
+	}
+	if strings.HasSuffix(s, "/") {
+		return errors.New("this is a path to one binary, not a directory")
 	}
 	return nil
 }

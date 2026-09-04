@@ -188,6 +188,10 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-a.closing:
+			// The daemon is stopping or re-execing. The browser reconnects by
+			// itself, to this process or to the one that replaces it.
+			return
 		case f, ok := <-sub.ch:
 			if !ok {
 				return // dropped for falling behind; EventSource will reconnect

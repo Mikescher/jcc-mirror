@@ -44,6 +44,10 @@ const (
 	KindLockStale     = "jcc.lock.stale"
 	KindWindow        = "schedule.window"
 	KindSpaceLow      = "space.low"
+	KindUpdateFound   = "update.available"
+	KindUpdateApplied = "update.applied"
+	KindUpdateBack    = "update.rolledback"
+	KindUpdateFailed  = "update.failed"
 	KindError         = "error"
 )
 

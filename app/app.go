@@ -23,6 +23,7 @@ import (
 	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/notify"
 	"blackforestbytes.com/jcc-mirror/store"
+	"blackforestbytes.com/jcc-mirror/update"
 	"blackforestbytes.com/jcc-mirror/webdav"
 	"blackforestbytes.com/jcc-mirror/wg"
 )
@@ -80,6 +81,21 @@ type App struct {
 	meter    meter
 	notifier *notify.Client
 
+	// upd is the self-updater: what the last check found, and the binary
+	// directory in the data volume that the supervisor reads too. restart carries
+	// the binary to exec into, which the daemon's own main loop waits on beside
+	// its context - the tear-down has to happen before the exec, and only main
+	// can do it (DESIGN.md §5).
+	upd     updates
+	restart chan string
+
+	// closing is shut the moment a shutdown or a restart begins, so the handlers
+	// that never finish on their own - the event stream - end rather than being
+	// waited out. Without it every restart costs the shutdown timeout, and the
+	// re-exec of DESIGN.md §5 is not the instant thing it is meant to be.
+	closing   chan struct{}
+	closeOnce sync.Once
+
 	// bg counts the goroutines that outlive the request or tick that started
 	// them - a run and the notifications it produces. Close waits on it, because
 	// the store is closed the moment Close returns and both of them write to it.
@@ -105,10 +121,13 @@ func New(st *store.Store, log *logs.Logger, opts Options) *App {
 	if opts.TunnelPort == 0 {
 		opts.TunnelPort = 8080
 	}
-	return &App{
+	a := &App{
 		store: st, log: log, opts: opts, started: time.Now(),
 		limiter: engine.NewLimiter(0), notifier: &notify.Client{},
+		restart: make(chan string, 1), closing: make(chan struct{}),
 	}
+	a.upd.manager = update.NewManager(opts.DataDir)
+	return a
 }
 
 // SetHandler installs the dashboard. The tunnel listener is opened and closed as
@@ -152,16 +171,31 @@ func (a *App) Start(ctx context.Context) error {
 		"build":   a.opts.BuildStamp,
 	})
 
+	// Before the loops: a process the supervisor started after a rollback has
+	// something to say about the one before it, and it should say it first.
+	a.reportUpdate(ctx)
+
 	a.Reload(ctx)
 	go a.reconcileLoop(ctx)
 	go a.schedulerLoop(ctx)
 	go a.feedLoop(ctx)
 	go a.maintenanceLoop(ctx)
+	go a.updateLoop(ctx)
 	return nil
+}
+
+// BeginShutdown tells the long-lived handlers to end. It is separate from Close
+// because it has to happen before the HTTP server is drained: an event stream is
+// a request that finishes only when the client goes away, and Shutdown would
+// otherwise wait out its whole timeout for one.
+func (a *App) BeginShutdown() {
+	a.closeOnce.Do(func() { close(a.closing) })
 }
 
 // Close tears the tunnel down and records the shutdown.
 func (a *App) Close(ctx context.Context) {
+	a.BeginShutdown()
+
 	// A run in flight is stopped rather than left to be killed with the process.
 	// Nothing is lost either way - a scan stays resumable and a transfer keeps its
 	// watermark - but stopping it means the run's own record gets written.

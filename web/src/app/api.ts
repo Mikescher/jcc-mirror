@@ -16,6 +16,7 @@ import type {
   ScheduleView,
   Status,
   TrashView,
+  UpdateStatus,
 } from './models';
 
 /** ApiError carries the message the daemon wrote, which is meant to be read as
@@ -100,6 +101,7 @@ export class Api {
   trash = (pair?: number) => this.get<TrashView[]>('/api/trash', { pair });
   scans = (pair: number, limit = 20) => this.get<Scan[]>('/api/scans', { pair, limit });
   remoteList = (path: string) => this.get<RemoteListing>('/api/remote/list', { path });
+  update = () => this.get<UpdateStatus>('/api/update');
 
   events(filter: { limit?: number; kind?: string[]; level?: string[]; pair?: number } = {}) {
     const url = new URL('/api/events', location.origin);
@@ -164,6 +166,13 @@ export class Api {
     this.post<Run>('/api/runs', { kind, pair, force });
 
   cancelRun = () => this.post('/api/runs/cancel');
+
+  /** The self-updater's three buttons. Apply and rollback answer as soon as the
+   *  binary is in place: the daemon then re-execs, so the next request from this
+   *  page reaches the new process at the same address. */
+  checkUpdate = () => this.post<UpdateStatus>('/api/update/check');
+  applyUpdate = (force = false) => this.post('/api/update/apply', { force });
+  rollbackUpdate = () => this.post('/api/update/rollback');
 
   /** Pausing is a setting rather than an endpoint of its own, so the pause lands
    *  in the audit trail beside every other change. The scheduler re-reads it

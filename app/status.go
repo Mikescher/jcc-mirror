@@ -32,6 +32,10 @@ type Status struct {
 	Tunnel     TunnelStatus   `json:"tunnel"`
 	Remote     RemoteStatus   `json:"remote"`
 	Schedule   ScheduleStatus `json:"schedule"`
+	// UpdateReady is the badge in the topbar. The rest of the update panel is a
+	// view of its own: this is the only part of it worth carrying on every frame
+	// of the live stream.
+	UpdateReady bool `json:"updateReady,omitempty"`
 }
 
 // ScheduleStatus is what the grid says right now, in the zone it is expressed
@@ -109,6 +113,7 @@ func (a *App) Status(ctx context.Context) Status {
 	}
 
 	st.Schedule = a.ScheduleStatus()
+	st.UpdateReady = a.updateReady()
 
 	a.mu.Lock()
 	tun, tunErr := a.tunnel, a.tunnelErr

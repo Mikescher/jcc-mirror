@@ -34,6 +34,10 @@ const allKinds: { kind: string; label: string }[] = [
   { kind: 'jcc.lock.stale', label: 'Source lock stale' },
   { kind: 'schedule.window', label: 'Schedule window' },
   { kind: 'space.low', label: 'Free space low' },
+  { kind: 'update.available', label: 'Update available' },
+  { kind: 'update.applied', label: 'Update applied' },
+  { kind: 'update.rolledback', label: 'Update rolled back' },
+  { kind: 'update.failed', label: 'Update failed' },
   { kind: 'error', label: 'Error' },
 ];
 

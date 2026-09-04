@@ -19,6 +19,9 @@ const (
 	NotifyLockStale     = "lock.stale"
 	NotifyTunnelDown    = "tunnel.down"
 	NotifyDBReplaced    = "db.replaced"
+
+	NotifyUpdateApplied    = "update.applied"
+	NotifyUpdateRolledBack = "update.rolledback"
 )
 
 // NotifyState is how long a persistent condition has been true, and when it was

@@ -11,7 +11,7 @@ import {
 } from '@angular/core';
 import { Api } from '../api';
 import { Live } from '../live';
-import type { DiagnosticsView, LogLine, RemoteListing, Space } from '../models';
+import type { DiagnosticsView, LogLine, RemoteListing, Space, UpdateStatus } from '../models';
 import * as fmt from '../format';
 
 /** How many lines the tail keeps. It is a tail: older than this is what the
@@ -93,6 +93,13 @@ export class DiagnosticsPage {
   readonly lastPlan = computed(() =>
     (this.live.runs().history ?? []).find((r) => r.kind === 'plan'),
   );
+
+  readonly update = signal<UpdateStatus | undefined>(undefined);
+  readonly updateError = signal('');
+  readonly updateBusy = signal(false);
+  /** Set once a button has been pressed: the daemon re-execs, so what the page
+   *  is waiting for is the same address answering again. */
+  readonly restarting = signal(false);
 
   readonly lines = signal<LogLine[]>([]);
   readonly autoScroll = signal(true);
@@ -208,6 +215,69 @@ export class DiagnosticsPage {
     }
   }
 
+  // ---- the self-updater ---------------------------------------------------
+
+  async checkUpdate(): Promise<void> {
+    this.updateBusy.set(true);
+    this.updateError.set('');
+    try {
+      this.update.set(await this.api.checkUpdate());
+    } catch (err) {
+      this.updateError.set(message(err));
+    } finally {
+      this.updateBusy.set(false);
+    }
+  }
+
+  async applyUpdate(force = false): Promise<void> {
+    this.updateBusy.set(true);
+    this.updateError.set('');
+    try {
+      await this.api.applyUpdate(force);
+      this.restarting.set(true);
+      await this.awaitRestart();
+    } catch (err) {
+      this.updateError.set(message(err));
+    } finally {
+      this.updateBusy.set(false);
+    }
+  }
+
+  async rollbackUpdate(): Promise<void> {
+    this.updateBusy.set(true);
+    this.updateError.set('');
+    try {
+      await this.api.rollbackUpdate();
+      this.restarting.set(true);
+      await this.awaitRestart();
+    } catch (err) {
+      this.updateError.set(message(err));
+    } finally {
+      this.updateBusy.set(false);
+    }
+  }
+
+  /** The daemon re-execs into the new binary, which takes about as long as a
+   *  process start. Polling the panel back is what turns that into "it came back
+   *  as v2" rather than a page that has to be reloaded by hand. */
+  private async awaitRestart(): Promise<void> {
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await new Promise((done) => setTimeout(done, 1000));
+      try {
+        this.update.set(await this.api.update());
+        this.restarting.set(false);
+        void this.load();
+        return;
+      } catch {
+        // Still down, or halfway through binding its listeners again.
+      }
+    }
+    this.restarting.set(false);
+    this.updateError.set(
+      'The daemon has not answered since it restarted. Check the container log.',
+    );
+  }
+
   // ---- the log tail -------------------------------------------------------
 
   private seed(lines: LogLine[] | undefined): void {
@@ -234,6 +304,7 @@ export class DiagnosticsPage {
       const view = await this.api.diagnostics();
       this.view.set(view);
       this.seed(view.log ?? []);
+      this.update.set(await this.api.update());
     } catch (err) {
       this.error.set(message(err));
     } finally {

@@ -10,7 +10,7 @@ services:
     ports:
       - "8080:8080"   # the LAN dashboard; the one inside the tunnel needs no mapping
     volumes:
-      - ./data:/data                # sqlite state, the WireGuard identity, DB backups
+      - ./data:/data                # sqlite state, the WireGuard identity, DB backups, updated binaries
       - /volume1/media:/mnt/media
       - /volume1/clipcorn:/mnt/clipcorn
     # The uid/gid that owns the media share. Docker applies it before the process
