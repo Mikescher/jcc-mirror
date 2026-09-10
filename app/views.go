@@ -13,8 +13,7 @@ import (
 
 // The read views the dashboard is drawn from beyond status and config: the
 // per-file history, the transfer queue, the walks and the quarantine. Every one
-// of them is a plain GET, because reading is open and only changing anything
-// needs the token (DESIGN.md §4).
+// of them is a plain GET (DESIGN.md §4).
 
 func (a *App) handleGetChanges(w http.ResponseWriter, r *http.Request) {
 	f := store.ChangeFilter{Limit: intParam(r, "limit", 200)}

@@ -25,17 +25,16 @@ import (
 // directory. The dashboard's runs go through exactly the code the daemon uses -
 // App.Remote returns a WebDAV client and nothing here fakes one.
 type mirror struct {
-	app   *App
-	h     http.Handler
-	token string
-	src   string
-	dst   string
-	pair  store.Pair
+	app  *App
+	h    http.Handler
+	src  string
+	dst  string
+	pair store.Pair
 }
 
 func newMirror(t *testing.T) *mirror {
 	t.Helper()
-	a, h, token := newApp(t)
+	a, h := newApp(t)
 
 	src, dst := t.TempDir(), t.TempDir()
 	srv := httptest.NewServer(&xwebdav.Handler{FileSystem: xwebdav.Dir(src), LockSystem: xwebdav.NewMemLS()})
@@ -45,11 +44,11 @@ func newMirror(t *testing.T) *mirror {
 	// destination volume, and whether the machine running the tests has that much
 	// is not something these tests are about.
 	form := url.Values{store.KeyRemoteURL: {srv.URL}, store.KeyReserve: {"1"}}
-	if rec := postForm(t, h, "/api/config", token, form); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", form); rec.Code != http.StatusOK {
 		t.Fatalf("configure the remote: %d %s", rec.Code, rec.Body)
 	}
 
-	m := &mirror{app: a, h: h, token: token, src: src, dst: dst}
+	m := &mirror{app: a, h: h, src: src, dst: dst}
 	m.pair = m.addPair(t, url.Values{
 		"name":      {"media"},
 		"localPath": {dst},
@@ -60,7 +59,7 @@ func newMirror(t *testing.T) *mirror {
 
 func (m *mirror) addPair(t *testing.T, form url.Values) store.Pair {
 	t.Helper()
-	if rec := postForm(t, m.h, "/api/pairs", m.token, form); rec.Code != http.StatusOK {
+	if rec := postForm(t, m.h, "/api/pairs", form); rec.Code != http.StatusOK {
 		t.Fatalf("add pair: %d %s", rec.Code, rec.Body)
 	}
 	pairs, err := m.app.store.Pairs(context.Background())
@@ -92,7 +91,7 @@ func (m *mirror) updatePair(t *testing.T, form url.Values) {
 	t.Helper()
 
 	form.Set("id", strconv.FormatInt(m.pair.ID, 10))
-	if rec := postForm(t, m.h, "/api/pairs/update", m.token, form); rec.Code != http.StatusOK && rec.Code != http.StatusSeeOther {
+	if rec := postForm(t, m.h, "/api/pairs/update", form); rec.Code != http.StatusOK && rec.Code != http.StatusSeeOther {
 		t.Fatalf("update pair: %d %s", rec.Code, rec.Body)
 	}
 
@@ -109,7 +108,7 @@ func (m *mirror) run(t *testing.T, kind string) Run {
 	t.Helper()
 
 	form := url.Values{"kind": {kind}, "pair": {strconv.FormatInt(m.pair.ID, 10)}}
-	rec := postForm(t, m.h, "/api/runs", m.token, form)
+	rec := postForm(t, m.h, "/api/runs", form)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("start %s: %d %s", kind, rec.Code, rec.Body)
 	}
@@ -208,13 +207,13 @@ func TestOnlyOneRunAtATime(t *testing.T) {
 	m.write(t, "Filme/a.mkv", 1024)
 
 	form := url.Values{"kind": {RunScan}, "pair": {strconv.FormatInt(m.pair.ID, 10)}}
-	if rec := postForm(t, m.h, "/api/runs", m.token, form); rec.Code != http.StatusAccepted {
+	if rec := postForm(t, m.h, "/api/runs", form); rec.Code != http.StatusAccepted {
 		t.Fatalf("first run: %d %s", rec.Code, rec.Body)
 	}
 
 	// Whichever way this races, the answer has to be either "started" or a clear
 	// refusal - never two walks writing the same manifest.
-	rec := postForm(t, m.h, "/api/runs", m.token, form)
+	rec := postForm(t, m.h, "/api/runs", form)
 	if rec.Code != http.StatusConflict && rec.Code != http.StatusAccepted {
 		t.Fatalf("second run: %d %s", rec.Code, rec.Body)
 	}
@@ -223,11 +222,23 @@ func TestOnlyOneRunAtATime(t *testing.T) {
 	}
 }
 
-func TestRunAndPairEndpointsNeedTheToken(t *testing.T) {
+// TestRunAndPairEndpointsAreOpen: every action the dashboard offers is reachable
+// without a login, and a request carrying nothing at all is answered about the
+// request rather than about who is asking.
+func TestRunAndPairEndpointsAreOpen(t *testing.T) {
 	m := newMirror(t)
 	for _, path := range []string{"/api/pairs", "/api/pairs/update", "/api/pairs/delete", "/api/runs", "/api/runs/cancel"} {
-		if rec := postForm(t, m.h, path, "", url.Values{}); rec.Code != http.StatusUnauthorized {
-			t.Errorf("POST %s without a token = %d, want 401", path, rec.Code)
+		rec := postForm(t, m.h, path, url.Values{})
+		if rec.Code == http.StatusUnauthorized {
+			t.Errorf("POST %s = 401: %s", path, rec.Body)
+			continue
+		}
+
+		var answer struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil || answer.Error == "" {
+			t.Errorf("POST %s = %d with nothing to read: %s", path, rec.Code, rec.Body)
 		}
 	}
 }
@@ -241,7 +252,7 @@ func TestPairEditingThroughTheDashboard(t *testing.T) {
 		"excludes": {"**/*.tmp, Trash/**"},
 		"enabled":  {"false"},
 	}
-	if rec := postForm(t, m.h, "/api/pairs/update", m.token, form); rec.Code != http.StatusOK {
+	if rec := postForm(t, m.h, "/api/pairs/update", form); rec.Code != http.StatusOK {
 		t.Fatalf("update: %d %s", rec.Code, rec.Body)
 	}
 
@@ -262,13 +273,13 @@ func TestPairEditingThroughTheDashboard(t *testing.T) {
 	}
 
 	// A disabled pair is not something to start a run on by accident.
-	rec := postForm(t, m.h, "/api/runs", m.token,
+	rec := postForm(t, m.h, "/api/runs",
 		url.Values{"kind": {RunScan}, "pair": {strconv.FormatInt(m.pair.ID, 10)}})
 	if rec.Code != http.StatusConflict {
 		t.Errorf("running a disabled pair = %d, want 409", rec.Code)
 	}
 
-	if rec := postForm(t, m.h, "/api/pairs/delete", m.token, url.Values{"id": {strconv.FormatInt(m.pair.ID, 10)}}); rec.Code != http.StatusOK {
+	if rec := postForm(t, m.h, "/api/pairs/delete", url.Values{"id": {strconv.FormatInt(m.pair.ID, 10)}}); rec.Code != http.StatusOK {
 		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
 	}
 	if pairs, err := m.app.store.Pairs(context.Background()); err != nil || len(pairs) != 0 {
@@ -425,7 +436,7 @@ func TestDashboardApprovesADeletion(t *testing.T) {
 	}
 
 	form := url.Values{"id": {strconv.FormatInt(m.pair.ID, 10)}, "decision": {store.ApprovalApproved}}
-	if rec := postForm(t, m.h, "/api/pairs/deletions", m.token, form); rec.Code != http.StatusOK && rec.Code != http.StatusSeeOther {
+	if rec := postForm(t, m.h, "/api/pairs/deletions", form); rec.Code != http.StatusOK && rec.Code != http.StatusSeeOther {
 		t.Fatalf("approve: %d %s", rec.Code, rec.Body)
 	}
 

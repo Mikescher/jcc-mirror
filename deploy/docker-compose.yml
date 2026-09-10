@@ -1,5 +1,6 @@
 # The dashboard answers on :8080 before anything is configured, so a first start
-# needs nothing but this file. The bearer token is printed to the container log.
+# needs nothing but this file. Do not publish that port beyond the LAN: the
+# dashboard has no authentication of its own.
 services:
   jcc-mirror:
     image: registry.blackforestbytes.com/mikescher/jcc-mirror:latest

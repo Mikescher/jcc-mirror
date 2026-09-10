@@ -46,13 +46,6 @@ func (l *Logger) Debugf(format string, a ...any) {
 	}
 }
 
-// Secretf prints to the container log without keeping the line in the ring. It
-// exists for exactly one line - the dashboard token, which has to reach the
-// operator and must not be readable back out of the dashboard it unlocks.
-func (l *Logger) Secretf(format string, a ...any) {
-	log.Printf("[%-5s] %s", "info", fmt.Sprintf(format, a...))
-}
-
 func (l *Logger) emit(level, format string, a ...any) {
 	text := fmt.Sprintf(format, a...)
 	log.Printf("[%-5s] %s", level, text)

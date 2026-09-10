@@ -11,7 +11,7 @@ const (
 
 	// staticLANListen is the dashboard on the host network. Inside the container
 	// there is no LAN address to bind to, so what actually scopes this is the
-	// compose port mapping; the bearer token is what protects the actions.
+	// compose port mapping: the dashboard is never published beyond the LAN.
 	staticLANListen = ":8080"
 
 	// staticTunnelPort is the dashboard inside the tunnel. Listening there is what

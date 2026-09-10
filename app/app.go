@@ -153,15 +153,6 @@ func (a *App) Start(ctx context.Context) error {
 		a.log.Infof("config: generated %s", k)
 	}
 
-	token, err := a.store.ConfigGet(ctx, store.KeyDashboardToken)
-	if err != nil {
-		return err
-	}
-	// The token is printed rather than stored anywhere a human reads: it exists in
-	// exactly one place, and this is how it gets out of it (DESIGN.md §6). Secretf
-	// keeps it out of the log ring, which the dashboard serves back.
-	a.log.Secretf("dashboard: bearer token is %s", token)
-
 	if pub, err := a.PublicKey(ctx); err == nil {
 		a.log.Infof("wg: our public key is %s - paste it into the rootserver's peer entry", pub)
 	}
@@ -563,8 +554,6 @@ func generateSetting(key string) (string, error) {
 	switch key {
 	case store.KeyWGPrivateKey:
 		return wg.GenerateKey()
-	case store.KeyDashboardToken:
-		return newToken()
 	default:
 		return "", fmt.Errorf("no generator for %q", key)
 	}

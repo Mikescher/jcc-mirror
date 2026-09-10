@@ -109,7 +109,7 @@
         [value]="pingTarget()"
         (input)="pingTarget.set($any($event.target).value)"
       />
-      <button class="small" type="button" [disabled]="!authed() || pinging()" (click)="ping()">
+      <button class="small" type="button" [disabled]="!unlocked() || pinging()" (click)="ping()">
         Ping
       </button>
     </div>
@@ -158,7 +158,7 @@
       <button
         class="small"
         type="button"
-        [disabled]="!authed() || throughputBusy()"
+        [disabled]="!unlocked() || throughputBusy()"
         (click)="measure()"
       >
         Measure
@@ -197,7 +197,7 @@
 <section class="panel">
   <div class="spread">
     <h2>Remote</h2>
-    <button class="small" type="button" [disabled]="!authed() || reaching()" (click)="probe()">
+    <button class="small" type="button" [disabled]="!unlocked() || reaching()" (click)="probe()">
       Probe
     </button>
   </div>
@@ -356,7 +356,7 @@
           <option [value]="p.id">{{ p.name }}</option>
         }
       </select>
-      <button class="small" type="button" [disabled]="!authed()" (click)="explain()">
+      <button class="small" type="button" [disabled]="!unlocked()" (click)="explain()">
         Explain
       </button>
     </div>
@@ -493,7 +493,7 @@
       <button
         class="ghost small"
         type="button"
-        [disabled]="!authed() || updateBusy()"
+        [disabled]="!unlocked() || updateBusy()"
         (click)="checkUpdate()"
       >
         Check
@@ -553,7 +553,7 @@
     <div class="row">
       <button
         type="button"
-        [disabled]="!authed() || updateBusy() || !u.newer || !!u.blocked"
+        [disabled]="!unlocked() || updateBusy() || !u.newer || !!u.blocked"
         (click)="applyUpdate()"
       >
         Install and restart
@@ -562,7 +562,7 @@
         <button
           class="ghost"
           type="button"
-          [disabled]="!authed() || updateBusy()"
+          [disabled]="!unlocked() || updateBusy()"
           (click)="applyUpdate(true)"
         >
           Install anyway
@@ -572,7 +572,7 @@
         <button
           class="ghost"
           type="button"
-          [disabled]="!authed() || updateBusy()"
+          [disabled]="!unlocked() || updateBusy()"
           (click)="rollbackUpdate()"
         >
           Roll back
@@ -628,14 +628,7 @@
     @for (l of lines(); track l.seq) {
       <div [class]="level(l)">{{ fmt.timeOnly(l.ts) }} {{ l.level }} {{ l.text }}</div>
     } @empty {
-      @if (view()?.logLocked) {
-        <div class="dim">
-          The tail needs the token. It is the container's log, and the container's log is where the
-          token itself is printed.
-        </div>
-      } @else {
-        <div class="dim">Nothing has been logged since the daemon started.</div>
-      }
+      <div class="dim">Nothing has been logged since the daemon started.</div>
     }
   </div>
 

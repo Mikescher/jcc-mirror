@@ -22,7 +22,7 @@ export class NowPage {
   private readonly live = inject(Live);
   readonly fmt = fmt;
 
-  readonly authed = this.api.authed;
+  readonly unlocked = this.api.unlocked;
   readonly loading = signal(false);
   readonly error = signal('');
 

@@ -31,19 +31,14 @@ const logPreload = 50
 const streamBuffer = 64
 
 // frame is one server-sent event: a name the client can listen for and a body
-// already encoded, so the same bytes go to every subscriber that may have it.
+// already encoded, so the same bytes go to every subscriber.
 type frame struct {
 	name string
 	data []byte
-	// private frames go only to a subscriber that held the token when it
-	// connected. The log tail is the only one: it is the container's log, and
-	// that is where secrets are printed (DESIGN.md §4, S3).
-	private bool
 }
 
 type subscriber struct {
-	ch     chan frame
-	authed bool
+	ch chan frame
 }
 
 // stream is the SSE fan-out and the watermarks it sends from. Live data is one
@@ -64,8 +59,8 @@ type stream struct {
 	ticks int
 }
 
-func (s *stream) subscribe(authed bool) *subscriber {
-	sub := &subscriber{ch: make(chan frame, streamBuffer), authed: authed}
+func (s *stream) subscribe() *subscriber {
+	sub := &subscriber{ch: make(chan frame, streamBuffer)}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -109,16 +104,9 @@ func (s *stream) subscribers() int {
 	return len(s.subs)
 }
 
-// publish sends one frame to every subscriber allowed to have it. One whose
-// buffer is full is dropped rather than waited for - a slow reader must not hold
-// up the daemon.
+// publish sends one frame to every subscriber. One whose buffer is full is
+// dropped rather than waited for - a slow reader must not hold up the daemon.
 func (s *stream) publish(name string, v any) { s.send(frame{name: name}, v) }
-
-// publishPrivate is publish for something only an authenticated subscriber may
-// see.
-func (s *stream) publishPrivate(name string, v any) {
-	s.send(frame{name: name, private: true}, v)
-}
 
 func (s *stream) send(f frame, v any) {
 	data, err := json.Marshal(v)
@@ -130,9 +118,6 @@ func (s *stream) send(f frame, v any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for sub := range s.subs {
-		if f.private && !sub.authed {
-			continue
-		}
 		select {
 		case sub.ch <- f:
 		default:
@@ -148,11 +133,9 @@ type StreamState struct {
 	Runs   RunState `json:"runs"`
 }
 
-// handleStream is the live half of the dashboard. It is a GET and needs no token
-// for what it mostly carries, all of which is readable from the REST views. The
-// exception is the log tail, which is sent only to a connection that held the
-// token when it opened - the same gate GET /api/diagnostics applies, for the same
-// reason (DESIGN.md §4, S3).
+// handleStream is the live half of the dashboard. Everything it carries, the log
+// tail included, is readable from the REST views as well; the stream exists so a
+// page does not have to poll for it (DESIGN.md §4).
 func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 	rc, ok := w.(http.Flusher)
 	if !ok {
@@ -167,9 +150,7 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 
-	// Read once, at connect: the stream is long-lived and re-checking a cookie
-	// per frame would mean reading the token out of sqlite every second.
-	sub := a.stream.subscribe(a.authenticated(r))
+	sub := a.stream.subscribe()
 	defer a.stream.unsubscribe(sub)
 
 	// The first frame is the whole state, so a page that has just loaded has
@@ -289,7 +270,7 @@ func (a *App) feedTick(ctx context.Context) {
 	}
 
 	if lines, newest := a.log.Tail(lastLog); len(lines) > 0 {
-		a.stream.publishPrivate("log", lines)
+		a.stream.publish("log", lines)
 		a.setWatermark(&a.stream.lastLog, newest)
 	}
 

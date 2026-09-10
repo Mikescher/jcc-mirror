@@ -2,9 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
-	"fmt"
 	"time"
 
 	"blackforestbytes.com/jcc-mirror/schedule"
@@ -202,14 +199,4 @@ func tunnelStatus(tun *wg.Tunnel) TunnelStatus {
 		out.Peers = append(out.Peers, peer)
 	}
 	return out
-}
-
-// newToken makes the dashboard bearer token. Base64url so it survives a copy out
-// of a container log and into a header without escaping.
-func newToken() (string, error) {
-	var raw [32]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("generate token: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }

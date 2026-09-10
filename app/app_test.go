@@ -31,13 +31,12 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 
-	log.SetOutput(io.Discard) // the daemon prints the token at startup
+	log.SetOutput(io.Discard) // a daemon per test, each logging its way through a start
 	os.Exit(m.Run())
 }
 
-// newApp starts a daemon against a fresh store and returns it with its handler
-// and the generated token.
-func newApp(t *testing.T) (*App, http.Handler, string) {
+// newApp starts a daemon against a fresh store and returns it with its handler.
+func newApp(t *testing.T) (*App, http.Handler) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -62,11 +61,7 @@ func newApp(t *testing.T) (*App, http.Handler, string) {
 		st.Close()
 	})
 
-	token, err := st.ConfigGet(ctx, store.KeyDashboardToken)
-	if err != nil {
-		t.Fatalf("ConfigGet: %v", err)
-	}
-	return a, h, token
+	return a, h
 }
 
 func do(t *testing.T, h http.Handler, req *http.Request) *httptest.ResponseRecorder {
@@ -76,18 +71,15 @@ func do(t *testing.T, h http.Handler, req *http.Request) *httptest.ResponseRecor
 	return rec
 }
 
-func postForm(t *testing.T, h http.Handler, path, token string, form url.Values) *httptest.ResponseRecorder {
+func postForm(t *testing.T, h http.Handler, path string, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 	return do(t, h, req)
 }
 
 func TestHealthOnAFirstBoot(t *testing.T) {
-	_, h, _ := newApp(t)
+	_, h := newApp(t)
 
 	rec := do(t, h, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rec.Code != http.StatusOK {
@@ -111,78 +103,65 @@ func TestHealthOnAFirstBoot(t *testing.T) {
 	}
 }
 
-func TestMutationsNeedTheToken(t *testing.T) {
-	_, h, token := newApp(t)
+// TestActionsAndReadsAreBothOpen: the dashboard sits on the LAN or behind the
+// WireGuard tunnel and nowhere else, so nothing on it is behind a login. Reading
+// a view and pressing a button are equally open (DESIGN.md §4).
+func TestActionsAndReadsAreBothOpen(t *testing.T) {
+	_, h := newApp(t)
 
-	for _, path := range []string{"/api/config", "/api/remote/probe"} {
-		if rec := postForm(t, h, path, "", url.Values{}); rec.Code != http.StatusUnauthorized {
-			t.Errorf("POST %s without a token = %d, want 401", path, rec.Code)
-		}
-		if rec := postForm(t, h, path, "not-the-token", url.Values{}); rec.Code != http.StatusUnauthorized {
-			t.Errorf("POST %s with a wrong token = %d, want 401", path, rec.Code)
-		}
-	}
-
-	// Reading is deliberately open; only the actions are gated.
 	for _, path := range []string{"/healthz", "/api/status", "/api/config", "/api/events", "/"} {
 		if rec := do(t, h, httptest.NewRequest(http.MethodGet, path, nil)); rec.Code != http.StatusOK {
 			t.Errorf("GET %s = %d, want 200", path, rec.Code)
 		}
 	}
 
-	rec := postForm(t, h, "/api/config", token, url.Values{store.KeyRemoteUser: {"ro"}})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST with the token = %d: %s", rec.Code, rec.Body)
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyRemoteUser: {"ro"}}); rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/config = %d: %s", rec.Code, rec.Body)
+	}
+
+	// A probe of a remote that was never configured cannot succeed, but what it
+	// answers about is the remote rather than the caller.
+	if rec := postForm(t, h, "/api/remote/probe", url.Values{}); rec.Code == http.StatusUnauthorized {
+		t.Errorf("POST /api/remote/probe = 401: %s", rec.Body)
 	}
 }
 
-func TestLoginCookieAuthorizes(t *testing.T) {
-	_, h, token := newApp(t)
+// TestSettingsTakeAFormOrJSON: the dashboard posts JSON and the plain form on the
+// page posts a form. Reading only one of the two is a save that works from half
+// of the daemon's own UI and silently does nothing from the other.
+func TestSettingsTakeAFormOrJSON(t *testing.T) {
+	a, h := newApp(t)
+	ctx := context.Background()
 
-	rec := postForm(t, h, "/api/login", "", url.Values{"token": {token}})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("login = %d, want 200: %s", rec.Code, rec.Body)
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyRemoteUser: {"ro"}}); rec.Code != http.StatusOK {
+		t.Fatalf("a form body = %d: %s", rec.Code, rec.Body)
 	}
-	cookies := rec.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != tokenCookie {
-		t.Fatalf("login set %v", cookies)
-	}
-	if !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
-		t.Errorf("cookie is %+v, want HttpOnly and SameSite=Strict", cookies[0])
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(store.KeyRemoteUser+"=ro"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(cookies[0])
-	if rec := do(t, h, req); rec.Code != http.StatusOK {
-		t.Errorf("POST with the cookie = %d: %s", rec.Code, rec.Body)
+	if got, err := a.Store().ConfigGet(ctx, store.KeyRemoteUser); err != nil || got != "ro" {
+		t.Fatalf("after the form the user is %q (err %v)", got, err)
 	}
 
-	if rec := postForm(t, h, "/api/login", "", url.Values{"token": {"wrong"}}); rec.Code != http.StatusUnauthorized {
-		t.Errorf("login with a wrong token = %d, want 401", rec.Code)
-	}
-
-	// The dashboard posts JSON, not a form. Reading only the form body is a login
-	// that always fails from the browser and always works from curl.
-	body := strings.NewReader(`{"token":` + strconv.Quote(token) + `}`)
-	req = httptest.NewRequest(http.MethodPost, "/api/login", body)
+	body := strings.NewReader(`{` + strconv.Quote(store.KeyRemoteUser) + `:"rw"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/config", body)
 	req.Header.Set("Content-Type", "application/json")
 	if rec := do(t, h, req); rec.Code != http.StatusOK {
-		t.Errorf("login with a JSON body = %d: %s", rec.Code, rec.Body)
+		t.Fatalf("a JSON body = %d: %s", rec.Code, rec.Body)
+	}
+	if got, err := a.Store().ConfigGet(ctx, store.KeyRemoteUser); err != nil || got != "rw" {
+		t.Errorf("after the JSON body the user is %q (err %v)", got, err)
 	}
 }
 
 func TestBlankSecretKeepsTheStoredOne(t *testing.T) {
-	a, h, token := newApp(t)
+	a, h := newApp(t)
 	ctx := context.Background()
 
-	if rec := postForm(t, h, "/api/config", token, url.Values{store.KeyRemotePassword: {"hunter2"}}); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyRemotePassword: {"hunter2"}}); rec.Code != http.StatusOK {
 		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
 	}
 
 	// The dashboard is never sent a stored password, so an untouched field comes
 	// back blank - and must not wipe it.
-	if rec := postForm(t, h, "/api/config", token, url.Values{
+	if rec := postForm(t, h, "/api/config", url.Values{
 		store.KeyRemotePassword: {""},
 		store.KeyRemoteUser:     {"ro"},
 	}); rec.Code != http.StatusOK {
@@ -199,9 +178,9 @@ func TestBlankSecretKeepsTheStoredOne(t *testing.T) {
 }
 
 func TestSecretsNeverLeaveTheProcess(t *testing.T) {
-	a, h, token := newApp(t)
+	a, h := newApp(t)
 
-	if rec := postForm(t, h, "/api/config", token, url.Values{store.KeyRemotePassword: {"hunter2"}}); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyRemotePassword: {"hunter2"}}); rec.Code != http.StatusOK {
 		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
 	}
 	priv, err := a.Store().ConfigGet(context.Background(), store.KeyWGPrivateKey)
@@ -214,7 +193,7 @@ func TestSecretsNeverLeaveTheProcess(t *testing.T) {
 		req.Header.Set("Accept", "text/html")
 		body := do(t, h, req).Body.String()
 
-		for name, secret := range map[string]string{"password": "hunter2", "token": token, "private key": priv} {
+		for name, secret := range map[string]string{"password": "hunter2", "private key": priv} {
 			if strings.Contains(body, secret) {
 				t.Errorf("GET %s leaked the %s", path, name)
 			}
@@ -223,9 +202,9 @@ func TestSecretsNeverLeaveTheProcess(t *testing.T) {
 }
 
 func TestBadValueIsRejectedWithoutChangingAnything(t *testing.T) {
-	a, h, token := newApp(t)
+	a, h := newApp(t)
 
-	rec := postForm(t, h, "/api/config", token, url.Values{store.KeyWGEndpoint: {"rootserver"}})
+	rec := postForm(t, h, "/api/config", url.Values{store.KeyWGEndpoint: {"rootserver"}})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body)
 	}
@@ -240,7 +219,7 @@ func TestBadValueIsRejectedWithoutChangingAnything(t *testing.T) {
 }
 
 func TestProbeRecordsAnEvent(t *testing.T) {
-	a, h, token := newApp(t)
+	a, h := newApp(t)
 	ctx := context.Background()
 
 	dir := t.TempDir()
@@ -258,10 +237,10 @@ func TestProbeRecordsAnEvent(t *testing.T) {
 	})
 	defer srv.Close()
 
-	if rec := postForm(t, h, "/api/config", token, url.Values{store.KeyRemoteURL: {srv.URL + "/share"}}); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyRemoteURL: {srv.URL + "/share"}}); rec.Code != http.StatusOK {
 		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
 	}
-	if rec := postForm(t, h, "/api/remote/probe", token, url.Values{}); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/remote/probe", url.Values{}); rec.Code != http.StatusOK {
 		t.Fatalf("probe = %d: %s", rec.Code, rec.Body)
 	}
 
@@ -281,11 +260,11 @@ func TestProbeRecordsAnEvent(t *testing.T) {
 }
 
 func TestRemoteIsRefusedWhileTheTunnelIsDown(t *testing.T) {
-	a, h, token := newApp(t)
+	a, h := newApp(t)
 
 	// A complete tunnel configuration with an endpoint that will never answer:
 	// the tunnel opens, but nothing is reachable through it.
-	if rec := postForm(t, h, "/api/config", token, url.Values{
+	if rec := postForm(t, h, "/api/config", url.Values{
 		store.KeyWGPeerKey:    {"LHAc/QH5VQW1F9sdlMTOap88nbDNtx876aR6eBUdvlw="},
 		store.KeyWGEndpoint:   {"198.51.100.7:51820"},
 		store.KeyWGAddress:    {"10.13.13.3/32"},

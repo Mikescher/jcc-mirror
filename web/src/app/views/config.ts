@@ -95,7 +95,7 @@ export class ConfigPage {
   readonly live = inject(Live);
   readonly fmt = fmt;
 
-  readonly authed = this.api.authed;
+  readonly unlocked = this.api.unlocked;
   readonly hours = Array.from({ length: 24 }, (_, h) => h);
   readonly isBoolean = isBoolean;
   readonly transferKey = transferKey;
@@ -121,9 +121,8 @@ export class ConfigPage {
   readonly groups = computed<Group[]>(() => {
     const byName = new Map<string, ConfigEntry[]>();
     for (const entry of this.config()) {
-      // The private key and the dashboard token are generated and never typed:
-      // one never leaves the data volume, the other is read from the container
-      // log. A field for either would only invite pasting one in.
+      // The private key is generated and never typed: it never leaves the data
+      // volume, and a field for it would only invite pasting one in.
       if (entry.generated) continue;
       const entries = byName.get(entry.group) ?? [];
       entries.push(entry);

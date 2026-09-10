@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,7 +20,7 @@ import (
 // browser asks for directly has to answer with the shell rather than a 404, or
 // every route but the first is broken on a reload (DESIGN.md §4).
 func TestDashboardIsServedFromTheBinary(t *testing.T) {
-	_, h, _ := newApp(t)
+	_, h := newApp(t)
 
 	root := do(t, h, httptest.NewRequest(http.MethodGet, "/", nil))
 	if root.Code != http.StatusOK {
@@ -55,8 +54,8 @@ func TestDashboardIsServedFromTheBinary(t *testing.T) {
 }
 
 // TestReadViewsAreOpenAndAnswerJSON walks the views the dashboard is drawn from.
-// None of them needs the token: reading is open and only changing anything is not
-// (DESIGN.md §4, S3).
+// The page is one Angular app with nothing else to draw itself out of, so a view
+// that answers anything but JSON leaves a panel blank (DESIGN.md §4).
 func TestReadViewsAreOpenAndAnswerJSON(t *testing.T) {
 	m := newMirror(t)
 	m.write(t, "Filme/a.mkv", 2048)
@@ -65,7 +64,7 @@ func TestReadViewsAreOpenAndAnswerJSON(t *testing.T) {
 
 	pair := "?pair=" + itoa(m.pair.ID)
 	for _, path := range []string{
-		"/api/session", "/api/status", "/api/schedule", "/api/config", "/api/config/audit",
+		"/api/status", "/api/schedule", "/api/config", "/api/config/audit",
 		"/api/events", "/api/changes", "/api/pairs", "/api/runs", "/api/jobs",
 		"/api/trash", "/api/diagnostics", "/api/bandwidth?span=minute", "/api/scans" + pair,
 	} {
@@ -87,94 +86,61 @@ func TestReadViewsAreOpenAndAnswerJSON(t *testing.T) {
 	}
 }
 
-// TestTheLogTailNeedsTheToken is the hole the log tail would otherwise open: the
-// container log is where the dashboard token is printed, so serving it back to an
-// unauthenticated reader hands over everything the token guards (DESIGN.md §4, S3).
-func TestTheLogTailNeedsTheToken(t *testing.T) {
-	a, h, token := newApp(t)
+// TestTheLogTailIsServed: the container log on a Synology is exactly what an
+// operator cannot get at, so the tail is how it is read at all. It goes to every
+// reader, because the dashboard is reachable on the LAN or through the WireGuard
+// tunnel and nowhere else, and nothing secret is printed into that log.
+func TestTheLogTailIsServed(t *testing.T) {
+	a, h := newApp(t)
 	a.log.Infof("something worth reading")
 
-	open := do(t, h, httptest.NewRequest(http.MethodGet, "/api/diagnostics", nil))
+	rec := do(t, h, httptest.NewRequest(http.MethodGet, "/api/diagnostics", nil))
 	var view DiagnosticsView
-	if err := json.Unmarshal(open.Body.Bytes(), &view); err != nil {
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(view.Log) != 0 || !view.LogLocked {
-		t.Fatalf("an unauthenticated read got %d log lines (locked=%v)", len(view.Log), view.LogLocked)
-	}
 
-	// A fresh value: logLocked is omitted when false, so decoding over the first
-	// answer would leave it set and the assertion would pass for the wrong reason.
-	var unlocked DiagnosticsView
-	req := httptest.NewRequest(http.MethodGet, "/api/diagnostics", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	if err := json.Unmarshal(do(t, h, req).Body.Bytes(), &unlocked); err != nil {
-		t.Fatalf("decode: %v", err)
+	var found bool
+	for _, line := range view.Log {
+		found = found || strings.Contains(line.Text, "something worth reading")
 	}
-	if len(unlocked.Log) == 0 || unlocked.LogLocked {
-		t.Fatalf("an authenticated read got %d log lines (locked=%v)", len(unlocked.Log), unlocked.LogLocked)
-	}
-
-	// And the token is never in the ring in the first place, so a future reader of
-	// the tail cannot find it there either.
-	lines, _ := a.log.Tail(0)
-	for _, line := range lines {
-		if strings.Contains(line.Text, token) {
-			t.Fatalf("the log ring holds the dashboard token: %q", line.Text)
-		}
+	if !found {
+		t.Fatalf("the tail of %d lines does not carry the line that was just logged", len(view.Log))
 	}
 }
 
-// TestTheStreamAppliesTheSameLogGate: the live stream carries the same log the
-// diagnostics view gates, so gating one and not the other would leave the door
-// open next to the lock (DESIGN.md §4, S3).
-//
-// Both connections are open at once on purpose. The feed publishes one frame to
-// every subscriber, so this is the gate itself under test rather than two
-// separately-timed reads that could each pass for the wrong reason.
-func TestTheStreamAppliesTheSameLogGate(t *testing.T) {
-	a, h, token := newApp(t)
-	a.log.Infof("a line only an operator should read")
+// TestTheStreamCarriesTheLog: the stream carries the same tail the diagnostics
+// view does, so a dashboard left open keeps up with the log instead of going
+// stale until someone reloads the page (DESIGN.md §4).
+func TestTheStreamCarriesTheLog(t *testing.T) {
+	a, h := newApp(t)
+	a.log.Infof("a line an operator should read")
 
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	var wg sync.WaitGroup
-	var open, authed string
-	var openErr, authedErr error
-
-	wg.Add(2)
-	go func() { defer wg.Done(); open, openErr = readStream(srv.URL, "") }()
-	go func() { defer wg.Done(); authed, authedErr = readStream(srv.URL, token) }()
-	wg.Wait()
-
-	if openErr != nil || authedErr != nil {
-		t.Fatalf("reading the streams: %v, %v", openErr, authedErr)
+	got, err := readStream(srv.URL)
+	if err != nil {
+		t.Fatalf("reading the stream: %v", err)
 	}
-	if !strings.Contains(open, "event: state") {
-		t.Fatalf("an unauthenticated stream carried nothing at all:\n%s", open)
+	if !strings.Contains(got, "event: state") {
+		t.Fatalf("the stream carried nothing at all:\n%s", got)
 	}
-	if strings.Contains(open, "an operator should read") {
-		t.Fatalf("an unauthenticated stream carried the log:\n%s", open)
-	}
-	if !strings.Contains(authed, "an operator should read") {
-		t.Fatalf("an authenticated stream did not carry the log:\n%s", authed)
+	if !strings.Contains(got, "an operator should read") {
+		t.Fatalf("the stream did not carry the log:\n%s", got)
 	}
 }
 
-// readStream opens the event stream and reads until the log arrives or the
-// deadline runs out. A stream that will never carry the log reads for the whole
-// window, which is the point: it has to be given every chance to leak it.
-func readStream(base, token string) (string, error) {
+// readStream opens the event stream and reads until the log arrives. The deadline
+// is what ends it: the connection itself stays open for as long as the daemon is
+// up, so there is nothing else to read to.
+func readStream(base string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/stream", nil)
 	if err != nil {
 		return "", err
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	res, err := http.DefaultClient.Do(req)
@@ -223,10 +189,10 @@ func TestChangesRecordWhatLanded(t *testing.T) {
 // TestScheduleViewDrawsTheWholeWeek: the grid is what the schedule is edited as,
 // so the API has to hand back all 168 cells and the rules they came from.
 func TestScheduleViewDrawsTheWholeWeek(t *testing.T) {
-	_, h, token := newApp(t)
+	_, h := newApp(t)
 
 	form := url.Values{store.KeySchedule: {"* * = 5MiB; mon-fri 2-8 = full; sat 0-24 = off"}}
-	if rec := postForm(t, h, "/api/config", token, form); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", form); rec.Code != http.StatusOK {
 		t.Fatalf("save the schedule: %d %s", rec.Code, rec.Body)
 	}
 
@@ -260,7 +226,7 @@ func TestScheduleViewDrawsTheWholeWeek(t *testing.T) {
 // is drawn in the configured timezone, which is a setting of its own rather than
 // the container's TZ (DESIGN.md §6).
 func TestBandwidthFoldsIntoTheHeatmap(t *testing.T) {
-	a, h, _ := newApp(t)
+	a, h := newApp(t)
 	ctx := context.Background()
 
 	berlin, err := time.LoadLocation("Europe/Berlin")
@@ -309,7 +275,7 @@ func TestBandwidthFoldsIntoTheHeatmap(t *testing.T) {
 // hours is announced when it starts and when it clears, and never in between
 // (DESIGN.md §4.1).
 func TestNotificationsOnlyGoOutOnTheEdge(t *testing.T) {
-	a, h, token := newApp(t)
+	a, h := newApp(t)
 	ctx := context.Background()
 
 	sent := make(chan map[string]any, 8)
@@ -326,7 +292,7 @@ func TestNotificationsOnlyGoOutOnTheEdge(t *testing.T) {
 		store.KeyNotifyUserID:  {"7"},
 		store.KeyNotifyUserKey: {"secret"},
 	}
-	if rec := postForm(t, h, "/api/config", token, form); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", form); rec.Code != http.StatusOK {
 		t.Fatalf("configure notifications: %d %s", rec.Code, rec.Body)
 	}
 
@@ -360,7 +326,7 @@ func TestNotificationsOnlyGoOutOnTheEdge(t *testing.T) {
 // TestNotificationsRespectTheirToggle: a kind switched off must not reach the
 // network at all, not merely be filtered later.
 func TestNotificationsRespectTheirToggle(t *testing.T) {
-	a, h, token := newApp(t)
+	a, h := newApp(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("a notification was sent for a kind that is switched off")
@@ -378,7 +344,7 @@ func TestNotificationsRespectTheirToggle(t *testing.T) {
 		store.KeyNotifyLockStale:     {"false"},
 		store.KeyNotifyDeleteBlocked: {"false"},
 	}
-	if rec := postForm(t, h, "/api/config", token, form); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", form); rec.Code != http.StatusOK {
 		t.Fatalf("configure notifications: %d %s", rec.Code, rec.Body)
 	}
 
@@ -389,7 +355,7 @@ func TestNotificationsRespectTheirToggle(t *testing.T) {
 // TestNotificationsAreSilentUntilConfigured: no account, no messages, and no
 // error either - the push channel is optional.
 func TestNotificationsAreSilentUntilConfigured(t *testing.T) {
-	a, _, _ := newApp(t)
+	a, _ := newApp(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("a notification was sent with no SCN account configured")

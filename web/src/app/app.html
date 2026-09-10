@@ -24,20 +24,12 @@
     </div>
 
     <div class="row">
-      @if (authed()) {
-        <button class="ghost small" type="button" (click)="lock()">Forget token</button>
-      } @else {
-        <form class="row" (submit)="unlock($event)">
-          <input
-            type="password"
-            placeholder="dashboard token"
-            autocomplete="off"
-            [value]="token()"
-            (input)="token.set($any($event.target).value)"
-          />
-          <button class="small" type="submit" [disabled]="unlocking()">Unlock</button>
-        </form>
+      @if (!unlocked()) {
+        <span class="pill dim">read-only</span>
       }
+      <button class="ghost small" type="button" (click)="toggleLock()">
+        {{ unlocked() ? 'Lock' : 'Unlock' }}
+      </button>
     </div>
   </div>
 
@@ -51,17 +43,9 @@
   </nav>
 </header>
 
-@if (error()) {
+@if (!unlocked()) {
   <div class="wrap">
-    <div class="banner">{{ error() }}</div>
-  </div>
-}
-@if (!authed()) {
-  <div class="wrap">
-    <p class="note">
-      Reading is open. Changing anything needs the bearer token printed to the container log at
-      startup.
-    </p>
+    <p class="note">Reading is open. Changing anything needs Unlock.</p>
   </div>
 }
 

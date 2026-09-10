@@ -65,7 +65,7 @@ func TestUpdateIsOffUntilItIsConfigured(t *testing.T) {
 		t.Errorf("version = %q", st.Version)
 	}
 
-	if rec := postForm(t, m.h, "/api/update/check", m.token, nil); rec.Code != http.StatusBadRequest {
+	if rec := postForm(t, m.h, "/api/update/check", nil); rec.Code != http.StatusBadRequest {
 		t.Errorf("a check with no URL = %d, want 400: %s", rec.Code, rec.Body)
 	}
 }
@@ -77,12 +77,12 @@ func TestUpdateInstallsAndAsksForTheRestart(t *testing.T) {
 	m := newMirror(t)
 	publishBinary(t, m, "dist/jcc-mirror-amd64")
 
-	if rec := postForm(t, m.h, "/api/config", m.token,
+	if rec := postForm(t, m.h, "/api/config",
 		url.Values{store.KeyUpdateURL: {"dist/jcc-mirror-amd64"}}); rec.Code != http.StatusOK {
 		t.Fatalf("configure the update URL: %d %s", rec.Code, rec.Body)
 	}
 
-	if rec := postForm(t, m.h, "/api/update/check", m.token, nil); rec.Code != http.StatusOK {
+	if rec := postForm(t, m.h, "/api/update/check", nil); rec.Code != http.StatusOK {
 		t.Fatalf("check: %d %s", rec.Code, rec.Body)
 	}
 	st := updateStatus(t, m)
@@ -93,7 +93,7 @@ func TestUpdateInstallsAndAsksForTheRestart(t *testing.T) {
 		t.Errorf("blocked = %q", st.Blocked)
 	}
 
-	if rec := postForm(t, m.h, "/api/update/apply", m.token, nil); rec.Code != http.StatusAccepted {
+	if rec := postForm(t, m.h, "/api/update/apply", nil); rec.Code != http.StatusAccepted {
 		t.Fatalf("apply: %d %s", rec.Code, rec.Body)
 	}
 
@@ -122,7 +122,7 @@ func TestUpdateInstallsAndAsksForTheRestart(t *testing.T) {
 	// A second apply is refused, and as a conflict rather than as a fault: the
 	// baseline is now what was installed, not the build stamp, so the same binary
 	// does not read as newer than itself.
-	rec := postForm(t, m.h, "/api/update/apply", m.token, nil)
+	rec := postForm(t, m.h, "/api/update/apply", nil)
 	if rec.Code != http.StatusConflict {
 		t.Errorf("a second apply = %d, want 409: %s", rec.Code, rec.Body)
 	}
@@ -134,12 +134,12 @@ func TestUpdateRefusesWhatIsNotABinary(t *testing.T) {
 	m := newMirror(t)
 	m.write(t, "dist/jcc-mirror-amd64", 4096) // random bytes, no ELF magic
 
-	if rec := postForm(t, m.h, "/api/config", m.token,
+	if rec := postForm(t, m.h, "/api/config",
 		url.Values{store.KeyUpdateURL: {"dist/jcc-mirror-amd64"}}); rec.Code != http.StatusOK {
 		t.Fatalf("configure: %d %s", rec.Code, rec.Body)
 	}
 
-	rec := postForm(t, m.h, "/api/update/apply", m.token, nil)
+	rec := postForm(t, m.h, "/api/update/apply", nil)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("apply = %d, want 502: %s", rec.Code, rec.Body)
 	}
@@ -160,7 +160,7 @@ func TestUpdateRefusesWhatIsNotABinary(t *testing.T) {
 func TestRolledBackUpdateIsNotFetchedAgain(t *testing.T) {
 	m := newMirror(t)
 	publishBinary(t, m, "dist/jcc-mirror-amd64")
-	if rec := postForm(t, m.h, "/api/config", m.token,
+	if rec := postForm(t, m.h, "/api/config",
 		url.Values{store.KeyUpdateURL: {"dist/jcc-mirror-amd64"}}); rec.Code != http.StatusOK {
 		t.Fatalf("configure: %d %s", rec.Code, rec.Body)
 	}
@@ -191,11 +191,23 @@ func TestRolledBackUpdateIsNotFetchedAgain(t *testing.T) {
 	}
 }
 
-func TestUpdateActionsNeedTheToken(t *testing.T) {
-	_, h, _ := newApp(t)
+// TestUpdateActionsAreOpen: the update buttons need no login, and on an install
+// that was never told where a binary lives they say so rather than refusing the
+// caller.
+func TestUpdateActionsAreOpen(t *testing.T) {
+	_, h := newApp(t)
 	for _, path := range []string{"/api/update/check", "/api/update/apply", "/api/update/rollback"} {
-		if rec := postForm(t, h, path, "", nil); rec.Code != http.StatusUnauthorized {
-			t.Errorf("POST %s without a token = %d, want 401", path, rec.Code)
+		rec := postForm(t, h, path, nil)
+		if rec.Code == http.StatusUnauthorized {
+			t.Errorf("POST %s = 401: %s", path, rec.Body)
+			continue
+		}
+
+		var answer struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil || answer.Error == "" {
+			t.Errorf("POST %s = %d with nothing to read: %s", path, rec.Code, rec.Body)
 		}
 	}
 	// Reading the panel is open, like every other read view.
@@ -205,8 +217,8 @@ func TestUpdateActionsNeedTheToken(t *testing.T) {
 }
 
 func TestRollbackWithNothingInstalledIsRefused(t *testing.T) {
-	_, h, token := newApp(t)
-	if rec := postForm(t, h, "/api/update/rollback", token, nil); rec.Code != http.StatusConflict {
+	_, h := newApp(t)
+	if rec := postForm(t, h, "/api/update/rollback", nil); rec.Code != http.StatusConflict {
 		t.Errorf("rollback = %d, want 409: %s", rec.Code, rec.Body)
 	}
 }

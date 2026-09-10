@@ -78,8 +78,7 @@ const (
 	KeyRetainEvents  = "retention.events"
 	KeyRetainChanges = "retention.changes"
 
-	KeyDashboardToken = "dashboard.token"
-	KeyTimezone       = "general.timezone"
+	KeyTimezone = "general.timezone"
 )
 
 // NotifyToggle is the setting that decides whether one notification kind is sent
@@ -402,13 +401,6 @@ var keyDefs = []KeyDef{
 	},
 
 	{
-		Name: KeyDashboardToken, Group: "Dashboard", Label: "Bearer token",
-		Help:      "Generated at first start and printed to the container log. Required for every non-GET request.",
-		Secret:    true,
-		Generated: true,
-		Required:  true,
-	},
-	{
 		Name: KeyTimezone, Group: "General", Label: "Timezone",
 		Help:     "The zone the transfer schedule is expressed in. Deliberately a setting of its own rather than the container's TZ.",
 		Default:  "Europe/Berlin",
@@ -640,9 +632,9 @@ func (s *Store) ConfigAudit(ctx context.Context, limit int) ([]AuditEntry, error
 }
 
 // EnsureGenerated creates the settings that are never typed by hand - the
-// WireGuard private key and the dashboard token - and returns the names of the
-// ones it had to create. generate is called per key; it exists so the wg package
-// stays out of this one's imports.
+// WireGuard private key - and returns the names of the ones it had to create.
+// generate is called per key; it exists so the wg package stays out of this
+// one's imports.
 func (s *Store) EnsureGenerated(ctx context.Context, generate func(key string) (string, error)) ([]string, error) {
 	var created []string
 	for _, d := range keyDefs {

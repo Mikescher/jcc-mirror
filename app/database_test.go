@@ -115,7 +115,7 @@ func TestDashboardDefersTheDatabaseWhileLocked(t *testing.T) {
 	form := url.Values{
 		"kind": {RunDatabase}, "pair": {strconv.FormatInt(m.pair.ID, 10)}, "force": {"true"},
 	}
-	if rec := postForm(t, m.h, "/api/runs", m.token, form); rec.Code != http.StatusAccepted {
+	if rec := postForm(t, m.h, "/api/runs", form); rec.Code != http.StatusAccepted {
 		t.Fatalf("forced db run: %d %s", rec.Code, rec.Body)
 	}
 	waitForRun(t, m)
@@ -167,7 +167,7 @@ func TestDashboardRollsTheDatabaseBack(t *testing.T) {
 		"id":     {strconv.FormatInt(m.pair.ID, 10)},
 		"backup": {strconv.FormatInt(views[0].Backups[0].ID, 10)},
 	}
-	if rec := postForm(t, m.h, "/api/pairs/database/rollback", m.token, form); rec.Code != http.StatusOK {
+	if rec := postForm(t, m.h, "/api/pairs/database/rollback", form); rec.Code != http.StatusOK {
 		t.Fatalf("rollback: %d %s", rec.Code, rec.Body)
 	}
 
@@ -182,12 +182,21 @@ func TestDashboardRollsTheDatabaseBack(t *testing.T) {
 	}
 }
 
-func TestDatabaseRollbackNeedsTheToken(t *testing.T) {
+// TestDatabaseRollbackIsOpen: the recovery of S5 needs no login either. A pair
+// that is not there is an ordinary mistake, and is answered as one.
+func TestDatabaseRollbackIsOpen(t *testing.T) {
 	m := newJCCMirror(t)
 
-	form := url.Values{"id": {strconv.FormatInt(m.pair.ID, 10)}}
-	if rec := postForm(t, m.h, "/api/pairs/database/rollback", "", form); rec.Code != http.StatusUnauthorized {
-		t.Errorf("unauthenticated rollback = %d, want 401", rec.Code)
+	rec := postForm(t, m.h, "/api/pairs/database/rollback", url.Values{"id": {"999999"}})
+	if rec.Code < 400 || rec.Code >= 500 || rec.Code == http.StatusUnauthorized {
+		t.Fatalf("a rollback of a pair that does not exist = %d, want a readable 4xx: %s", rec.Code, rec.Body)
+	}
+
+	var answer struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil || answer.Error == "" {
+		t.Errorf("the refusal carries nothing to read: %s", rec.Body)
 	}
 }
 

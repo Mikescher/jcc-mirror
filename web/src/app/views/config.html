@@ -12,9 +12,8 @@
   <p class="note">
     Everything jcc-mirror can be told is on this page. There is no config file and nothing is read
     from the environment: every setting lives in the database, takes effect the moment it is saved,
-    and is recorded in the trail at the bottom. The two generated settings are not fields — the
-    WireGuard private key never leaves the data volume, and the dashboard token is printed to the
-    container log.
+    and is recorded in the trail at the bottom. The one generated setting is not a field — the
+    WireGuard private key never leaves the data volume.
   </p>
 
   @if (error()) {
@@ -69,7 +68,7 @@
                 <input
                   type="checkbox"
                   [checked]="checked(entry)"
-                  [disabled]="!authed()"
+                  [disabled]="!unlocked()"
                   (change)="edit(entry.key, $any($event.target).checked ? 'true' : 'false')"
                 />
                 <span class="note">{{ checked(entry) ? 'on' : 'off' }}</span>
@@ -80,7 +79,7 @@
                 autocomplete="new-password"
                 [placeholder]="entry.set ? 'stored — leave blank to keep it' : 'not set'"
                 [value]="draft()[entry.key] ?? ''"
-                [disabled]="!authed()"
+                [disabled]="!unlocked()"
                 (input)="edit(entry.key, $any($event.target).value)"
               />
             } @else {
@@ -88,7 +87,7 @@
                 type="text"
                 autocomplete="off"
                 [value]="value(entry)"
-                [disabled]="!authed()"
+                [disabled]="!unlocked()"
                 (input)="edit(entry.key, $any($event.target).value)"
               />
             }
@@ -99,7 +98,7 @@
   </div>
 
   <div class="row">
-    <button type="button" [disabled]="!authed() || saving() || !pending()" (click)="save()">
+    <button type="button" [disabled]="!unlocked() || saving() || !pending()" (click)="save()">
       Save
     </button>
     <button class="ghost" type="button" [disabled]="!pending()" (click)="revert()">Revert</button>
@@ -108,8 +107,8 @@
         {{ fmt.comma(pending()) }} unsaved {{ pending() === 1 ? 'change' : 'changes' }}
       </span>
     }
-    @if (!authed()) {
-      <span class="note">Unlock with the token to save.</span>
+    @if (!unlocked()) {
+      <span class="note">Unlock to save.</span>
     }
   </div>
 </section>
@@ -228,7 +227,7 @@
         autocomplete="off"
         spellcheck="false"
         [value]="rules(transferKey, s.transfer.rules)"
-        [disabled]="!authed()"
+        [disabled]="!unlocked()"
         (input)="edit(transferKey, $any($event.target).value)"
       />
     </label>
@@ -277,13 +276,13 @@
         autocomplete="off"
         spellcheck="false"
         [value]="rules(scanKey, s.scan.rules)"
-        [disabled]="!authed()"
+        [disabled]="!unlocked()"
         (input)="edit(scanKey, $any($event.target).value)"
       />
     </label>
 
     <div class="row">
-      <button type="button" [disabled]="!authed() || saving() || !pending()" (click)="save()">
+      <button type="button" [disabled]="!unlocked() || saving() || !pending()" (click)="save()">
         Save
       </button>
       <button class="ghost" type="button" [disabled]="!pending()" (click)="revert()">Revert</button>
@@ -352,7 +351,7 @@
               type="text"
               autocomplete="off"
               [value]="pairField(p, 'name')"
-              [disabled]="!authed()"
+              [disabled]="!unlocked()"
               (input)="editPair(p.id, 'name', $any($event.target).value)"
             />
           </label>
@@ -363,7 +362,7 @@
               the per-user databases beside it are never copied.
             </span>
             <select
-              [disabled]="!authed()"
+              [disabled]="!unlocked()"
               (change)="editPair(p.id, 'type', $any($event.target).value)"
             >
               <option value="raw" [selected]="pairField(p, 'type') === 'raw'">raw</option>
@@ -377,7 +376,7 @@
               type="text"
               autocomplete="off"
               [value]="pairField(p, 'remotePath')"
-              [disabled]="!authed()"
+              [disabled]="!unlocked()"
               (input)="editPair(p.id, 'remotePath', $any($event.target).value)"
             />
           </label>
@@ -388,14 +387,14 @@
               type="text"
               autocomplete="off"
               [value]="pairField(p, 'localPath')"
-              [disabled]="!authed()"
+              [disabled]="!unlocked()"
               (input)="editPair(p.id, 'localPath', $any($event.target).value)"
             />
           </label>
           <label class="field">
             <span class="name">Mode</span>
             <select
-              [disabled]="!authed()"
+              [disabled]="!unlocked()"
               (change)="editPair(p.id, 'mode', $any($event.target).value)"
             >
               <option value="additive" [selected]="pairField(p, 'mode') === 'additive'">
@@ -415,7 +414,7 @@
               type="text"
               autocomplete="off"
               [value]="pairField(p, 'deleteGuard')"
-              [disabled]="!authed()"
+              [disabled]="!unlocked()"
               (input)="editPair(p.id, 'deleteGuard', $any($event.target).value)"
             />
           </label>
@@ -429,7 +428,7 @@
               type="text"
               autocomplete="off"
               [value]="pairField(p, 'excludes')"
-              [disabled]="!authed()"
+              [disabled]="!unlocked()"
               (input)="editPair(p.id, 'excludes', $any($event.target).value)"
             />
           </label>
@@ -440,7 +439,7 @@
               type="text"
               autocomplete="off"
               [value]="pairField(p, 'includes')"
-              [disabled]="!authed()"
+              [disabled]="!unlocked()"
               (input)="editPair(p.id, 'includes', $any($event.target).value)"
             />
           </label>
@@ -451,7 +450,7 @@
               type="text"
               autocomplete="off"
               [value]="pairField(p, 'priority')"
-              [disabled]="!authed()"
+              [disabled]="!unlocked()"
               (input)="editPair(p.id, 'priority', $any($event.target).value)"
             />
           </label>
@@ -462,14 +461,14 @@
             <input
               type="checkbox"
               [checked]="pairField(p, 'enabled') === 'true'"
-              [disabled]="!authed()"
+              [disabled]="!unlocked()"
               (change)="editPair(p.id, 'enabled', $any($event.target).checked ? 'true' : 'false')"
             />
             <span>Enabled</span>
           </label>
           <button
             type="button"
-            [disabled]="!authed() || savingPair() === p.id || !pairDirty(p.id)"
+            [disabled]="!unlocked() || savingPair() === p.id || !pairDirty(p.id)"
             (click)="savePair(p)"
           >
             Save
@@ -495,7 +494,7 @@
               <button
                 class="danger small"
                 type="button"
-                [disabled]="!authed()"
+                [disabled]="!unlocked()"
                 (click)="removePair(p)"
               >
                 Yes, remove it
@@ -508,7 +507,7 @@
             <button
               class="danger small"
               type="button"
-              [disabled]="!authed()"
+              [disabled]="!unlocked()"
               (click)="removing.set(p.id)"
             >
               Remove this pair
@@ -532,13 +531,13 @@
           autocomplete="off"
           placeholder="media"
           [value]="newPair()['name']"
-          [disabled]="!authed()"
+          [disabled]="!unlocked()"
           (input)="editNew('name', $any($event.target).value)"
         />
       </label>
       <label class="field">
         <span class="name">Type</span>
-        <select [disabled]="!authed()" (change)="editNew('type', $any($event.target).value)">
+        <select [disabled]="!unlocked()" (change)="editNew('type', $any($event.target).value)">
           <option value="raw" [selected]="newPair()['type'] === 'raw'">raw</option>
           <option value="jcc" [selected]="newPair()['type'] === 'jcc'">
             jcc (the ClipCornDB directory)
@@ -553,7 +552,7 @@
           autocomplete="off"
           placeholder="Filme"
           [value]="newPair()['remotePath']"
-          [disabled]="!authed()"
+          [disabled]="!unlocked()"
           (input)="editNew('remotePath', $any($event.target).value)"
         />
       </label>
@@ -567,13 +566,13 @@
           autocomplete="off"
           placeholder="/mnt/media/Filme"
           [value]="newPair()['localPath']"
-          [disabled]="!authed()"
+          [disabled]="!unlocked()"
           (input)="editNew('localPath', $any($event.target).value)"
         />
       </label>
       <label class="field">
         <span class="name">Mode</span>
-        <select [disabled]="!authed()" (change)="editNew('mode', $any($event.target).value)">
+        <select [disabled]="!unlocked()" (change)="editNew('mode', $any($event.target).value)">
           <option value="additive" [selected]="newPair()['mode'] === 'additive'">additive</option>
           <option value="mirror" [selected]="newPair()['mode'] === 'mirror'">mirror</option>
         </select>
@@ -586,7 +585,7 @@
           autocomplete="off"
           placeholder="**/*.tmp, Serien/Trash/**"
           [value]="newPair()['excludes']"
-          [disabled]="!authed()"
+          [disabled]="!unlocked()"
           (input)="editNew('excludes', $any($event.target).value)"
         />
       </label>
@@ -597,12 +596,12 @@
         <input
           type="checkbox"
           [checked]="newPair()['enabled'] === 'true'"
-          [disabled]="!authed()"
+          [disabled]="!unlocked()"
           (change)="editNew('enabled', $any($event.target).checked ? 'true' : 'false')"
         />
         <span>Enabled</span>
       </label>
-      <button type="button" [disabled]="!authed() || adding()" (click)="createPair()">Add</button>
+      <button type="button" [disabled]="!unlocked() || adding()" (click)="createPair()">Add</button>
       <span class="note">
         It starts at priority 100 with no delete guard; both are editable once it exists.
       </span>
@@ -613,7 +612,7 @@
 <section class="panel">
   <h2>Remote</h2>
   <div class="row">
-    <button type="button" [disabled]="!authed() || probing()" (click)="testRemote()">
+    <button type="button" [disabled]="!unlocked() || probing()" (click)="testRemote()">
       Test the remote
     </button>
     <span class="note">

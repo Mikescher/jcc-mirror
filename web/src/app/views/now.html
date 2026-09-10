@@ -5,7 +5,7 @@
 <section class="panel">
   <div class="spread">
     <h2>Running</h2>
-    <button class="danger small" type="button" [disabled]="!authed() || !busy()" (click)="stop()">
+    <button class="danger small" type="button" [disabled]="!unlocked() || !busy()" (click)="stop()">
       Stop
     </button>
   </div>
@@ -118,7 +118,7 @@
         <input
           type="checkbox"
           [checked]="s.automatic"
-          [disabled]="!authed()"
+          [disabled]="!unlocked()"
           (change)="setAutomatic($any($event.target).checked)"
         />
         <span>Unattended</span>
@@ -275,7 +275,7 @@
                 <button
                   class="danger small"
                   type="button"
-                  [disabled]="!authed()"
+                  [disabled]="!unlocked()"
                   (click)="decide(p, 'approved')"
                 >
                   Approve
@@ -283,7 +283,7 @@
                 <button
                   class="ghost small"
                   type="button"
-                  [disabled]="!authed()"
+                  [disabled]="!unlocked()"
                   (click)="decide(p, 'rejected')"
                 >
                   Reject
@@ -297,7 +297,7 @@
           <button
             class="ghost small"
             type="button"
-            [disabled]="!authed() || busy()"
+            [disabled]="!unlocked() || busy()"
             (click)="start('plan', p)"
           >
             Plan
@@ -305,7 +305,7 @@
           <button
             class="ghost small"
             type="button"
-            [disabled]="!authed() || busy()"
+            [disabled]="!unlocked() || busy()"
             (click)="start('scan', p)"
           >
             Scan
@@ -313,7 +313,7 @@
           <button
             class="ghost small"
             type="button"
-            [disabled]="!authed() || busy()"
+            [disabled]="!unlocked() || busy()"
             (click)="start('adopt', p)"
           >
             Adopt
@@ -321,7 +321,7 @@
           <button
             class="small"
             type="button"
-            [disabled]="!authed() || busy()"
+            [disabled]="!unlocked() || busy()"
             (click)="start('sync', p)"
           >
             Sync
@@ -329,7 +329,7 @@
           <button
             class="danger small"
             type="button"
-            [disabled]="!authed() || busy()"
+            [disabled]="!unlocked() || busy()"
             (click)="start('delete', p)"
           >
             Delete
@@ -338,7 +338,7 @@
             <button
               class="ghost small"
               type="button"
-              [disabled]="!authed() || busy()"
+              [disabled]="!unlocked() || busy()"
               (click)="start('db', p)"
             >
               Database
@@ -347,7 +347,7 @@
               <input
                 type="checkbox"
                 [checked]="forced(p.id)"
-                [disabled]="!authed()"
+                [disabled]="!unlocked()"
                 (change)="setForced(p.id, $any($event.target).checked)"
               />
               <span class="note">force past the lock</span>
@@ -384,7 +384,7 @@
                       <button
                         class="ghost small"
                         type="button"
-                        [disabled]="!authed()"
+                        [disabled]="!unlocked()"
                         (click)="rollback(p, b)"
                       >
                         Roll back

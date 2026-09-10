@@ -18,7 +18,7 @@ import (
 // the one under test rather than a shortcut around it.
 func (m *mirror) configure(t *testing.T, values url.Values) {
 	t.Helper()
-	if rec := postForm(t, m.h, "/api/config", m.token, values); rec.Code != http.StatusOK {
+	if rec := postForm(t, m.h, "/api/config", values); rec.Code != http.StatusOK {
 		t.Fatalf("configure: %d %s", rec.Code, rec.Body)
 	}
 }
@@ -174,7 +174,7 @@ func TestOnlyItsOwnRunsAreStopped(t *testing.T) {
 		{"scheduled", true, true},
 		{"by hand", false, false},
 	} {
-		a, _, _ := newApp(t)
+		a, _ := newApp(t)
 
 		// Planted under the runner's lock and atomically, because the run is a
 		// fixture rather than a real one: the daemon's own scheduler and its

@@ -30,14 +30,18 @@ export class ApiError extends Error {
   }
 }
 
-/** Api is the whole HTTP surface. Reading needs nothing; changing anything needs
- *  the token, which the browser holds as a SameSite=Strict cookie the daemon set
- *  - so nothing here ever handles it after the unlock. */
+/** unlockedKey is where the read-only toggle is remembered, so a reload does not
+ *  silently re-arm every button on the page. */
+const unlockedKey = 'jccmirror.unlocked';
+
+/** Api is the whole HTTP surface. Every endpoint is open: the dashboard is
+ *  reachable on the LAN and inside the WireGuard tunnel and nowhere else. */
 @Injectable({ providedIn: 'root' })
 export class Api {
-  /** Whether this browser holds the token. Everything that can change something
-   *  is disabled while it is false; what actually enforces it is the daemon. */
-  readonly authed = signal(false);
+  /** Whether the actions are armed. This is a guard rail and nothing more - the
+   *  daemon enforces nothing, so it stops a stray click rather than a stranger.
+   *  It starts locked for that reason: read-only is the safe thing to land on. */
+  readonly unlocked = signal(readUnlocked());
 
   async get<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
     const url = new URL(path, location.origin);
@@ -57,7 +61,6 @@ export class Api {
 
   private async request<T>(path: string, init: RequestInit): Promise<T> {
     const res = await fetch(path, { ...init, credentials: 'same-origin' });
-    if (res.status === 401) this.authed.set(false);
 
     const text = await res.text();
     const parsed = text ? (JSON.parse(text) as unknown) : null;
@@ -71,22 +74,20 @@ export class Api {
     return parsed as T;
   }
 
-  // ---- session ----------------------------------------------------------
+  // ---- the read-only toggle ---------------------------------------------
 
-  async session(): Promise<boolean> {
-    const { authed } = await this.get<{ authed: boolean }>('/api/session');
-    this.authed.set(authed);
-    return authed;
+  setUnlocked(v: boolean): void {
+    this.unlocked.set(v);
+    try {
+      localStorage.setItem(unlockedKey, v ? '1' : '0');
+    } catch {
+      // A browser that refuses storage still gets the toggle, just not across
+      // reloads.
+    }
   }
 
-  async login(token: string): Promise<void> {
-    await this.post('/api/login', { token });
-    this.authed.set(true);
-  }
-
-  async logout(): Promise<void> {
-    await this.post('/api/logout');
-    this.authed.set(false);
+  toggleUnlocked(): void {
+    this.setUnlocked(!this.unlocked());
   }
 
   // ---- read views -------------------------------------------------------
@@ -131,7 +132,7 @@ export class Api {
   bandwidth = (span: string, hours?: number) =>
     this.get<BandwidthView>('/api/bandwidth', { span, hours });
 
-  // ---- actions, all of which need the token -----------------------------
+  // ---- actions, all of which the toggle gates ---------------------------
 
   setConfig = (values: Record<string, string>) =>
     this.post<{ changed: string[]; status: Status }>('/api/config', values);
@@ -178,4 +179,14 @@ export class Api {
    *  in the audit trail beside every other change. The scheduler re-reads it
    *  every tick, so a run it started stops by itself. */
   setAutomatic = (on: boolean) => this.setConfig({ 'schedule.automatic': String(on) });
+}
+
+/** readUnlocked defaults to locked: anything unreadable, absent or written by an
+ *  older build lands on read-only rather than on armed. */
+function readUnlocked(): boolean {
+  try {
+    return localStorage.getItem(unlockedKey) === '1';
+  } catch {
+    return false;
+  }
 }

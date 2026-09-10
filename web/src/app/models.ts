@@ -367,9 +367,6 @@ export interface DiagnosticsView {
   nonNfcNames: number;
   dataDir: string;
   log: LogLine[];
-  /** The container log is where the token is printed, so the tail is the one
-   *  read view that needs it back before it will answer. */
-  logLocked?: boolean;
 }
 
 /** UpdateStatus is the self-updater panel: what is running, what the share has,

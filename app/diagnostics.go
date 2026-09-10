@@ -38,12 +38,9 @@ type DiagnosticsView struct {
 	NonNFC  int64               `json:"nonNfcNames"`
 	DataDir string              `json:"dataDir"`
 
-	// Log is the only part of any read view that needs the token. It is the
-	// container's log, and a container log is where secrets are printed - the
-	// token itself among them, which would otherwise be readable out of the
-	// dashboard it unlocks.
-	Log       []logs.Line `json:"log"`
-	LogLocked bool        `json:"logLocked,omitempty"`
+	// Log is the container's own log, which on a Synology is exactly the place an
+	// operator cannot easily get to (DESIGN.md §4).
+	Log []logs.Line `json:"log"`
 }
 
 // PairDiagnostics is the per-pair half: where it lands and how much room is left
@@ -87,11 +84,7 @@ func (a *App) handleGetDiagnostics(w http.ResponseWriter, r *http.Request) {
 		view.NonNFC = client.NonNFCNames()
 	}
 
-	if a.authenticated(r) {
-		view.Log, _ = a.log.Tail(intParam64(r, "afterLog", 0))
-	} else {
-		view.LogLocked = true
-	}
+	view.Log, _ = a.log.Tail(intParam64(r, "afterLog", 0))
 	writeJSON(w, http.StatusOK, view)
 }
 
@@ -105,9 +98,9 @@ type RemoteListing struct {
 	Entries []remote.Entry `json:"entries"`
 }
 
-// handleRemoteList is the raw PROPFIND explorer. It reads and changes nothing, so
-// it needs no token - but it does cost the publisher a request, which is why it
-// lists one directory rather than walking.
+// handleRemoteList is the raw PROPFIND explorer. It changes nothing, but it does
+// cost the publisher a request, which is why it lists one directory rather than
+// walking.
 func (a *App) handleRemoteList(w http.ResponseWriter, r *http.Request) {
 	client, err := a.Remote()
 	if err != nil {

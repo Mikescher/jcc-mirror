@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"net"
@@ -14,11 +13,6 @@ import (
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
-// tokenCookie carries the bearer token for the browser, so the dashboard holds it
-// nowhere a script can read it. SameSite=Strict is the CSRF story: there is no
-// CORS and no cross-site request that could carry it (DESIGN.md §4).
-const tokenCookie = "jccmirror_token"
-
 // Handler builds the dashboard: the JSON API, the live stream and the built
 // Angular app. Both listeners - the LAN one and the one inside the tunnel - serve
 // this same handler.
@@ -26,7 +20,6 @@ func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", a.handleHealth)
-	mux.HandleFunc("GET /api/session", a.handleSession)
 	mux.HandleFunc("GET /api/status", a.handleStatus)
 	mux.HandleFunc("GET /api/schedule", a.handleGetSchedule)
 	mux.HandleFunc("GET /api/config", a.handleGetConfig)
@@ -44,71 +37,29 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/remote/list", a.handleRemoteList)
 	mux.HandleFunc("GET /api/stream", a.handleStream)
 
-	mux.HandleFunc("POST /api/login", a.handleLogin)
-	mux.HandleFunc("POST /api/logout", a.handleLogout)
-	mux.HandleFunc("POST /api/config", a.requireToken(a.handleSetConfig))
-	mux.HandleFunc("POST /api/remote/probe", a.requireToken(a.handleProbe))
-	mux.HandleFunc("POST /api/diagnostics/ping", a.requireToken(a.handlePing))
-	mux.HandleFunc("POST /api/diagnostics/throughput", a.requireToken(a.handleThroughput))
-	mux.HandleFunc("POST /api/notify/test", a.requireToken(a.handleTestNotification))
+	mux.HandleFunc("POST /api/config", a.handleSetConfig)
+	mux.HandleFunc("POST /api/remote/probe", a.handleProbe)
+	mux.HandleFunc("POST /api/diagnostics/ping", a.handlePing)
+	mux.HandleFunc("POST /api/diagnostics/throughput", a.handleThroughput)
+	mux.HandleFunc("POST /api/notify/test", a.handleTestNotification)
 
-	mux.HandleFunc("POST /api/pairs", a.requireToken(a.handleCreatePair))
-	mux.HandleFunc("POST /api/pairs/update", a.requireToken(a.handleUpdatePair))
-	mux.HandleFunc("POST /api/pairs/delete", a.requireToken(a.handleDeletePair))
-	mux.HandleFunc("POST /api/pairs/deletions", a.requireToken(a.handleDecideDeletion))
-	mux.HandleFunc("POST /api/pairs/database/rollback", a.requireToken(a.handleRollbackDatabase))
-	mux.HandleFunc("POST /api/trash/restore", a.requireToken(a.handleRestoreTrash))
-	mux.HandleFunc("POST /api/runs", a.requireToken(a.handleStartRun))
-	mux.HandleFunc("POST /api/runs/cancel", a.requireToken(a.handleCancelRun))
-	mux.HandleFunc("POST /api/update/check", a.requireToken(a.handleCheckUpdate))
-	mux.HandleFunc("POST /api/update/apply", a.requireToken(a.handleApplyUpdate))
-	mux.HandleFunc("POST /api/update/rollback", a.requireToken(a.handleRollbackUpdate))
+	mux.HandleFunc("POST /api/pairs", a.handleCreatePair)
+	mux.HandleFunc("POST /api/pairs/update", a.handleUpdatePair)
+	mux.HandleFunc("POST /api/pairs/delete", a.handleDeletePair)
+	mux.HandleFunc("POST /api/pairs/deletions", a.handleDecideDeletion)
+	mux.HandleFunc("POST /api/pairs/database/rollback", a.handleRollbackDatabase)
+	mux.HandleFunc("POST /api/trash/restore", a.handleRestoreTrash)
+	mux.HandleFunc("POST /api/runs", a.handleStartRun)
+	mux.HandleFunc("POST /api/runs/cancel", a.handleCancelRun)
+	mux.HandleFunc("POST /api/update/check", a.handleCheckUpdate)
+	mux.HandleFunc("POST /api/update/apply", a.handleApplyUpdate)
+	mux.HandleFunc("POST /api/update/rollback", a.handleRollbackUpdate)
 
 	// Everything else is the single-page app, including the deep links it routes
 	// itself. It is registered last so no API path can be shadowed by it.
 	mux.Handle("GET /", a.uiHandler())
 
 	return noStore(mux)
-}
-
-// handleSession says whether this browser holds the token. The dashboard uses it
-// to draw a lock rather than to decide anything: what actually enforces the token
-// is requireToken on every mutating route (DESIGN.md §4, S3).
-func (a *App) handleSession(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{"authed": a.authenticated(r)})
-}
-
-// requireToken guards everything that changes something. An unauthenticated
-// "force replace" or "approve deletion" reachable from anything that can see the
-// LAN or the WG address is not an acceptable default (DESIGN.md §4, S3).
-func (a *App) requireToken(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !a.authenticated(r) {
-			a.fail(w, r, http.StatusUnauthorized, errors.New("this action needs the dashboard token; it is printed to the container log at startup"))
-			return
-		}
-		next(w, r)
-	}
-}
-
-func (a *App) authenticated(r *http.Request) bool {
-	want, err := a.store.ConfigGet(r.Context(), store.KeyDashboardToken)
-	if err != nil || want == "" {
-		return false
-	}
-
-	got := ""
-	if h := r.Header.Get("Authorization"); h != "" {
-		if v, ok := strings.CutPrefix(h, "Bearer "); ok {
-			got = strings.TrimSpace(v)
-		}
-	}
-	if got == "" {
-		if c, err := r.Cookie(tokenCookie); err == nil {
-			got = c.Value
-		}
-	}
-	return got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 // noStore keeps the API out of every cache: it is all live state, and a stale
@@ -212,46 +163,6 @@ func (a *App) handleGetEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, events)
-}
-
-// handleLogin exchanges the token for a cookie. It is not a session: the cookie
-// holds the token itself, and there is nothing to invalidate but the cookie. A
-// cookie rather than a header because the dashboard then never has to keep the
-// token anywhere a script can read it.
-func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
-	// readFields rather than FormValue: the dashboard posts JSON and curl posts a
-	// form, and both have to work.
-	fields, err := readFields(w, r)
-	if err != nil {
-		a.fail(w, r, http.StatusBadRequest, err)
-		return
-	}
-
-	token := strings.TrimSpace(fields["token"])
-	want, err := a.store.ConfigGet(r.Context(), store.KeyDashboardToken)
-	if err != nil {
-		a.fail(w, r, http.StatusInternalServerError, err)
-		return
-	}
-	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(want)) != 1 {
-		a.fail(w, r, http.StatusUnauthorized, errors.New("that is not the token from the container log"))
-		return
-	}
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     tokenCookie,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int((30 * 24 * time.Hour).Seconds()),
-	})
-	writeJSON(w, http.StatusOK, map[string]bool{"authed": true})
-}
-
-func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: tokenCookie, Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	writeJSON(w, http.StatusOK, map[string]bool{"authed": false})
 }
 
 // handleSetConfig writes settings and re-applies them. Accepts a JSON object or
@@ -418,8 +329,8 @@ func readSettings(w http.ResponseWriter, r *http.Request) (map[string]string, er
 	return out, nil
 }
 
-// actorOf labels an audit row. There are no user accounts - one token, one
-// operator - so the address is the only thing that distinguishes two of them.
+// actorOf labels an audit row. There are no user accounts, so the address is the
+// only thing that distinguishes two operators.
 func actorOf(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
