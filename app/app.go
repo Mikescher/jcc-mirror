@@ -145,7 +145,7 @@ func (a *App) Start(ctx context.Context) error {
 	a.baseCtx = ctx
 	a.mu.Unlock()
 
-	created, err := a.store.EnsureGenerated(ctx, generateSetting)
+	created, err := a.store.EnsureSeeded(ctx, generateSetting)
 	if err != nil {
 		return err
 	}
@@ -154,7 +154,7 @@ func (a *App) Start(ctx context.Context) error {
 	}
 
 	if pub, err := a.PublicKey(ctx); err == nil {
-		a.log.Infof("wg: our public key is %s - paste it into the rootserver's peer entry", pub)
+		a.log.Infof("wg: our public key is %s", pub)
 	}
 
 	a.Event(ctx, store.LevelInfo, store.KindStartup, "jcc-mirror started", map[string]any{
@@ -269,7 +269,7 @@ func (a *App) openTunnelLocked(ctx context.Context, cfg tunnelSettings) {
 	}
 
 	a.tunnel, a.tunnelCfg, a.tunnelErr = tun, cfg, nil
-	a.log.Infof("wg: up, %v -> %s, mtu %d", tun.Addrs(), tun.Endpoint(), wg.DefaultMTU)
+	a.log.Infof("wg: up, %v -> %s, mtu %d", tun.Addrs(), tun.Endpoint(), cfg.mtu)
 
 	if a.handler != nil {
 		a.serveTunnelLocked()
@@ -368,8 +368,9 @@ func (a *App) Remote() (*webdav.Client, error) {
 	return a.remote, nil
 }
 
-// PublicKey is the half of our WireGuard identity that has to be pasted into the
-// rootserver's peer entry.
+// PublicKey is the half of our WireGuard identity the rootserver knows us by. It
+// is read-only information: it follows from the private key, and checking it
+// against the server's peer entry is how a mistyped import is caught.
 func (a *App) PublicKey(ctx context.Context) (string, error) {
 	priv, err := a.store.ConfigGet(ctx, store.KeyWGPrivateKey)
 	if err != nil {
@@ -513,6 +514,8 @@ type tunnelSettings struct {
 	addresses    string
 	allowedIPs   string
 	dns          string
+	mtu          int
+	keepalive    int
 }
 
 func tunnelSettingsOf(v store.Values) tunnelSettings {
@@ -524,6 +527,8 @@ func tunnelSettingsOf(v store.Values) tunnelSettings {
 		addresses:    strings.TrimSpace(v.Get(store.KeyWGAddress)),
 		allowedIPs:   strings.TrimSpace(v.Get(store.KeyWGAllowedIPs)),
 		dns:          strings.TrimSpace(v.Get(store.KeyWGDNS)),
+		mtu:          v.Int(store.KeyWGMTU),
+		keepalive:    v.Int(store.KeyWGKeepalive),
 	}
 }
 
@@ -543,8 +548,8 @@ func (t tunnelSettings) wgConfig(logf func(string, ...any)) wg.Config {
 		Addresses:     t.addresses,
 		AllowedIPs:    t.allowedIPs,
 		DNS:           t.dns,
-		Keepalive:     wg.DefaultKeepalive,
-		MTU:           wg.DefaultMTU,
+		Keepalive:     t.keepalive,
+		MTU:           t.mtu,
 		Logf:          logf,
 	}
 }

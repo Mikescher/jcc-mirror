@@ -137,6 +137,15 @@ export class Api {
   setConfig = (values: Record<string, string>) =>
     this.post<{ changed: string[]; status: Status }>('/api/config', values);
 
+  /** Spreads a wg-quick file over the tunnel settings. `ignored` names the
+   *  directives the file carried that a userspace tunnel cannot honour, which is
+   *  worth showing rather than dropping quietly. */
+  importWireguard = (config: string) =>
+    this.post<{ changed: string[]; ignored?: string[]; status: Status }>(
+      '/api/config/wireguard/import',
+      { config },
+    );
+
   probeRemote = () => this.post<Record<string, unknown>>('/api/remote/probe');
 
   /** Ignores the per-event toggles: pressing it is the request. Without it a

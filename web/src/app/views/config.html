@@ -12,8 +12,7 @@
   <p class="note">
     Everything jcc-mirror can be told is on this page. There is no config file and nothing is read
     from the environment: every setting lives in the database, takes effect the moment it is saved,
-    and is recorded in the trail at the bottom. The one generated setting is not a field — the
-    WireGuard private key never leaves the data volume.
+    and is recorded in the trail at the bottom.
   </p>
 
   @if (error()) {
@@ -42,11 +41,61 @@
 
         @if (group.name === 'Tunnel') {
           <div class="card">
+            <div class="k">Import the config the server gave you</div>
+            <p class="note">
+              Paste the whole WireGuard client config here — the one the server generated, private
+              key and all. It fills every field below in one go. Directives a userspace tunnel
+              cannot honour, such as <span class="mono">PostUp</span>, are skipped and named back to
+              you. The fields below are the manual alternative.
+            </p>
+            <textarea
+              rows="10"
+              spellcheck="false"
+              autocomplete="off"
+              class="wgimport"
+              placeholder="[Interface]&#10;PrivateKey = …&#10;Address = 10.13.13.3/32&#10;DNS = 10.13.13.1&#10;&#10;[Peer]&#10;PublicKey = …&#10;AllowedIPs = 0.0.0.0/0, ::/0&#10;Endpoint = vpn.example.com:51820&#10;PersistentKeepalive = 25"
+              [value]="importText()"
+              [disabled]="!unlocked()"
+              (input)="importText.set($any($event.target).value)"
+            ></textarea>
+            <div class="row">
+              <button
+                type="button"
+                [disabled]="!unlocked() || importing() || !importText().trim()"
+                (click)="importWireguard()"
+              >
+                Import
+              </button>
+              @if (!unlocked()) {
+                <span class="note">Press Unlock to import.</span>
+              }
+            </div>
+
+            @if (importError()) {
+              <div class="banner">{{ importError() }}</div>
+            }
+            @if (imported(); as keys) {
+              <p class="note">
+                @if (keys.length) {
+                  Set <span class="mono">{{ keys.join(', ') }}</span
+                  >.
+                } @else {
+                  That config is what was already stored, so nothing changed.
+                }
+                @if (importIgnored().length) {
+                  Skipped <span class="mono">{{ importIgnored().join(', ') }}</span
+                  >: this tunnel has no host side for them to act on.
+                }
+              </p>
+            }
+          </div>
+
+          <div class="card">
             <div class="k">Our public key</div>
             <div class="v mono break">{{ live.status()?.publicKey || 'not generated yet' }}</div>
             <p class="note">
-              Paste this into the rootserver's peer entry. The private half is generated at first
-              start and never leaves the data volume, which is why there is no field for it.
+              Derived from the private key below, so it is worth a glance: it has to match the peer
+              entry the WireGuard server holds for this container.
             </p>
           </div>
         }

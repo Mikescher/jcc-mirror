@@ -57,10 +57,12 @@ func TestConfigValidation(t *testing.T) {
 	s := newStore(t)
 
 	cases := map[string]struct{ key, value string }{
-		"default route":  {KeyWGAllowedIPs, "0.0.0.0/0"},
+		"not a cidr":     {KeyWGAllowedIPs, "everything"},
 		"endpoint":       {KeyWGEndpoint, "rootserver"},
 		"not base64":     {KeyWGPeerKey, "definitely not a key"},
 		"short key":      {KeyWGPeerKey, "aGVsbG8="},
+		"mtu":            {KeyWGMTU, "9"},
+		"keepalive":      {KeyWGKeepalive, "-1"},
 		"scheme missing": {KeyRemoteURL, "10.13.13.2:5005/media"},
 		"timezone":       {KeyTimezone, "Middle/Earth"},
 	}
@@ -75,6 +77,19 @@ func TestConfigValidation(t *testing.T) {
 	}
 }
 
+// A default route is what a server-generated config almost always carries, and
+// this tunnel is a userspace netstack with no host routing table behind it: 0.0.0.0/0
+// only says that everything sent through the tunnel goes to this peer.
+func TestConfigAcceptsADefaultRoute(t *testing.T) {
+	s := newStore(t)
+
+	if _, err := s.ConfigSet(context.Background(), map[string]string{
+		KeyWGAllowedIPs: "0.0.0.0/0, ::/0",
+	}, "test"); err != nil {
+		t.Fatalf("ConfigSet: %v", err)
+	}
+}
+
 // A batch is all-or-nothing: half-applied tunnel settings would open a tunnel
 // nobody asked for.
 func TestConfigSetIsAtomic(t *testing.T) {
@@ -83,7 +98,7 @@ func TestConfigSetIsAtomic(t *testing.T) {
 
 	_, err := s.ConfigSet(ctx, map[string]string{
 		KeyWGAddress:    "10.13.13.3/32",
-		KeyWGAllowedIPs: "0.0.0.0/0",
+		KeyWGAllowedIPs: "everything",
 	}, "test")
 	if err == nil {
 		t.Fatal("ConfigSet succeeded, want a validation error")
@@ -139,7 +154,7 @@ func TestConfigAuditMasksSecrets(t *testing.T) {
 	}
 }
 
-func TestEnsureGeneratedRunsOnce(t *testing.T) {
+func TestEnsureSeededRunsOnce(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
 
@@ -152,17 +167,17 @@ func TestEnsureGeneratedRunsOnce(t *testing.T) {
 		return "generated-" + key, nil
 	}
 
-	created, err := s.EnsureGenerated(ctx, gen)
+	created, err := s.EnsureSeeded(ctx, gen)
 	if err != nil {
-		t.Fatalf("EnsureGenerated: %v", err)
+		t.Fatalf("EnsureSeeded: %v", err)
 	}
 	if len(created) == 0 {
 		t.Fatal("nothing was generated")
 	}
 
-	again, err := s.EnsureGenerated(ctx, gen)
+	again, err := s.EnsureSeeded(ctx, gen)
 	if err != nil {
-		t.Fatalf("EnsureGenerated: %v", err)
+		t.Fatalf("EnsureSeeded: %v", err)
 	}
 	if len(again) != 0 {
 		t.Errorf("second run generated %v, want nothing", again)

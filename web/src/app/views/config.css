@@ -35,3 +35,8 @@ details[open] > summary {
 .break {
   word-break: break-all;
 }
+
+textarea.wgimport {
+  width: 100%;
+  margin-bottom: 0.5rem;
+}

@@ -121,9 +121,6 @@ export class ConfigPage {
   readonly groups = computed<Group[]>(() => {
     const byName = new Map<string, ConfigEntry[]>();
     for (const entry of this.config()) {
-      // The private key is generated and never typed: it never leaves the data
-      // volume, and a field for it would only invite pasting one in.
-      if (entry.generated) continue;
       const entries = byName.get(entry.group) ?? [];
       entries.push(entry);
       byName.set(entry.group, entries);
@@ -151,6 +148,14 @@ export class ConfigPage {
   readonly adding = signal(false);
   /** The pair whose removal is waiting to be confirmed; 0 for none. */
   readonly removing = signal(0);
+
+  // ---- the wg-quick importer -----------------------------------------------
+
+  readonly importText = signal('');
+  readonly importing = signal(false);
+  readonly importError = signal('');
+  readonly imported = signal<string[] | undefined>(undefined);
+  readonly importIgnored = signal<string[]>([]);
 
   // ---- the remote probe ----------------------------------------------------
 
@@ -319,6 +324,31 @@ export class ConfigPage {
       this.pairs.set((await this.api.pairs()) ?? []);
     } catch (err) {
       this.fail(err);
+    }
+  }
+
+  // ---- the wg-quick importer -----------------------------------------------
+
+  async importWireguard(): Promise<void> {
+    const config = this.importText();
+    if (!config.trim()) return;
+
+    this.importing.set(true);
+    this.importError.set('');
+    this.imported.set(undefined);
+    this.importIgnored.set([]);
+    try {
+      const res = await this.api.importWireguard(config);
+      this.imported.set(res.changed ?? []);
+      this.importIgnored.set(res.ignored ?? []);
+      this.importText.set('');
+      // The fields below are now the imported values, not what was fetched
+      // before the paste.
+      await this.load();
+    } catch (err) {
+      this.importError.set(err instanceof Error ? err.message : String(err));
+    } finally {
+      this.importing.set(false);
     }
   }
 

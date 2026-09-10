@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"blackforestbytes.com/jcc-mirror/store"
+	"blackforestbytes.com/jcc-mirror/wg"
 )
 
 // Handler builds the dashboard: the JSON API, the live stream and the built
@@ -38,6 +39,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/stream", a.handleStream)
 
 	mux.HandleFunc("POST /api/config", a.handleSetConfig)
+	mux.HandleFunc("POST /api/config/wireguard/import", a.handleImportWireguard)
 	mux.HandleFunc("POST /api/remote/probe", a.handleProbe)
 	mux.HandleFunc("POST /api/diagnostics/ping", a.handlePing)
 	mux.HandleFunc("POST /api/diagnostics/throughput", a.handleThroughput)
@@ -100,7 +102,6 @@ type configEntry struct {
 	Help      string `json:"help,omitempty"`
 	Value     string `json:"value,omitempty"`
 	Secret    bool   `json:"secret,omitempty"`
-	Generated bool   `json:"generated,omitempty"`
 	Required  bool   `json:"required,omitempty"`
 	Set       bool   `json:"set"`
 }
@@ -116,7 +117,7 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	for _, d := range store.Keys() {
 		e := configEntry{
 			Key: d.Name, Group: d.Group, Label: d.Label, Help: d.Help,
-			Secret: d.Secret, Generated: d.Generated, Required: d.Required,
+			Secret: d.Secret, Required: d.Required,
 			Set: strings.TrimSpace(values.Get(d.Name)) != "",
 		}
 		if !d.Secret {
@@ -178,6 +179,57 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	changed, ok := a.applyConfig(w, r, values)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"changed": changed, "status": a.Status(r.Context())})
+}
+
+// handleImportWireguard takes the config file the WireGuard server generated and
+// spreads it over the tunnel settings. Everything the file can say is written,
+// blanks included: the file is the whole truth about the tunnel, so a preshared
+// key it does not mention has to clear the one that is stored.
+func (a *App) handleImportWireguard(w http.ResponseWriter, r *http.Request) {
+	fields, err := readFields(w, r)
+	if err != nil {
+		a.fail(w, r, http.StatusBadRequest, err)
+		return
+	}
+
+	parsed, err := wg.ParseQuick(fields["config"])
+	if err != nil {
+		a.fail(w, r, http.StatusBadRequest, err)
+		return
+	}
+
+	changed, ok := a.applyConfig(w, r, map[string]string{
+		store.KeyWGPrivateKey:   parsed.Config.PrivateKey,
+		store.KeyWGPeerKey:      parsed.Config.PeerPublicKey,
+		store.KeyWGPresharedKey: parsed.Config.PresharedKey,
+		store.KeyWGEndpoint:     parsed.Config.Endpoint,
+		store.KeyWGAddress:      parsed.Config.Addresses,
+		store.KeyWGAllowedIPs:   parsed.Config.AllowedIPs,
+		store.KeyWGDNS:          parsed.Config.DNS,
+		store.KeyWGMTU:          strconv.Itoa(parsed.Config.MTU),
+		store.KeyWGKeepalive:    strconv.Itoa(parsed.Config.Keepalive),
+	})
+	if !ok {
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"changed": changed,
+		"ignored": parsed.Ignored,
+		"status":  a.Status(r.Context()),
+	})
+}
+
+// applyConfig is the tail every save shares: write the settings, record what
+// actually moved, and re-apply it. A file pasted into the importer therefore
+// lands in the audit trail and re-opens the tunnel exactly as a typed field
+// does. It answers the request itself on failure and reports whether it did.
+func (a *App) applyConfig(w http.ResponseWriter, r *http.Request, values map[string]string) ([]string, bool) {
 	changed, err := a.store.ConfigSet(r.Context(), values, actorOf(r))
 	if err != nil {
 		var invalid *store.ValidationError
@@ -186,7 +238,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			code = http.StatusBadRequest
 		}
 		a.fail(w, r, code, err)
-		return
+		return nil, false
 	}
 
 	if len(changed) > 0 {
@@ -196,8 +248,7 @@ func (a *App) handleSetConfig(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"keys": changed})
 		a.Reload(r.Context())
 	}
-
-	writeJSON(w, http.StatusOK, map[string]any{"changed": changed, "status": a.Status(r.Context())})
+	return changed, true
 }
 
 // handleProbe lists the remote root once and records the answer as an event, so

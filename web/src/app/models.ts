@@ -83,7 +83,6 @@ export interface ConfigEntry {
   help?: string;
   value?: string;
   secret?: boolean;
-  generated?: boolean;
   required?: boolean;
   set: boolean;
 }

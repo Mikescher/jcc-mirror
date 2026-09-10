@@ -46,7 +46,7 @@ type Config struct {
 	Addresses     string // comma-separated tunnel addresses, with or without a /prefix
 	AllowedIPs    string // comma-separated CIDRs routed into the tunnel
 	DNS           string // comma-separated resolvers reachable through the tunnel, optional
-	Keepalive     int    // seconds, -1 disables
+	Keepalive     int    // seconds between keepalives; 0 sends none
 	MTU           int
 	ListenPort    int                           // 0 picks a random source port
 	Logf          func(format string, a ...any) // wireguard-go device log, nil discards it
@@ -191,7 +191,8 @@ func GenerateKey() (string, error) {
 }
 
 // PublicKey derives the base64 public key belonging to a base64 private key. It
-// is what has to be pasted into the rootserver's peer entry for this container.
+// is the half of the identity the WireGuard server knows this container by, so
+// it is what an imported config is checked against.
 func PublicKey(privateKey string) (string, error) {
 	raw, err := decodeKey(privateKey, "private key")
 	if err != nil {
@@ -230,12 +231,8 @@ func uapiConfig(cfg Config, endpoint netip.AddrPort, allowed []netip.Prefix) (st
 		fmt.Fprintf(&b, "preshared_key=%s\n", psk)
 	}
 	fmt.Fprintf(&b, "endpoint=%s\n", endpoint.String())
-	if cfg.Keepalive >= 0 {
-		ka := cfg.Keepalive
-		if ka == 0 {
-			ka = DefaultKeepalive
-		}
-		fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", ka)
+	if cfg.Keepalive > 0 {
+		fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", cfg.Keepalive)
 	}
 	for _, p := range allowed {
 		fmt.Fprintf(&b, "allowed_ip=%s\n", p.String())

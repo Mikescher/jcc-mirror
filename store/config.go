@@ -29,6 +29,8 @@ const (
 	KeyWGAddress      = "wg.address"
 	KeyWGAllowedIPs   = "wg.allowed_ips"
 	KeyWGDNS          = "wg.dns"
+	KeyWGMTU          = "wg.mtu"
+	KeyWGKeepalive    = "wg.keepalive"
 
 	KeyRemoteURL      = "remote.url"
 	KeyRemoteUser     = "remote.user"
@@ -118,7 +120,7 @@ type KeyDef struct {
 	Help      string
 	Default   string
 	Secret    bool // masked in the UI and in the audit trail
-	Generated bool // created at first start, never typed by hand
+	Seeded    bool // created at first start too, but meant to be overwritten
 	Required  bool // the tunnel or the remote does not come up without it
 	Validate  func(string) error
 }
@@ -126,11 +128,11 @@ type KeyDef struct {
 var keyDefs = []KeyDef{
 	{
 		Name: KeyWGPrivateKey, Group: "Tunnel", Label: "Private key",
-		Help:      "Generated at first start and never leaves the data volume; paste the public half into the rootserver's peer entry.",
-		Secret:    true,
-		Generated: true,
-		Required:  true,
-		Validate:  validateKey,
+		Help:     "The PrivateKey from the [Interface] section of the config the WireGuard server generated for you. One is made up at first start so the tunnel has an identity at all; the server's peer entry only knows the one it issued.",
+		Secret:   true,
+		Seeded:   true,
+		Required: true,
+		Validate: validateKey,
 	},
 	{
 		Name: KeyWGPeerKey, Group: "Tunnel", Label: "Rootserver public key",
@@ -152,9 +154,9 @@ var keyDefs = []KeyDef{
 	},
 	{
 		Name: KeyWGAllowedIPs, Group: "Tunnel", Label: "Allowed IPs",
-		Help:     "CIDRs routed into the tunnel. Must cover the whole WG subnet, since the publisher is reached via the rootserver - but not 0.0.0.0/0.",
+		Help:     "CIDRs routed into the tunnel. Must cover the whole WG subnet, since the publisher is reached via the rootserver. A default route is fine: the tunnel is a userspace netstack with no host routing table behind it, so 0.0.0.0/0 only means that everything sent through the tunnel goes to this peer.",
 		Required: true,
-		Validate: validateAllowedIPs,
+		Validate: validateAddrList,
 	},
 	{
 		Name: KeyWGPresharedKey, Group: "Tunnel", Label: "Preshared key",
@@ -166,6 +168,18 @@ var keyDefs = []KeyDef{
 		Name: KeyWGDNS, Group: "Tunnel", Label: "DNS",
 		Help:     "Resolvers reachable through the tunnel. Only needed when the WebDAV URL uses a hostname.",
 		Validate: validateOptionalAddrList,
+	},
+	{
+		Name: KeyWGMTU, Group: "Tunnel", Label: "MTU",
+		Help:     "The tunnel's MTU. Wrong is the usual cause of \"WireGuard is mysteriously slow\", so take what the server's config says over a guess.",
+		Default:  "1420",
+		Validate: validateMTU,
+	},
+	{
+		Name: KeyWGKeepalive, Group: "Tunnel", Label: "Persistent keepalive",
+		Help:     "Seconds between keepalives, 0 for none. Both ends of this topology sit behind NAT, so without one the tunnel only works in the direction it last sent.",
+		Default:  "25",
+		Validate: validateKeepalive,
 	},
 
 	{
@@ -631,14 +645,14 @@ func (s *Store) ConfigAudit(ctx context.Context, limit int) ([]AuditEntry, error
 	return out, rows.Err()
 }
 
-// EnsureGenerated creates the settings that are never typed by hand - the
-// WireGuard private key - and returns the names of the ones it had to create.
-// generate is called per key; it exists so the wg package stays out of this
-// one's imports.
-func (s *Store) EnsureGenerated(ctx context.Context, generate func(key string) (string, error)) ([]string, error) {
+// EnsureSeeded fills in the settings that must not start empty - the WireGuard
+// private key, which is a stand-in until the one the server issued is imported -
+// and returns the names of the ones it had to create. generate is called per key;
+// it exists so the wg package stays out of this one's imports.
+func (s *Store) EnsureSeeded(ctx context.Context, generate func(key string) (string, error)) ([]string, error) {
 	var created []string
 	for _, d := range keyDefs {
-		if !d.Generated {
+		if !d.Seeded {
 			continue
 		}
 		cur, err := s.ConfigGet(ctx, d.Name)
@@ -719,21 +733,28 @@ func validateOptionalAddrList(s string) error {
 	return validateAddrList(s)
 }
 
-// validateAllowedIPs refuses a default route. Routing everything into the tunnel
-// would make the rootserver this container's way out to the internet, which is
-// not what a mirror wants and is a slow, surprising way to discover it.
-func validateAllowedIPs(s string) error {
-	if err := validateAddrList(s); err != nil {
-		return err
+// validateMTU takes a plausible tunnel MTU. The bounds are wide because the right
+// value depends on the path; what they catch is a number that could not carry a
+// packet at all.
+func validateMTU(s string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return fmt.Errorf("not a number: %w", err)
 	}
-	for _, f := range splitList(s) {
-		p, err := netip.ParsePrefix(f)
-		if err != nil {
-			continue
-		}
-		if p.Bits() == 0 {
-			return fmt.Errorf("%q would make the tunnel this container's default route; route the WG subnet, not everything", f)
-		}
+	if n < 576 || n > 9000 {
+		return errors.New("must be between 576 and 9000")
+	}
+	return nil
+}
+
+// validateKeepalive takes the seconds between keepalives, where 0 sends none.
+func validateKeepalive(s string) error {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return fmt.Errorf("not a number: %w", err)
+	}
+	if n < 0 || n > 65535 {
+		return errors.New("must be between 0 and 65535 seconds")
 	}
 	return nil
 }

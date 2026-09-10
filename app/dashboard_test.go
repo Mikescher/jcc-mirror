@@ -1,11 +1,13 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +15,14 @@ import (
 
 	"blackforestbytes.com/jcc-mirror/notify"
 	"blackforestbytes.com/jcc-mirror/store"
+	"blackforestbytes.com/jcc-mirror/wg"
+)
+
+// The two keys the WireGuard fixtures are written with: base64 of 32 identical
+// bytes, which is a valid curve25519 key and nothing that could be a real one.
+const (
+	wgTestPrivate = "ERERERERERERERERERERERERERERERERERERERERERE="
+	wgTestPeer    = "IiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiI="
 )
 
 // TestDashboardIsServedFromTheBinary: the deployment is one file and one volume,
@@ -379,3 +389,165 @@ func waitForMessage(t *testing.T, ch <-chan map[string]any) map[string]any {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// TestImportingTheServersWireguardConfig is the whole point of the importer: the
+// WireGuard server hands out a finished client config, and pasting it has to fill
+// the Tunnel group in one go - including the private key it assigned, which is
+// the one field the old flow had nowhere to put.
+func TestImportingTheServersWireguardConfig(t *testing.T) {
+	a, h := newApp(t)
+	ctx := context.Background()
+
+	before, err := a.store.ConfigGet(ctx, store.KeyWGPrivateKey)
+	if err != nil {
+		t.Fatalf("ConfigGet: %v", err)
+	}
+	if before == "" {
+		t.Fatal("no private key was seeded at first start, so the tunnel has no identity at all")
+	}
+
+	const file = `[Interface]
+PrivateKey = ` + wgTestPrivate + `
+Address = 10.13.13.3/32, fd00::3/128
+DNS = 10.13.13.1
+MTU = 1380
+ListenPort = 51820
+PostUp = iptables -A FORWARD -j ACCEPT
+
+[Peer]
+PublicKey = ` + wgTestPeer + `
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = 203.0.113.7:51820
+PersistentKeepalive = 21
+`
+
+	var res struct {
+		Changed []string `json:"changed"`
+		Ignored []string `json:"ignored"`
+		Status  Status   `json:"status"`
+	}
+	rec := postImport(t, h, file)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import = %d: %s", rec.Code, rec.Body)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	for _, key := range []string{
+		store.KeyWGPrivateKey, store.KeyWGPeerKey, store.KeyWGEndpoint,
+		store.KeyWGAddress, store.KeyWGAllowedIPs, store.KeyWGDNS,
+		store.KeyWGMTU, store.KeyWGKeepalive,
+	} {
+		if !slices.Contains(res.Changed, key) {
+			t.Errorf("%s is not in changed = %v", key, res.Changed)
+		}
+	}
+	if strings.Join(res.Ignored, ",") != "ListenPort,PostUp" {
+		t.Errorf("ignored = %v, want the two host directives", res.Ignored)
+	}
+
+	for key, want := range map[string]string{
+		store.KeyWGPrivateKey: wgTestPrivate,
+		store.KeyWGPeerKey:    wgTestPeer,
+		store.KeyWGEndpoint:   "203.0.113.7:51820",
+		store.KeyWGAddress:    "10.13.13.3/32, fd00::3/128",
+		store.KeyWGAllowedIPs: "0.0.0.0/0, ::/0",
+		store.KeyWGDNS:        "10.13.13.1",
+		store.KeyWGMTU:        "1380",
+		store.KeyWGKeepalive:  "21",
+	} {
+		got, err := a.store.ConfigGet(ctx, key)
+		if err != nil {
+			t.Fatalf("ConfigGet %s: %v", key, err)
+		}
+		if got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+
+	// The import is a configuration change like any other, so it went through the
+	// audit trail and the derived public key follows the imported private half.
+	entries, err := a.store.ConfigAudit(ctx, 50)
+	if err != nil {
+		t.Fatalf("ConfigAudit: %v", err)
+	}
+	for _, e := range entries {
+		if e.Key == store.KeyWGPrivateKey && e.New != store.SecretMask {
+			t.Errorf("the audit trail recorded the private key as %q", e.New)
+		}
+	}
+	pub, err := a.PublicKey(ctx)
+	if err != nil {
+		t.Fatalf("PublicKey: %v", err)
+	}
+	if res.Status.PublicKey != pub {
+		t.Errorf("the answer reports %q as our public key, but it is now %q", res.Status.PublicKey, pub)
+	}
+}
+
+// A config that will not parse is answered with the message itself, because the
+// dashboard shows it to whoever pasted the file.
+func TestImportingABrokenWireguardConfig(t *testing.T) {
+	_, h := newApp(t)
+
+	rec := postImport(t, h, "[Interface]\nAddress = 10.13.13.3/32\n")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("import = %d: %s", rec.Code, rec.Body)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.Contains(body["error"], "PrivateKey") {
+		t.Errorf("error = %q; it has to name the field that is missing", body["error"])
+	}
+}
+
+func postImport(t *testing.T, h http.Handler, config string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"config": config})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/config/wireguard/import", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	return do(t, h, req)
+}
+
+// The tunnel is re-opened only when the settings differ from the running ones, so
+// a key missing from that comparison is a setting that silently does nothing
+// until something unrelated is saved.
+func TestTheMTUAndKeepaliveReachTheTunnel(t *testing.T) {
+	base := store.Values{store.KeyWGMTU: "1420", store.KeyWGKeepalive: "25"}
+
+	if cfg := tunnelSettingsOf(base).wgConfig(nil); cfg.MTU != 1420 || cfg.Keepalive != 25 {
+		t.Errorf("wgConfig = mtu %d, keepalive %d", cfg.MTU, cfg.Keepalive)
+	}
+	if tunnelSettingsOf(base) == tunnelSettingsOf(store.Values{store.KeyWGMTU: "1380", store.KeyWGKeepalive: "25"}) {
+		t.Error("a changed MTU compares equal, so the tunnel would keep the old one")
+	}
+	if tunnelSettingsOf(base) == tunnelSettingsOf(store.Values{store.KeyWGMTU: "1420", store.KeyWGKeepalive: "0"}) {
+		t.Error("a changed keepalive compares equal, so the tunnel would keep the old one")
+	}
+}
+
+// The registry deliberately imports nothing, so the two tunnel defaults are
+// spelled out in both places and only this keeps them from drifting apart.
+func TestTunnelDefaultsMatchTheWgPackage(t *testing.T) {
+	for _, c := range []struct {
+		key  string
+		want int
+	}{
+		{store.KeyWGMTU, wg.DefaultMTU},
+		{store.KeyWGKeepalive, wg.DefaultKeepalive},
+	} {
+		d, ok := store.Key(c.key)
+		if !ok {
+			t.Fatalf("%s is not in the registry", c.key)
+		}
+		if d.Default != strconv.Itoa(c.want) {
+			t.Errorf("%s defaults to %q, but wg uses %d", c.key, d.Default, c.want)
+		}
+	}
+}
