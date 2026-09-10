@@ -4,28 +4,28 @@ One-way replication of a jClipCorn collection from the publisher's NAS to the
 subscriber's Synology. See `DESIGN.md` for the design; this README covers what is
 built so far.
 
-**Status: M7, complete.** It mirrors, on a schedule, at a rate you choose; it can
-shrink as well as grow; it handles the jClipCorn database itself; there is a
+**Status: M7, complete.** It mirrors, on a schedule, at a rate you choose; it
+can shrink as well as grow; it handles the jClipCorn database itself; there is a
 dashboard to watch all of it from; and it now replaces its own binary. On top of
 M1's skeleton — sqlite state, a config table with an audit trail, the `Remote`
-interface with a WebDAV implementation and a local fake, an event log and
-`/healthz` — M2's engine — a
-resumable walk that builds the manifest the publisher does not have, a differ, a
-transfer with ranged GETs, `.part` files, verification, an atomic rename and a
-per-file job queue with retries, plus adopt mode for the USB bootstrap — M3's
-scheduler — one 7×24 grid that says both when bytes may move and how fast, a
-shared limiter that a window boundary adjusts mid-transfer, and a free-space
-preflight — M4's deletion behind every guard of `DESIGN.md` §2.5 — and M5's jCC
-pair — hard exclusions that never copy the per-user databases, a lock gate on the
-shared one that is re-checked after the copy, and a numbered backup of every
-database it replaces — there is now the **dashboard**: an Angular build compiled
-into the binary, six views fed by one Server-Sent Events stream, a per-minute
-bandwidth series that rolls itself up rather than growing without bound, every
-action behind the bearer token, and push notifications over SCN coalesced hard
-enough to live inside a daily quota. And on top of all of it, M7's
-**self-update**: a binary fetched from the same share the mirror already reads,
-checked, smoke-run and re-exec'd in place, with a supervisor that puts the old
-one back if the new one will not start.
+interface with an SMB2 implementation and a local fake, an event log and
+`/healthz` — M2's engine — a resumable walk that builds the manifest the
+publisher does not have, a differ, a transfer with bounded reads at an offset,
+`.part` files, verification, an atomic rename and a per-file job queue with
+retries, plus adopt mode for the USB bootstrap — M3's scheduler — one 7×24 grid
+that says both when bytes may move and how fast, a shared limiter that a window
+boundary adjusts mid-transfer, and a free-space preflight — M4's deletion behind
+every guard of `DESIGN.md` §2.5 — and M5's jCC pair — hard exclusions that never
+copy the per-user databases, a lock gate on the shared one that is re-checked
+after the copy, and a numbered backup of every database it replaces — there is
+now the **dashboard**: an Angular build compiled into the binary, six views fed
+by one Server-Sent Events stream, a per-minute bandwidth series that rolls
+itself up rather than growing without bound, a read-only mode that one button in
+the header lifts, and push notifications over SCN coalesced hard enough to live
+inside a daily quota. And on top of all of it, M7's **self-update**: a binary
+fetched from the same share the mirror already reads, checked, smoke-run and
+re-exec'd in place, with a supervisor that puts the old one back if the new one
+will not start.
 
 A pair is additive until it is told otherwise, which is the point: run
 additive-only until the diff is trusted.
@@ -40,50 +40,67 @@ Nothing has to be known before the process starts. The LAN dashboard does not
 depend on the tunnel, so a first boot against an empty database answers on
 `:8080` with the dashboard and an empty Config view:
 
-1. The container log prints the **dashboard token** and this container's
-   **WireGuard public key**. Both are generated on first start; the private half
-   of the key never leaves the data volume.
-2. Paste that public key into the rootserver's peer entry.
-3. Open `http://<synology>:8080`, unlock with the token, and on **Config** fill in
-   the rootserver's public key, its endpoint, this container's tunnel address, the
-   allowed IPs, and the WebDAV URL and credentials.
+1. Open `http://<synology>:8080` and press **Unlock**. Do not publish that port
+   past the LAN: the dashboard has no authentication of its own.
+2. On **Connection** in Config, paste the client config the rootserver generated
+   for this container — `[Interface]` private key and all — into the importer. It
+   fills every tunnel setting in one go: the private key, the rootserver's public
+   key and endpoint, this container's tunnel address, the allowed IPs, DNS, the
+   MTU and the keepalive. Directives a userspace tunnel has no host side to act
+   on — `ListenPort`, `PostUp`, `Table` — are skipped and named back to you.
+   Every one of those fields can be typed instead; the importer only saves the
+   typing.
+3. Under it, fill in the remote: the publisher's address inside the tunnel, the
+   share, the directory inside the share the mirror is rooted at, and a read-only
+   account on his DSM. SMB has no usable anonymous mode, so the account is
+   required even for a share that is open to everyone.
 4. Save. The tunnel comes up in place — no restart — and the same dashboard also
    starts answering on `http://<our-tunnel-address>:8080`, which is how the
    publisher reaches it with no port forward.
 5. **Test the remote** proves the whole path end to end. Its answer lands in the
    event log.
 
-Reading the dashboard needs no token. Changing anything does, including from
-`curl`:
+A private key is made up at first start so the tunnel has an identity before
+anyone has configured one, and the container log prints the public half of
+whatever is stored. It is worth a glance after an import: it has to match the
+peer entry the rootserver holds for this container.
+
+Every endpoint is open, so a setting can be changed from `curl` as easily as from
+the page:
 
 ```bash
-curl -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-     -d '{"remote.url":"http://10.13.13.2:5005/media"}' \
+curl -H 'Content-Type: application/json' \
+     -d '{"remote.host":"10.13.13.2","remote.share":"media"}' \
      http://<synology>:8080/api/config
 ```
 
-The browser holds the token as a `SameSite=Strict`, `HttpOnly` cookie the daemon
-sets, so it is never in a place a script can read; there is no CORS and no
-cross-site request that could carry it.
+There is no credential anywhere in this, which cuts both ways: nothing can be
+stolen out of the browser or forged in it, and nothing stands between a request
+and the daemon either. What scopes the dashboard is the network — the compose
+file maps `:8080` onto the LAN, and the other listener is inside the tunnel — so
+whoever can reach it is already on the inside. The Unlock button is a guard rail
+in the browser and nothing the daemon knows about: it is remembered in
+`localStorage`, it defaults to locked, and what it stops is a stray click, not a
+request.
 
 | Endpoint | |
 |---|---|
 | `GET /` and every route under it | The dashboard. Unknown paths answer with the shell, because the router is on the client |
 | `GET /healthz` | Status as JSON; 503 only when the database has stopped answering |
-| `GET /api/stream` | Server-Sent Events: `state` frames with the status and the running operation, plus `events` and `changes` as they happen. `log` frames go only to a connection that held the token when it opened |
-| `GET /api/status` · `/api/session` · `/api/schedule` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/changes` · `/api/pairs` · `/api/jobs` · `/api/scans` · `/api/trash` · `/api/runs` · `/api/bandwidth` · `/api/diagnostics` · `/api/update` · `/api/remote/list` | Read views. Secrets are never returned; `status` carries the current window and cap |
-| `POST /api/login` · `/api/logout` | Exchanges the token for the cookie, and back |
-| `POST /api/config` · `/api/remote/probe` | Token required |
-| `POST /api/pairs` · `/api/pairs/update` · `/api/pairs/delete` | Token required. JSON or a form; a JSON body may carry one key and changes only that |
-| `POST /api/pairs/deletions` (`id`, `decision`) | Token required. The one click a held deletion waits for |
-| `POST /api/pairs/database/rollback` (`id`, optional `backup`) | Token required. Puts a kept copy of a jcc pair's database back; answers when it is done |
-| `POST /api/trash/restore` (`id`, `path`, optional `day`) | Token required. Takes one file back out of the quarantine |
-| `POST /api/runs` (`kind`, `pair`, optional `force`) | Token required. Answers as soon as the run has started, never when it has finished. `force` is the lock-gate override |
-| `POST /api/runs/cancel` | Token required. Stopping is routine: a walk stays resumable and every transfer keeps its watermark |
+| `GET /api/stream` | Server-Sent Events: `state` frames with the status and the running operation, plus `events` and `changes` as they happen, and `log` frames carrying the container's own log |
+| `GET /api/status` · `/api/schedule` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/changes` · `/api/pairs` · `/api/jobs` · `/api/scans` · `/api/trash` · `/api/runs` · `/api/bandwidth` · `/api/diagnostics` · `/api/update` · `/api/remote/list` | Read views. Secrets are never returned; `status` carries the current window and cap |
+| `POST /api/config` · `/api/remote/probe` | A settings save, and one listing of the remote root to prove the path end to end |
+| `POST /api/config/wireguard/import` (`config`) | A whole wg-quick file, spread over the tunnel settings through that same save; answers with what it changed and what it had to skip |
+| `POST /api/pairs` · `/api/pairs/update` · `/api/pairs/delete` | JSON or a form; a JSON body may carry one key and changes only that |
+| `POST /api/pairs/deletions` (`id`, `decision`) | The one click a held deletion waits for |
+| `POST /api/pairs/database/rollback` (`id`, optional `backup`) | Puts a kept copy of a jcc pair's database back; answers when it is done |
+| `POST /api/trash/restore` (`id`, `path`, optional `day`) | Takes one file back out of the quarantine |
+| `POST /api/runs` (`kind`, `pair`, optional `force`) | Answers as soon as the run has started, never when it has finished. `force` is the lock-gate override |
+| `POST /api/runs/cancel` | Stopping is routine: a walk stays resumable and every transfer keeps its watermark |
 | `GET /api/update` | The self-updater's panel: what is running, what the share has, what the last update did |
-| `POST /api/update/check` · `/api/update/apply` (optional `force`) · `/api/update/rollback` | Token required. Apply and rollback answer as soon as the binary is in place; the daemon then re-execs, so the next request reaches the new process at the same address |
-| `POST /api/diagnostics/ping` · `/api/diagnostics/throughput` | Token required. The M0 measurements, from the page rather than a shell |
-| `POST /api/notify/test` | Token required. Sends one message, ignoring the per-event toggles, and answers with what SCN said |
+| `POST /api/update/check` · `/api/update/apply` (optional `force`) · `/api/update/rollback` | Apply and rollback answer as soon as the binary is in place; the daemon then re-execs, so the next request reaches the new process at the same address |
+| `POST /api/diagnostics/ping` · `/api/diagnostics/throughput` | The M0 measurements, from the page rather than a shell |
+| `POST /api/notify/test` | Sends one message, ignoring the per-event toggles, and answers with what SCN said |
 
 ## The mirror
 
@@ -104,9 +121,11 @@ This is the route to use if the container's shell is awkward to reach, which on 
 Synology it usually is.
 
 **From the CLI.** Every command takes `-data`, so they all work on the same sqlite
-state the daemon runs on, and `-remote-dir` points any of them at a local
+state the daemon runs on, and `-remote-dir` points the mirror at a local
 directory instead of the publisher's share — the whole milestone can be exercised
-with no NAS, no tunnel and no WebDAV server.
+with no NAS and no tunnel. SMB has no in-process server the way HTTP does, which
+is why that flag exists at all: without it nothing here could be run end to end
+except against a real share, and it is what the tests run on.
 
 A pair is one directory over there mapped onto one directory here. Nothing is
 mirrored until one exists:
@@ -157,35 +176,36 @@ is better to find that out before the transfer starts.
 ### How it works, and what it refuses to do
 
 **The scan** builds the manifest that does not exist on the other side: one
-PROPFIND per directory, breadth-first, eight in flight. The frontier is the
-manifest table itself rather than the walker's memory, so a walk interrupted
-after ten minutes — a restart, a Ctrl-C, a transfer window closing —
-resumes where it stopped instead of starting over. `Depth: infinity` is not used
-even where a server honours it: on a tree this size it would return the whole
-collection as one XML document.
+listing per directory — a CREATE and a QUERY_DIRECTORY, one round trip —
+breadth-first, eight in flight, multiplexed over the one session. The frontier is
+the manifest table itself rather than the walker's memory, so a walk interrupted
+after ten minutes — a restart, a Ctrl-C, a transfer window closing — resumes
+where it stopped instead of starting over.
 
 A walk that stops early is `interrupted`, not `failed`, and it is only a
 completed walk that sweeps the manifest rows it did not find. That asymmetry is
 the deletion-safety rule of `DESIGN.md` §2.5: a share that has been unmounted on
-the publisher's side answers every PROPFIND with an empty directory, and a scan
+the publisher's side answers every listing with an empty directory, and a scan
 that finds no files at all is refused rather than believed.
 
 **The diff** is a join between the manifest and local truth, on size and mtime,
-with a two-second tolerance — WebDAV dates carry whole seconds and local ones
-carry nanoseconds, and comparing them for equality would make every file look
+with a two-second tolerance — SMB answers with a FILETIME good to 100 ns, the
+manifest keeps whole milliseconds and the destination volume rounds to whatever
+it rounds to, and comparing the three for equality would make every file look
 changed on every scan, forever. The other two halves of that trap are handled in
 the transfer: the downloaded file is stamped with the publisher's mtime *before*
 the rename, and both sides of the comparison are NFC-normalized so a title with
 an umlaut that passed through macOS does not look new.
 
-**The transfer** takes one file at a time, in two to four ranged streams within
-that file, into `<local>/.jccmirror/<sha256(relpath)>.part`. The name is a hash
-of the path rather than something random, because a random name cannot be found
-again after a restart — which is the whole of resume. Each round of chunks
-advances a watermark in the `jobs` row, so an interrupted 40 GB file continues
-within one round of where it stopped. The finished file is verified against the
-size the manifest reported, timestamped, and `rename(2)`d into place from inside
-the same directory tree, so it appears atomically or not at all.
+**The transfer** takes one file at a time, in two to four bounded reads at
+different offsets within it, into `<local>/.jccmirror/<sha256(relpath)>.part`.
+The name is a hash of the path rather than something random, because a random
+name cannot be found again after a restart — which is the whole of resume. Each
+round of chunks advances a watermark in the `jobs` row, so an interrupted 40 GB
+file continues within one round of where it stopped. The finished file is
+verified against the size the manifest reported, timestamped, and `rename(2)`d
+into place from inside the same directory tree, so it appears atomically or not
+at all.
 
 Every file is a row in `jobs` with its own state machine and retry budget, which
 is what makes a transfer retriable rather than an in-memory loop that dies with
@@ -249,11 +269,11 @@ jcc-mirror never puts through the job queue. It is copied as a phase of its own
 at the end of a sync, in the order `DESIGN.md` §3 sets out:
 
 ```
-1. HEAD  <remote>/ClipCornDB.db.~lock   → present ⇒ skip this cycle, note it
+1. probe <remote>/ClipCornDB.db.~lock   → present ⇒ skip this cycle, note it
 2. stat  <local>/ClipCornDB.db.~lock    → present ⇒ skip this cycle, note it
-3. GET   the database → .ClipCornDB.db.incoming, staged in the target directory
-4. verify its size against what the PROPFIND said
-5. HEAD  the remote lock again          → appeared ⇒ discard, try later
+3. read  the database → .ClipCornDB.db.incoming, staged in the target directory
+4. verify its size against what the remote's stat reported
+5. probe the remote lock again          → appeared ⇒ discard, try later
 6. stat  the local lock again           → appeared ⇒ discard, try later
 7. keep the current database as a numbered backup
 8. rename(.ClipCornDB.db.incoming → ClipCornDB.db)
@@ -266,9 +286,9 @@ the database and never reads a lock file's contents — the body is a PID from
 another machine, and only its existence means anything.
 
 Steps 5 and 6 are the non-obvious ones: user 1 can launch jClipCorn while the
-copy runs, and one extra request each closes that window. Steps 3 and 8 stage in
-the *target* directory, so the rename is same-filesystem and atomic — the local
-exposure is one syscall rather than the length of a copy.
+copy runs, and one extra existence probe each side closes that window. Steps 3
+and 8 stage in the *target* directory, so the rename is same-filesystem and
+atomic — the local exposure is one syscall rather than the length of a copy.
 
 ```bash
 jcc-mirror pairs add -data /data -name clipcorn -type jcc \
@@ -379,15 +399,15 @@ history view share a schema rather than agreeing by accident.
 | **Changes** | Per-file history — added, replaced, deleted, failed — filterable by pair and operation. It is the only place one file's fate is recorded. |
 | **Events** | Scans and syncs with their durations, the database replaced or skipped for a lock, deletion guards, tunnel edges, configuration changes, errors. Each row can be expanded into the JSON it carries. |
 | **Bandwidth** | The per-minute series drawn as inline SVG, plus the 7×24 heatmap that makes the weekday/weekend shape visible. Minutes are rolled up to hours after a week and to days after a quarter — a per-minute series kept forever is half a million rows a year. |
-| **Config** | Every setting there is, generated from the key registry so a key added later costs no HTML, with the pairs editor, both schedule grids and the audit trail. |
-| **Diagnostics** | Handshake age and endpoint, RTT through the tunnel, a throughput probe, remote reachability, a raw PROPFIND explorer, free space per pair, "explain plan", the notification state, the self-update panel and a live log tail. |
+| **Config** | Eight tabs behind the one nav item — connection, schedule, pairs, transfer, jCC, notifications, system, audit — each with its own draft and its own save bar at the foot of the viewport. The fields are still generated from the key registry, so a key added later costs no HTML; a route-to-group table is the one place a settings group is told which tab it belongs on, and a group no tab claims lands on **System** rather than disappearing. |
+| **Diagnostics** | Handshake age and endpoint, RTT through the tunnel, a throughput probe, remote reachability, a directory-by-directory explorer of the remote tree, free space per pair, "explain plan", the notification state, the self-update panel and a live log tail. |
 
-Reading is open; every action needs the token. The one exception is the log tail
-— on `GET /api/diagnostics` and as `log` frames on the stream — which needs it
-too: it is the container's log, and the container's log is where the token itself
-is printed. The bandwidth series is sampled off the WebDAV
-transport's own connections rather than off the transfer engine, so what the graph
-shows is what the link actually carried — the walk's thousands of PROPFINDs
+Every view is drawn from an open endpoint, the log tail — on
+`GET /api/diagnostics` and as `log` frames on the stream — included; the Unlock
+button is a signal in the browser and nothing the daemon is told about. The
+bandwidth series is sampled off the connection the SMB session runs over rather
+than off the transfer engine, so what the graph shows is what the link actually
+carried — SMB's own framing and the walk's thousands of directory listings
 included.
 
 ## Notifications
@@ -427,11 +447,13 @@ run that produced it — it is telemetry, not a step.
 "Update in place without restarting docker" is not literally possible — the
 kernel holds the running executable's inode — but re-execing gives exactly the
 property that was wanted: same PID, same container, nothing for the orchestration
-to notice. The new binary lives on the same WebDAV share the mirror already
-reads, so the publisher still needs nothing but the stock DSM package.
+to notice. The new binary lives on the same share the mirror already reads, so
+the publisher still needs nothing but the file service he is already running.
 
-Point it at one under **Update** in Config. A path is relative to the WebDAV root,
-which is the usual setup and keeps the base URL written down once:
+Point it at one under **Update** in Config. A path is read off the share with the
+mirror's own client, relative to the remote root — the usual setup, and it keeps
+the publisher's address written down in one place. An absolute `http(s)` URL is
+fetched over the tunnel instead:
 
 ```
 update.url       dist/jcc-mirror-amd64
@@ -440,18 +462,19 @@ update.interval  6h
 ```
 
 There is no version file and no manifest. The question is literally "is the file
-over there newer than mine", and `Last-Modified` answers it. What it is compared
-against is the later of this binary's compiled-in build stamp and the timestamp
-of whatever the last update installed — the second half matters, because a binary
-built at 10:00 and uploaded at 10:05 would otherwise read as newer than itself,
-forever.
+over there newer than mine", and its modification time answers it. What it is
+compared against is the later of this binary's compiled-in build stamp and the
+timestamp of whatever the last update installed — the second half matters,
+because a binary built at 10:00 and uploaded at 10:05 would otherwise read as
+newer than itself, forever.
 
 Then, in order:
 
-1. `HEAD` the URL. Newer ⇒ there is an update.
-2. `GET` it to `/data/bin/jcc-mirror.new`, and check it is plausible before
-   trusting it: the size the server promised, and the ELF magic in the first four
-   bytes.
+1. Stat the binary — a `HEAD` and its `Last-Modified` in the URL form. Newer ⇒
+   there is an update.
+2. Read it into `/data/bin/jcc-mirror.new`, and check it is plausible before
+   trusting it: the size the other side reported, and the ELF magic in the first
+   four bytes.
 3. Run it once as `jcc-mirror.new --version` and require a sane answer. That is
    the check the magic number cannot do: a binary for the other architecture is a
    perfectly well-formed ELF that will not run here.
@@ -465,8 +488,9 @@ Then, in order:
 
 None of this is signing, and it is not meant to be. The transport is a private
 tunnel to a machine you control, so what these checks are aimed at is corruption:
-a download cut short, an HTML error page saved as a binary, the wrong
-architecture. Those are the failures that actually happen.
+a download cut short, the wrong architecture, and — in the URL form, which is the
+only one with a web server in it — an HTML error page saved as a binary. Those
+are the failures that actually happen.
 
 **The safety net.** The container's command is `jcc-mirror supervise serve` — the
 supervisor is a subcommand of ours rather than a shell script, because the
@@ -497,11 +521,12 @@ jcc-mirror update -data /data -rollback          # step back off one, without th
 The two halves that touch no network are what this is really for. `-rollback`
 needs neither the daemon, the tunnel nor the share, which is the point of it: it
 is for the case where the thing that is broken is the binary that would otherwise
-answer the button. `-check` and `-apply` reach the URL **directly** rather than
-through the tunnel — opening a second one with the daemon's identity would have
-the rootserver moving the peer's endpoint back and forth — so on the Synology,
-where the publisher is only reachable over WireGuard, installing is the
-dashboard's job.
+answer the button. `-check` and `-apply` open **no tunnel of their own** — a
+second one with the daemon's identity would have the rootserver moving the peer's
+endpoint back and forth — so only an absolute URL works from a shell, and the
+usual share-relative path is refused with a message saying as much. On the
+Synology, where the publisher is reachable over WireGuard and nowhere else,
+installing is therefore the dashboard's job.
 
 Publishing a new one is a copy:
 
@@ -530,15 +555,14 @@ once the dashboard is configured.
 |---|---|---|---|
 | 1 | Does the rootserver forward between its spokes? | `ping` | Both NASes are clients of the same WireGuard server. A server set up as an internet gateway will not route between them, and nothing else here can work until it does. |
 | 2 | Does the tunnel come up from inside an unprivileged container? | `status` | The whole no-`NET_ADMIN` deployment rests on wireguard-go plus netstack behaving on the Synology. |
-| 3 | Does DSM's WebDAV answer PROPFIND the way we assume? | `propfind`, `depth` | Href shape, namespace prefixes, and whether `Depth: infinity` is honoured. The last one is thousands of round trips per scan. |
+| 3 | Does one directory listing off DSM's share cost what we assume? | `ls` | How long a single listing takes, multiplied by the number of directories, is what a walk costs; and how the names come back, since a tree that is partly NFD makes every affected title look new on every scan. |
 | 4 | How long does a full metadata walk take? | `walk` | There is no remote manifest, so this is what every scan costs, forever. It sets the scan schedule. |
-| 5 | Does DSM hold up under a long ranged GET? | `get`, `resume`, `soak` | Resume is the property the transfer engine is built on. If ranged GET is unreliable, a 40 GB file interrupted at 39 GB starts again from zero. |
+| 5 | Does DSM hold up under a long read at an offset? | `get`, `resume`, `soak` | Resume is the property the transfer engine is built on. If reading from an offset is unreliable, a 40 GB file interrupted at 39 GB starts again from zero. |
 
 ```bash
 docker compose run --rm jcc-mirror ping     -data /data -target <publisher-tunnel-addr> -count 10
 docker compose run --rm jcc-mirror status   -data /data
-docker compose run --rm jcc-mirror propfind -data /data -path "" -raw
-docker compose run --rm jcc-mirror depth    -data /data -path "ClipCornDB"   # a SMALL subdirectory
+docker compose run --rm jcc-mirror ls       -data /data -path "" -limit 50
 docker compose run --rm jcc-mirror walk     -data /data -workers 8 -out /data/manifest.ndjson
 docker compose run --rm jcc-mirror resume   -data /data -path "Filme/Some.Big.File.mkv" -length $((256<<20))
 docker compose run --rm jcc-mirror soak     -data /data -path "Filme/Some.Big.File.mkv" -duration 4h
@@ -546,7 +570,10 @@ docker compose run --rm jcc-mirror soak     -data /data -path "Filme/Some.Big.Fi
 
 Every setting can still be given as a flag instead, and a flag always wins over
 the stored value — trying something other than what is configured is the point.
-`-no-tunnel` points any of them at a local WebDAV server. Run `jcc-mirror help`
+The remote is `-host`, `-share`, `-share-path`, `-user`, `-pass` and `-domain`;
+`-no-tunnel` talks to `-host` out of the host network rather than through
+WireGuard, and `-remote-dir` needs no server at all — `ls` and `walk` run against
+a local directory with the same code and the same output. Run `jcc-mirror help`
 for the full list.
 
 ### Reading the results
@@ -555,16 +582,11 @@ for the full list.
   the spoke-to-spoke route is not. Check `net.ipv4.ip_forward=1` on the
   rootserver and that its peer entries' `AllowedIPs` cover *both* clients. This
   is not a jcc-mirror bug and it is the most likely way the setup fails.
-- **`depth` says infinity is refused.** Expected, and fine — RFC 4918 allows it.
-  The scanner then walks one PROPFIND per directory, which is what the design
-  assumes anyway. Point the probe at a *small* subdirectory: if the server does
-  honour it, an infinity request on the collection root returns the entire tree
-  as a single XML document.
 - **`walk` reports non-NFC names.** Part of the tree passed through macOS. The
   diff must normalize, or every title with an umlaut looks new on every scan.
-- **`resume` reports differing hashes.** Ranged resume is not usable against this
-  server, and the transfer design needs rethinking before M2. This is the single
-  most consequential result the spike can produce.
+- **`resume` reports differing hashes.** Reading from an offset is not usable
+  against this server, and the transfer design needs rethinking before M2. This is
+  the single most consequential result the spike can produce.
 - **`soak` reports a first error at a suspiciously round time.** DSM drops long
   transfers on a timer. Not fatal — the job state machine has to treat a dropped
   connection as routine — but it decides how aggressive the retry policy is.
@@ -572,42 +594,47 @@ for the full list.
 ## Configuration
 
 There is no config file, no `.env`, and nothing is read from the environment.
-Only true invariants are compiled in (`static.go`): the data directory, the two
-listen addresses, the tunnel MTU and keepalive. Everything else lives in the
-`config` table, is edited in the dashboard, and every change is recorded in
-`config_audit` — with secrets masked, so the trail says that a password changed
-and never what it changed to.
+Only true invariants are compiled in (`static.go`): the data directory and the
+two listen addresses. Everything else lives in the `config` table, is edited in
+the dashboard, and every change is recorded in `config_audit` — with secrets
+masked, so the trail says that a password changed and never what it changed to.
 
-Two settings are generated at first start and never typed by hand: the WireGuard
-private key and the dashboard token. The private key therefore exists in exactly
-one place and never passes through a compose file, a shell history or `ps`.
+One setting is generated at first start rather than typed: the WireGuard private
+key, so the tunnel has an identity before anyone has given it one. It is only a
+stand-in — the rootserver issues the key its peer entry knows, and importing that
+config overwrites it — but either way the key exists in exactly one place and
+never passes through a compose file, a shell history or `ps`.
 
 The engine's settings live in the same table and appear in the same form, because
 the key registry is what the Config view is generated from — a setting added in a
-later milestone costs no HTML. The two grids, the unattended switch and the scan
-interval are under **Schedule**; walk concurrency and the mtime tolerance under
-**Scan**; streams per file, chunk size, attempts, retry backoff, post-copy hashing
-and the free-space reserve under **Transfer**; the deletion threshold and
-quarantine retention under **Deletion**; the database's name and directory, the
-stale-lock threshold and how many copies to keep under **jCC**; the SCN
-credentials, the per-event toggles and the tunnel-down grace under
-**Notifications**; the binary URL, whether to install it unattended and how often
-to look under **Update**; and how long the event log and the per-file history are
-kept under **Retention**, a year each by default, swept once an hour. The pairs
-themselves are the exception — they are rows of their own, edited in the Config
-view or with `jcc-mirror pairs`.
+later milestone costs no HTML. The tunnel's nine settings are under **Tunnel**
+and the publisher's host, share, path in the share, account and NTLM domain under
+**Remote**; the two grids, the unattended switch and the scan interval are under
+**Schedule**; walk concurrency and the mtime tolerance under **Scan**; streams
+per file, chunk size, attempts, retry backoff, post-copy hashing and the
+free-space reserve under **Transfer**; the deletion threshold and quarantine
+retention under **Deletion**; the database's name and directory, the stale-lock
+threshold and how many copies to keep under **jCC**; the SCN credentials, the
+per-event toggles and the tunnel-down grace under **Notifications**; where the
+binary comes from — a path on the share or an absolute URL — whether to install
+it unattended and how often to look under **Update**; and how long the event log
+and the per-file history are kept under **Retention**, a year each by default,
+swept once an hour. The pairs themselves are the exception — they are rows of
+their own, edited in the Config view or with `jcc-mirror pairs`.
 
 ## Publisher-side setup
 
-Nothing of ours runs there. Enable the stock DSM **WebDAV Server** package,
-share the directories, and create a read-only account. HTTP on 5005 is enough:
-the tunnel already encrypts and authenticates every packet, and plain HTTP is
-faster through netstack.
+Nothing of ours runs there. Turn on **File Services → SMB** in DSM, share the
+directories, and create a read-only account for them — SMB has no usable
+anonymous mode, so there has to be one even for a share everybody may read. Port
+445 as it comes, with none of the transport encryption DSM offers: the tunnel
+already encrypts and authenticates every packet, and doing it twice only costs
+the NAS's CPU.
 
 ## Development
 
 ```bash
-make test        # unit tests plus end-to-end runs against a local WebDAV server
+make test        # unit tests plus end-to-end runs against a local directory
 make vet
 make build
 make web         # rebuild the dashboard into web/dist after changing web/src
@@ -630,12 +657,23 @@ cd web && npx ng serve &                                   # :4200, rebuilds on 
 ./jcc-mirror serve -data ./data -lan 127.0.0.1:8080 -dev-ui http://localhost:4200
 ```
 
-Nothing in the test suite needs a network, a tunnel or a NAS. The WebDAV client
-and the walk run against `golang.org/x/net/webdav` serving a temporary directory,
-and `remote/localfs` serves a directory as a `remote.Remote` directly — with
+Nothing a plain `go test ./...` runs needs a network, a tunnel or a NAS. There is
+no in-process SMB server to stand a share up with, so what everything runs against
+is `remote/localfs`, which serves a directory as a `remote.Remote` directly — with
 whole-second timestamps, so a test cannot pass on fidelity the real remote does
-not have. `TestAgreesWithWebDAV` holds the two implementations to the same
-answers, which is the reason `remote.Remote` is an interface at all.
+not have. Holding the two implementations to the same answers therefore takes a
+real server, and that check is opt-in: `TestAgreesWithTheFake`, in
+`smb/client_integration_test.go`, skips unless it is told where one is, and it is
+the reason `remote.Remote` is an interface at all.
+
+```bash
+JCC_SMB_HOST=10.13.13.2 JCC_SMB_SHARE=media JCC_SMB_USER=ro JCC_SMB_PASS=… \
+JCC_SMB_LOCAL_DIR=/volume1/media go test ./smb/
+```
+
+`JCC_SMB_LOCAL_DIR` is that server's own directory: the fixture is written on the
+local side of the share, so the two remotes are asked about the same tree rather
+than about two that ought to agree.
 
 The engine tests are a whole mirror in a temporary directory: one tree standing
 in for the publisher's share, one for the Synology, and the sqlite state between
@@ -657,7 +695,9 @@ cmd_engine.go  what the mirror commands share: store, remote, engine
 cmd_*.go       one file per command, mirror and diagnostic alike
 app/           the running daemon: tunnel lifecycle, scheduler, the dashboard's
                API, the SSE stream, the bandwidth meter and rollups, the
-               notification policy, and the embedded UI with its dev proxy
+               notification policy, and the embedded UI with its dev proxy. What
+               it reads the publisher with is an interface, so Options.RemoteDir
+               can put a local directory where the share is
 schedule/      the 7x24 grid: parsing, rendering, and when the answer next
                changes
 engine/        the mirror: scan.go walks, diff.go plans, transfer.go moves
@@ -670,11 +710,15 @@ store/         sqlite state: migrations, config with audit, events, and the
                engine's tables - pairs, manifest, scans, files, jobs, changes,
                delete_approvals, db_backups - plus the dashboard's bw_samples
                and the notifications' notify_state
-wg/            wireguard-go + netstack: the tunnel, ping and device status
-webdav/        PROPFIND, HEAD and ranged GET; propfind.go is the pure decoder
-remote/        the three-method interface the engine talks to, plus the ranged
-               read it needs on top of it
-remote/localfs/  a local directory as a Remote, for tests and development
+wg/            wireguard-go + netstack: the tunnel, ping and device status, and
+               quick.go, which reads the config file the server generated
+smb/           the SMB2 client: one long-lived session, dialed over a net.Conn
+               the caller hands it, which is what puts it inside the tunnel
+remote/        the three-method interface the engine talks to, plus the two
+               things it needs on top of it - a bounded read at an offset, and an
+               existence probe for the lock gate
+remote/localfs/  a local directory as a Remote, for tests, development and
+               -remote-dir
 notify/        the SimpleCloudNotifier client; the coalescing above it is app/
 update/        the self-updater: the share as a source, the binary directory in
                the data volume, and the supervisor that undoes a bad update
