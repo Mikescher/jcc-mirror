@@ -21,7 +21,7 @@ const logLines = 1000;
 /** What the remote probe answers with. It is a bare map on the wire because the
  *  handler builds the same shape for the event it writes. */
 interface Probe {
-  url?: string;
+  target?: string;
   dirs?: number;
   files?: number;
   millis?: number;

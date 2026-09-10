@@ -10,19 +10,19 @@ import (
 
 	"blackforestbytes.com/jcc-mirror/format"
 	"blackforestbytes.com/jcc-mirror/logs"
-	"blackforestbytes.com/jcc-mirror/webdav"
+	"blackforestbytes.com/jcc-mirror/smb"
 )
 
 // cmdResume is the other half of M0 step 5, and the one that decides whether the
-// transfer engine can exist as designed: abort a GET mid-file, reopen at the byte
-// offset reached, and prove the result is identical to a straight download.
+// transfer engine can exist as designed: abort a read mid-file, reopen at the
+// byte offset reached, and prove the result is identical to a straight download.
 //
-// Everything else rests on this. Ranged GET is what makes a transfer survive a
-// restart, a self-update and a closed transfer window; without it a 40 GB file
-// interrupted at 39 GB starts again from zero (DESIGN.md §2.4).
+// Everything else rests on this. Reading from an offset is what makes a transfer
+// survive a restart, a self-update and a closed transfer window; without it a
+// 40 GB file interrupted at 39 GB starts again from zero (DESIGN.md §2.4).
 func cmdResume(ctx context.Context, args []string) error {
 	fs, cfg := newFlagSet("resume")
-	path := fs.String("path", "", "remote file, relative to -url")
+	path := fs.String("path", "", "remote file, relative to the remote root")
 	offset := fs.Int64("offset", 0, "start of the region to test")
 	length := fs.Int64("length", 64<<20, "size of the region to test")
 	abortAt := fs.Int64("abort-at", 0, "abort the first stream after this many bytes, 0 for half of -length")
@@ -107,7 +107,7 @@ func cmdResume(ctx context.Context, args []string) error {
 }
 
 // hashRange downloads a byte range and returns its sha256, keeping nothing.
-func hashRange(ctx context.Context, client *webdav.Client, path string, offset, length int64) (string, error) {
+func hashRange(ctx context.Context, client *smb.Client, path string, offset, length int64) (string, error) {
 	body, _, err := client.OpenRange(ctx, path, offset, length)
 	if err != nil {
 		return "", err

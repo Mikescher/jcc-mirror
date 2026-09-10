@@ -1,6 +1,7 @@
 package update
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"blackforestbytes.com/jcc-mirror/remote/localfs"
 )
 
 // The test binary doubles as the binary being installed. It is a real ELF, it
@@ -302,19 +305,82 @@ func TestConfirmClosesTheRollbackWindow(t *testing.T) {
 	}
 }
 
-func TestResolveURL(t *testing.T) {
-	if _, err := ResolveURL("http://nas:5005/media", ""); err != ErrNotConfigured {
+func TestLocate(t *testing.T) {
+	if _, _, err := Locate("  "); err != ErrNotConfigured {
 		t.Errorf("err = %v, want ErrNotConfigured", err)
 	}
-	if got, _ := ResolveURL("http://nas:5005/media", "http://elsewhere/bin"); got != "http://elsewhere/bin" {
-		t.Errorf("absolute URL = %q", got)
+	if url, path, _ := Locate("http://elsewhere/bin"); url != "http://elsewhere/bin" || path != "" {
+		t.Errorf("absolute = (%q, %q)", url, path)
 	}
-	got, err := ResolveURL("http://nas:5005/media", "dist/jcc mirror-amd64")
-	if err != nil {
+	// Not escaped and not joined to anything: it is a path on the share, which is
+	// what the remote client is handed verbatim.
+	if url, path, _ := Locate(" dist/jcc mirror-amd64 "); url != "" || path != "dist/jcc mirror-amd64" {
+		t.Errorf("share-relative = (%q, %q)", url, path)
+	}
+}
+
+// TestHeadAndDownloadOffTheShare is the form the deployment actually uses: the
+// binary sits on the publisher's share, so the updater stats and reads it with
+// the same client the mirror reads everything else with.
+func TestHeadAndDownloadOffTheShare(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("\x7fELF and then some")
+	if err := os.MkdirAll(filepath.Join(dir, "dist"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got != "http://nas:5005/media/dist/jcc%20mirror-amd64" {
-		t.Errorf("joined = %q", got)
+	bin := filepath.Join(dir, "dist", "jcc-mirror-amd64")
+	if err := os.WriteFile(bin, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mod := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(bin, mod, mod); err != nil {
+		t.Fatal(err)
+	}
+
+	share, err := localfs.New(dir)
+	if err != nil {
+		t.Fatalf("localfs.New: %v", err)
+	}
+	src := Source{Path: "dist/jcc-mirror-amd64", Share: share}
+
+	rel, err := src.Head(t.Context())
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	if !rel.ModTime.Equal(mod) {
+		t.Errorf("mod time = %v, want %v", rel.ModTime, mod)
+	}
+	if rel.Size != int64(len(body)) {
+		t.Errorf("size = %d, want %d", rel.Size, len(body))
+	}
+	if rel.URL != "dist/jcc-mirror-amd64" {
+		t.Errorf("release names %q, want the path on the share", rel.URL)
+	}
+
+	dst := filepath.Join(t.TempDir(), "bin", "candidate")
+	n, err := src.Download(t.Context(), dst)
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if n != int64(len(body)) {
+		t.Errorf("downloaded %d bytes, want %d", n, len(body))
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil || string(got) != string(body) {
+		t.Fatalf("downloaded %q (%v), want the file on the share", got, err)
+	}
+}
+
+// A share-relative binary with no client to read it with has to say so rather
+// than fall back to fetching nothing: an update that silently never happens is
+// the failure least likely to be noticed.
+func TestShareRelativeBinaryNeedsARemote(t *testing.T) {
+	src := Source{Path: "dist/jcc-mirror-amd64"}
+	if _, err := src.Head(t.Context()); !errors.Is(err, ErrNoRemote) {
+		t.Errorf("head err = %v, want ErrNoRemote", err)
+	}
+	if _, err := src.Download(t.Context(), filepath.Join(t.TempDir(), "bin")); !errors.Is(err, ErrNoRemote) {
+		t.Errorf("download err = %v, want ErrNoRemote", err)
 	}
 }
 

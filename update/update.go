@@ -19,12 +19,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"blackforestbytes.com/jcc-mirror/remote"
 )
 
 // elfMagic is the first four bytes of every ELF file. Checking it costs nothing
@@ -41,20 +42,38 @@ const maxBinary = 512 << 20
 // that in this long is not one to re-exec into.
 const smokeTimeout = 20 * time.Second
 
-// Source is where the new binary comes from. HTTP carries the tunnel's
-// transport, so the fetch rides the same encrypted path as every other request
-// to the publisher and needs nothing new on his side.
+// Source is where the new binary comes from. Exactly one of URL and Path names
+// it: Path is a file on the publisher's share, which is where it lives and needs
+// nothing new on his side, and URL is an ordinary web download for a build
+// served from somewhere else. Either way the fetch rides the tunnel, so it is
+// the same encrypted path everything else to the publisher takes.
 type Source struct {
-	URL      string
+	URL  string
+	Path string
+	// Share is required when Path is set. It is the client the mirror already
+	// reads with, so the download is one more read of a share that is open
+	// anyway rather than a second way in.
+	Share remote.Remote
+
 	Username string
 	Password string
 	HTTP     *http.Client
 }
 
-// Release is what the share holds, as HEAD reports it. There is no version file
-// and no manifest: the question is literally "is the file over there newer than
-// mine", and Last-Modified answers it (DESIGN.md §5).
+// Location is where the binary comes from, in the form worth showing someone.
+func (s Source) Location() string {
+	if s.Path != "" {
+		return s.Path
+	}
+	return s.URL
+}
+
+// Release is what the share holds. There is no version file and no manifest: the
+// question is literally "is the file over there newer than mine", and the
+// modification time answers it (DESIGN.md §5).
 type Release struct {
+	// URL is where the binary came from - a web address, or a path on the
+	// publisher's share.
 	URL     string    `json:"url"`
 	ModTime time.Time `json:"modTime"`
 	Size    int64     `json:"size"`
@@ -79,11 +98,15 @@ func (s Source) request(ctx context.Context, method string) (*http.Request, erro
 	return req, nil
 }
 
-// Head asks the share what it has. A server that answers without a
-// Last-Modified is an error rather than a silent "not newer": the whole
-// comparison rests on that header, and an update that silently never happens is
-// the failure mode this is least likely to be noticed by.
+// Head asks the share what it has. A source that answers without a modification
+// time is an error rather than a silent "not newer": the whole comparison rests
+// on it, and an update that silently never happens is the failure mode this is
+// least likely to be noticed by.
 func (s Source) Head(ctx context.Context) (Release, error) {
+	if s.Path != "" {
+		return s.statShare(ctx)
+	}
+
 	req, err := s.request(ctx, http.MethodHead)
 	if err != nil {
 		return Release{}, err
@@ -112,25 +135,66 @@ func (s Source) Head(ctx context.Context) (Release, error) {
 	return Release{URL: s.URL, ModTime: mod.UTC(), Size: resp.ContentLength}, nil
 }
 
-// Download writes the binary to dst and returns how many bytes arrived. The
-// caller verifies; this only fetches, so a partial file is left where the
-// verification can see how big it actually is.
-func (s Source) Download(ctx context.Context, dst string) (int64, error) {
+// statShare is Head against the publisher's share, where the binary normally
+// sits: the same stat the scanner makes of every other file.
+func (s Source) statShare(ctx context.Context) (Release, error) {
+	if s.Share == nil {
+		return Release{}, ErrNoRemote
+	}
+
+	e, err := s.Share.Stat(ctx, s.Path)
+	if err != nil {
+		return Release{}, fmt.Errorf("stat %s on the share: %w", s.Path, err)
+	}
+	if e.IsDir {
+		return Release{}, fmt.Errorf("%s on the share is a directory, not a binary", s.Path)
+	}
+	if e.MTime.IsZero() {
+		return Release{}, fmt.Errorf("%s on the share has no timestamp, so there is nothing to compare against", s.Path)
+	}
+	return Release{URL: s.Path, ModTime: e.MTime.UTC(), Size: e.Size}, nil
+}
+
+// open starts the download. The two forms differ only here; everything the
+// caller does with the bytes is the same either way.
+func (s Source) open(ctx context.Context) (io.ReadCloser, error) {
+	if s.Path != "" {
+		if s.Share == nil {
+			return nil, ErrNoRemote
+		}
+		rc, err := s.Share.Open(ctx, s.Path, 0)
+		if err != nil {
+			return nil, fmt.Errorf("read %s off the share: %w", s.Path, err)
+		}
+		return rc, nil
+	}
+
 	req, err := s.request(ctx, http.MethodGet)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
 	resp, err := s.client().Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("get %s: %w", s.URL, err)
+		return nil, fmt.Errorf("get %s: %w", s.URL, err)
 	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer resp.Body.Close()
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return 0, fmt.Errorf("get %s -> %s: %s", s.URL, resp.Status, strings.TrimSpace(string(snippet)))
+		return nil, fmt.Errorf("get %s -> %s: %s", s.URL, resp.Status, strings.TrimSpace(string(snippet)))
 	}
+	return resp.Body, nil
+}
+
+// Download writes the binary to dst and returns how many bytes arrived. The
+// caller verifies; this only fetches, so a partial file is left where the
+// verification can see how big it actually is.
+func (s Source) Download(ctx context.Context, dst string) (int64, error) {
+	body, err := s.open(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer body.Close()
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return 0, fmt.Errorf("create %q: %w", filepath.Dir(dst), err)
@@ -142,15 +206,15 @@ func (s Source) Download(ctx context.Context, dst string) (int64, error) {
 		return 0, fmt.Errorf("create %q: %w", dst, err)
 	}
 
-	n, err := io.Copy(f, io.LimitReader(resp.Body, maxBinary+1))
+	n, err := io.Copy(f, io.LimitReader(body, maxBinary+1))
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
 	if err != nil {
-		return n, fmt.Errorf("download %s: %w", s.URL, err)
+		return n, fmt.Errorf("download %s: %w", s.Location(), err)
 	}
 	if n > maxBinary {
-		return n, fmt.Errorf("download %s: more than %d bytes, which is not a jcc-mirror binary", s.URL, maxBinary)
+		return n, fmt.Errorf("download %s: more than %d bytes, which is not a jcc-mirror binary", s.Location(), maxBinary)
 	}
 	// The mode is set on open, but a pre-existing file keeps its own - and a
 	// binary that is not executable fails at the exec, which is the worst place
@@ -257,21 +321,22 @@ func ParseBuildStamp(s string) time.Time {
 // It is a sentinel because "nobody asked for updates" is not a fault to report.
 var ErrNotConfigured = errors.New("no update URL is configured")
 
-// ResolveURL turns the configured binary URL into one that can be fetched. The
-// setting is allowed to be a path on the WebDAV share, which is where the binary
-// lives, precisely so the base URL is not written down twice in two settings
-// that can disagree.
-func ResolveURL(base, raw string) (string, error) {
+// ErrNoRemote is what a share-relative binary answers when there is no client to
+// read it with. It is a sentinel so a caller that has no remote at all - the CLI,
+// which deliberately does not open a second tunnel - can say so in its own words.
+var ErrNoRemote = errors.New("the binary is a path on the publisher's share, and no remote is configured")
+
+// Locate reads the configured binary setting, which is either an absolute URL or
+// a path on the publisher's share. The relative form is the usual one: it is
+// where the binary actually lives, and writing the remote root down a second
+// time is a way for the two to disagree.
+func Locate(raw string) (url, path string, err error) {
 	raw = strings.TrimSpace(raw)
 	switch {
 	case raw == "":
-		return "", ErrNotConfigured
+		return "", "", ErrNotConfigured
 	case strings.Contains(raw, "://"):
-		return raw, nil
-	case strings.TrimSpace(base) == "":
-		return "", errors.New("the binary URL is relative to the WebDAV root, and no remote is configured")
+		return raw, "", nil
 	}
-	// JoinPath escapes each segment, which hand-rolled joining gets wrong for
-	// exactly the characters a release file tends to contain.
-	return url.JoinPath(base, raw)
+	return "", raw, nil
 }

@@ -134,18 +134,23 @@ func (t *Tunnel) Endpoint() netip.AddrPort { return t.endpoint }
 // Addrs returns the tunnel's own addresses.
 func (t *Tunnel) Addrs() []netip.Addr { return t.addrs }
 
-// DialContext dials through the tunnel.
+// DialContext dials through the tunnel. This is the integration surface the
+// remote is reached over: the SMB client is handed this and speaks its own
+// protocol on the net.Conn it returns, which is what makes a userspace netstack
+// usable as the transport at all.
 func (t *Tunnel) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	return t.net.DialContext(ctx, network, address)
 }
 
 // Transport returns an http.Transport whose connections go through the tunnel.
-// This is the entire integration surface between WireGuard and WebDAV.
+// It serves the one HTTP left: a self-update whose binary is fetched from a web
+// server rather than read off the share. The remote itself is not reached this
+// way - see DialContext.
 func (t *Tunnel) Transport() *http.Transport {
 	return &http.Transport{
 		DialContext:         t.net.DialContext,
 		MaxIdleConns:        32,
-		MaxIdleConnsPerHost: 16, // a walk keeps several PROPFINDs in flight at once
+		MaxIdleConnsPerHost: 16,
 		IdleConnTimeout:     90 * time.Second,
 	}
 }

@@ -294,7 +294,7 @@ func pairFlags(fs *flag.FlagSet) (*store.Pair, *bool) {
 
 	fs.StringVar(&p.Name, "name", "", "what the pair is called; every other command refers to it by this or by its id")
 	fs.StringVar(&p.Type, "type", store.PairRaw, "\"raw\", or \"jcc\" for the ClipCornDB directory: hard exclusions and a lock gate on the database")
-	fs.StringVar(&p.RemotePath, "remote", "", "directory on the publisher's share, relative to the WebDAV base URL; empty means its root")
+	fs.StringVar(&p.RemotePath, "remote", "", "directory on the publisher's share, relative to the remote root; empty means that root itself")
 	fs.StringVar(&p.LocalPath, "local", "", "absolute directory here that the pair mirrors into")
 	fs.StringVar(&p.Mode, "mode", store.ModeAdditive, "\"additive\" or \"mirror\"; a mirror pair quarantines what the publisher drops, behind the guards")
 	fs.IntVar(&p.Priority, "priority", 100, "lower runs first")

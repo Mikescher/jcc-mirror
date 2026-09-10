@@ -1,5 +1,5 @@
 // Package app is the running daemon: the sqlite store, the WireGuard tunnel it is
-// configured from, the WebDAV client that rides on it, and the dashboard that
+// configured from, the SMB client that rides on it, and the dashboard that
 // reports on all three.
 //
 // Everything is driven from the config table, so there is nothing to know before
@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -22,9 +23,11 @@ import (
 	"blackforestbytes.com/jcc-mirror/format"
 	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/notify"
+	"blackforestbytes.com/jcc-mirror/remote"
+	"blackforestbytes.com/jcc-mirror/remote/localfs"
+	"blackforestbytes.com/jcc-mirror/smb"
 	"blackforestbytes.com/jcc-mirror/store"
 	"blackforestbytes.com/jcc-mirror/update"
-	"blackforestbytes.com/jcc-mirror/webdav"
 	"blackforestbytes.com/jcc-mirror/wg"
 )
 
@@ -50,6 +53,12 @@ type Options struct {
 	// DevUI is a running `ng serve` to proxy the dashboard to instead of serving
 	// the build embedded in the binary. Empty in every deployment.
 	DevUI string
+	// RemoteDir serves a local directory as the publisher's share instead of
+	// opening an SMB session, and overrides the remote settings entirely. Empty
+	// in every deployment: it is what lets the daemon - dashboard, scheduler and
+	// runs alike - be exercised with no NAS and no tunnel, the same way the
+	// mirror commands take -remote-dir (DESIGN.md §2.1).
+	RemoteDir string
 }
 
 // App owns the daemon's mutable state. Every exported method is safe to call
@@ -108,9 +117,12 @@ type App struct {
 	tunnelErr error
 	tunnelLn  net.Listener
 	tunnelSrv *http.Server
-	remote    *webdav.Client
-	remoteTr  *http.Transport // held only so a replaced one can let its connections go
+	remote    Remote
 	remoteErr error
+	// httpTr is the metered transport through the tunnel. Nothing about the
+	// remote uses it any more - it is what the self-updater downloads over when
+	// the binary is served by HTTP rather than sitting on the share.
+	httpTr    *http.Transport
 	wantTun   bool // the tunnel is configured, whether or not it is currently open
 	up        bool // last reported tunnel state, so events fire on the edge only
 	downSince time.Time
@@ -311,46 +323,103 @@ func (a *App) closeTunnelLocked() {
 	}
 	a.tunnelCfg = tunnelSettings{}
 	a.up = false
-	a.remote, a.remoteErr = nil, nil
+	a.closeRemoteLocked()
+	a.remoteErr = nil
 }
 
-// openRemoteLocked rebuilds the WebDAV client. It is rebuilt on every reload
-// because it carries the tunnel's transport, which a reconnect replaces.
-func (a *App) openRemoteLocked(values store.Values) {
-	// The transport about to be replaced holds idle connections to the publisher;
-	// without this they sit until IdleConnTimeout for nothing.
-	if a.remoteTr != nil {
-		a.remoteTr.CloseIdleConnections()
-		a.remoteTr = nil
+// closeRemoteLocked ends the SMB session. It is not something a garbage
+// collector does: the session is a TCP connection to the publisher, and a client
+// dropped without this leaks one per reload.
+func (a *App) closeRemoteLocked() {
+	if a.remote != nil {
+		if err := a.remote.Close(); err != nil {
+			a.log.Debugf("smb: closing the previous session: %v", err)
+		}
+		a.remote = nil
 	}
+	if a.httpTr != nil {
+		a.httpTr.CloseIdleConnections()
+		a.httpTr = nil
+	}
+}
 
-	url := strings.TrimSpace(values.Get(store.KeyRemoteURL))
-	if url == "" {
-		a.remote, a.remoteErr = nil, nil
+// openRemoteLocked rebuilds the SMB client. It is rebuilt on every reload
+// because it carries the tunnel's dialer, which a reconnect replaces - and the
+// one it had must be closed rather than dropped, or every configuration change
+// costs a live session on the publisher.
+func (a *App) openRemoteLocked(values store.Values) {
+	a.closeRemoteLocked()
+
+	// The updater's own transport, which is HTTP and has nothing to do with the
+	// settings below: it exists whenever the tunnel does.
+	a.httpTr = a.meteredTransportLocked()
+
+	if dir := a.opts.RemoteDir; dir != "" {
+		fake, err := localfs.New(dir)
+		if err != nil {
+			a.remoteErr = err
+			a.log.Errorf("remote: %v", err)
+			return
+		}
+		a.remote, a.remoteErr = localRemote{fake}, nil
 		return
 	}
 
-	cfg := webdav.Config{
-		BaseURL:   url,
-		Username:  values.Get(store.KeyRemoteUser),
-		Password:  values.Get(store.KeyRemotePassword),
-		UserAgent: "jcc-mirror/" + a.opts.Version,
+	host := strings.TrimSpace(values.Get(store.KeyRemoteHost))
+	share := strings.TrimSpace(values.Get(store.KeyRemoteShare))
+	if host == "" || share == "" {
+		a.remoteErr = nil
+		return
 	}
-	// Always a transport of ours, tunnel or not: it is what counts the bytes the
-	// Bandwidth view draws.
-	a.remoteTr = a.meteredTransportLocked()
-	cfg.Transport = a.remoteTr
 
-	client, err := webdav.New(cfg)
-	a.remote, a.remoteErr = client, err
+	client, err := smb.New(smb.Config{
+		Host:     host,
+		Share:    share,
+		Path:     values.Get(store.KeyRemotePath),
+		User:     values.Get(store.KeyRemoteUser),
+		Password: values.Get(store.KeyRemotePassword),
+		Domain:   values.Get(store.KeyRemoteDomain),
+		// Always a dialer of ours, tunnel or not: it is what counts the bytes the
+		// Bandwidth view draws.
+		Dial: a.meteredDialLocked(),
+	})
 	if err != nil {
-		a.log.Errorf("webdav: %v", err)
+		a.remoteErr = err
+		a.log.Errorf("smb: %v", err)
+		return
 	}
+	a.remote, a.remoteErr = client, nil
 }
 
-// Remote returns the configured WebDAV client, or an error explaining which half
-// of the setup is still missing.
-func (a *App) Remote() (*webdav.Client, error) {
+// Remote is the publisher's share as the daemon uses it: the read-only tree, the
+// two capabilities the engine and the lock gate need on top of it, and the
+// strings that name the target for the diagnostics.
+//
+// It is an interface rather than *smb.Client because there is no in-process SMB
+// server to test against - the daemon's own tests drive it off a local directory
+// instead, which is the same fake the engine already runs on (DESIGN.md §2.1).
+type Remote interface {
+	remote.RangeReader
+	remote.Prober
+
+	// Close ends the session. It is not left to a garbage collector: the session
+	// is a live connection to the publisher, and one dropped rather than closed
+	// is leaked per reload.
+	io.Closer
+
+	// NonNFCNames counts the entry names seen so far that were not already in
+	// NFC, which is the walk's own warning sign (DESIGN.md §2.3).
+	NonNFCNames() int64
+
+	// Target names the remote root the way an operator writes it down, and
+	// TargetFor does the same for a path inside it.
+	Target() string
+	TargetFor(rel string) string
+}
+
+// Remote returns the configured client, or an error explaining which half of the
+// setup is still missing.
+func (a *App) Remote() (Remote, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -358,11 +427,11 @@ func (a *App) Remote() (*webdav.Client, error) {
 	case a.remoteErr != nil:
 		return nil, a.remoteErr
 	case a.remote == nil:
-		return nil, errors.New("no remote configured: set the WebDAV base URL")
+		return nil, errors.New("no remote configured: set the publisher's host and share")
 	case a.tunnel == nil && a.wantTun:
-		// The request would go out of the host network instead, which for a private
-		// WG address means a slow timeout rather than a clear answer. With no tunnel
-		// configured at all it is let through: that is the local-fake case.
+		// The session would be opened out of the host network instead, which for a
+		// private WG address means a slow timeout rather than a clear answer. With
+		// no tunnel configured at all it is let through: that is the local-fake case.
 		return nil, errors.New("the tunnel is configured but not up, so the remote is unreachable")
 	}
 	return a.remote, nil

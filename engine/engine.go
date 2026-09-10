@@ -88,8 +88,10 @@ func (o *Options) fill() {
 	if o.ScanWorkers < 1 {
 		o.ScanWorkers = 8
 	}
-	// Never zero: WebDAV timestamps carry whole seconds, so an exact comparison
-	// makes every file look changed on every scan (DESIGN.md §2.3).
+	// Never zero: the manifest stores mtimes as milliseconds and the local file is
+	// stamped from that value onto a filesystem with a granularity of its own, so
+	// an exact comparison makes every file look changed on every scan
+	// (DESIGN.md §2.3).
 	if o.MTimeTolerance < time.Second {
 		o.MTimeTolerance = 2 * time.Second
 	}

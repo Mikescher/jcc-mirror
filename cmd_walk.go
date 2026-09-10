@@ -12,7 +12,6 @@ import (
 	"blackforestbytes.com/jcc-mirror/format"
 	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/remote"
-	"blackforestbytes.com/jcc-mirror/webdav"
 )
 
 // cmdWalk is M0 step 4, and the measurement the schedule is built on: how long
@@ -20,8 +19,8 @@ import (
 // exists, so this is what every scan will cost, forever (DESIGN.md §2.3, §10.4).
 func cmdWalk(ctx context.Context, args []string) error {
 	fs, cfg := newFlagSet("walk")
-	root := fs.String("path", "", "remote directory to walk, relative to -url")
-	workers := fs.Int("workers", 8, "PROPFINDs in flight - the walk is latency-bound, so a little parallelism helps a lot and more helps nothing")
+	root := fs.String("path", "", "remote directory to walk, relative to the remote root")
+	workers := fs.Int("workers", 8, "directory listings in flight - the walk is latency-bound, so a little parallelism helps a lot and more helps nothing")
 	out := fs.String("out", "", "write the manifest as NDJSON to this file")
 	progress := fs.Duration("progress", 10*time.Second, "progress interval, 0 to disable")
 	maxDepth := fs.Int("max-depth", 0, "stop after this many levels, 0 for the whole tree")
@@ -33,13 +32,13 @@ func cmdWalk(ctx context.Context, args []string) error {
 	}
 
 	logger := &logs.Logger{Verbose: cfg.verbose}
-	client, _, closeFn, err := cfg.openBoth(ctx, logger)
+	rem, closeFn, err := cfg.openEngineRemote(ctx, logger)
 	if err != nil {
 		return err
 	}
 	defer closeFn()
 
-	w := &walker{client: client, log: logger, workers: *workers}
+	w := &walker{client: rem, log: logger, workers: *workers}
 
 	if *out != "" {
 		f, err := os.Create(*out)
@@ -75,7 +74,7 @@ func cmdWalk(ctx context.Context, args []string) error {
 // walker accumulates the walk under one mutex. The walk is latency-bound, so the
 // lock is never the bottleneck and one lock is simpler than five atomics.
 type walker struct {
-	client   *webdav.Client
+	client   remote.Remote
 	log      *logs.Logger
 	workers  int
 	manifest *json.Encoder
@@ -245,12 +244,16 @@ func (w *walker) summarize(root string, elapsed time.Duration, manifestPath stri
 	fmt.Printf("  directories    %s\n", format.Comma(w.dirs))
 	fmt.Printf("  files          %s\n", format.Comma(w.files))
 	fmt.Printf("  bytes          %s\n", format.Bytes(w.bytes))
-	fmt.Printf("  PROPFINDs      %s (%.1f req/s across %d workers)\n", format.Comma(w.requests), float64(w.requests)/elapsed.Seconds(), w.workers)
+	fmt.Printf("  listings       %s (%.1f req/s across %d workers)\n", format.Comma(w.requests), float64(w.requests)/elapsed.Seconds(), w.workers)
 	fmt.Printf("  deepest level  %d\n", w.depth)
 	fmt.Printf("  widest dir     %q with %s entries\n", w.widestDir, format.Comma(int64(w.widestCount)))
 	fmt.Printf("  slowest dir    %q at %s\n", w.slowestDir, format.Duration(w.slowest))
 	fmt.Printf("  errors         %s\n", format.Comma(w.errors))
-	fmt.Printf("  non-NFC names  %s\n", format.Comma(w.client.NonNFCNames()))
+	// Only the real client counts these; the local stand-in reads a tree that was
+	// never anybody's source.
+	if counter, ok := w.client.(interface{ NonNFCNames() int64 }); ok {
+		fmt.Printf("  non-NFC names  %s\n", format.Comma(counter.NonNFCNames()))
+	}
 	if manifestPath != "" {
 		fmt.Printf("  manifest       %s\n", manifestPath)
 	}

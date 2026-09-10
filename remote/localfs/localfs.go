@@ -2,9 +2,9 @@
 // design asks for: the scanner, differ and transfer engine can be driven with no
 // network, no tunnel and no NAS (DESIGN.md §2.1).
 //
-// It reproduces the one property of WebDAV that the differ has to survive -
-// whole-second timestamps - so a test that passes here is not passing because it
-// got nanosecond mtimes the real remote could never return.
+// Its timestamps are deliberately the coarsest granularity anywhere in the
+// pipeline - whole seconds - so a test that passes here is not passing because it
+// got a precision the manifest could never have stored.
 package localfs
 
 import (
@@ -71,9 +71,9 @@ func (f *FS) List(ctx context.Context, dir string) ([]remote.Entry, error) {
 	out := make([]remote.Entry, 0, len(names))
 	for _, d := range names {
 		child := path.Join(rel, norm.NFC.String(d.Name()))
-		// Stat rather than d.Info: a WebDAV server follows symlinks, and an entry
-		// whose target is gone is simply not listed rather than failing the whole
-		// directory.
+		// Stat rather than d.Info: the publisher's server resolves symlinks, and an
+		// entry whose target is gone is simply not listed rather than failing the
+		// whole directory.
 		st, err := os.Stat(filepath.Join(full, d.Name()))
 		if err != nil {
 			continue
@@ -81,8 +81,8 @@ func (f *FS) List(ctx context.Context, dir string) ([]remote.Entry, error) {
 		out = append(out, entryOf(child, st))
 	}
 
-	// os.ReadDir sorts by the on-disk name; sorting by the normalized path keeps
-	// the order stable against the WebDAV client, which sorts by nothing at all.
+	// os.ReadDir sorts by the on-disk name; sorting by the normalized path is what
+	// the SMB client does too, so the two agree on order.
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
 }
@@ -157,8 +157,8 @@ func (f *FS) OpenRange(ctx context.Context, p string, offset, length int64) (io.
 		fh.Close()
 		return nil, 0, fmt.Errorf("open %q: %w", p, err)
 	}
-	// The server's answer to a range past the end is 416, not an empty body, and
-	// the transfer engine has to see the same thing here.
+	// A range that starts past the end of the file is an error on the real remote,
+	// not an empty body, and the transfer engine has to see the same thing here.
 	if offset > st.Size() {
 		fh.Close()
 		return nil, 0, fmt.Errorf("open %q: offset %d is past the end (%d bytes)", p, offset, st.Size())
@@ -203,9 +203,9 @@ func entryOf(rel string, st os.FileInfo) remote.Entry {
 		Path:  rel,
 		Name:  path.Base("/" + rel),
 		IsDir: st.IsDir(),
-		// WebDAV's getlastmodified is an RFC 1123 date in GMT and cannot carry more
-		// than whole seconds; anything finer here would be fidelity the real remote
-		// does not have.
+		// Truncated on purpose, to something coarser than the pipeline carries
+		// anywhere: the manifest stores milliseconds, so a test must not be able to
+		// pass on a precision that could never have survived a real mirror.
 		MTime: st.ModTime().UTC().Truncate(time.Second),
 	}
 	if rel == "" {

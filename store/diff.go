@@ -20,10 +20,10 @@ type DiffRow struct {
 // manifest of the real collection is six figures of rows, and the differ has to
 // stay flat in memory.
 //
-// The mtime comparison carries a tolerance because WebDAV's getlastmodified is an
-// RFC 1123 date in GMT and cannot express less than a second, while the local
-// timestamp is nanoseconds. Comparing for equality would make every file look
-// changed on every scan, forever (DESIGN.md §2.3).
+// The mtime comparison carries a tolerance because the manifest stores mtimes as
+// milliseconds while the local timestamp keeps whatever granularity its
+// filesystem has. Comparing for equality would make every file look changed on
+// every scan, forever (DESIGN.md §2.3).
 func (s *Store) ChangedFiles(ctx context.Context, pairID int64, tolerance time.Duration, fn func(DiffRow) error) error {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT m.relpath, m.size, m.mtime, f.relpath IS NOT NULL, coalesce(f.size, 0)

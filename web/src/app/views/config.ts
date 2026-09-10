@@ -160,9 +160,9 @@ export class ConfigPage {
   // ---- the remote probe ----------------------------------------------------
 
   readonly probing = signal(false);
-  readonly probe = signal<{ url: string; dirs: number; files: number; millis: number } | undefined>(
-    undefined,
-  );
+  readonly probe = signal<
+    { target: string; dirs: number; files: number; millis: number } | undefined
+  >(undefined);
   readonly probeError = signal('');
 
   constructor() {
@@ -361,7 +361,7 @@ export class ConfigPage {
     try {
       const res = await this.api.probeRemote();
       this.probe.set({
-        url: String(res['url'] ?? ''),
+        target: String(res['target'] ?? ''),
         dirs: Number(res['dirs'] ?? 0),
         files: Number(res['files'] ?? 0),
         millis: Number(res['millis'] ?? 0),

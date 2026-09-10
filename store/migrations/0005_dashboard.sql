@@ -2,9 +2,10 @@
 -- milliseconds, as in 0001.
 
 -- bw_samples is the Bandwidth view's time series. A minute row is written by the
--- daemon from the counters on the WebDAV transport; rolled up to an hour after a
--- week and to a day after a quarter, because a per-minute series kept forever is
--- half a million rows a year and nobody reads minutes from last spring.
+-- daemon from the counters on the connections to the publisher; rolled up to an
+-- hour after a week and to a day after a quarter, because a per-minute series
+-- kept forever is half a million rows a year and nobody reads minutes from last
+-- spring.
 --
 -- span is part of the key rather than a separate table so a rollup is one INSERT
 -- ... SELECT and one DELETE over the same shape.

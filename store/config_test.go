@@ -20,21 +20,21 @@ func TestConfigDefaultsAndSet(t *testing.T) {
 	if got := values.Get(KeyTimezone); got != "Europe/Berlin" {
 		t.Errorf("default timezone = %q, want Europe/Berlin", got)
 	}
-	if got := values.Get(KeyRemoteURL); got != "" {
+	if got := values.Get(KeyRemoteHost); got != "" {
 		t.Errorf("unset key = %q, want empty", got)
 	}
 
-	changed, err := s.ConfigSet(ctx, map[string]string{KeyRemoteURL: "http://10.13.13.2:5005/media"}, "test")
+	changed, err := s.ConfigSet(ctx, map[string]string{KeyRemoteHost: "10.13.13.2"}, "test")
 	if err != nil {
 		t.Fatalf("ConfigSet: %v", err)
 	}
-	if len(changed) != 1 || changed[0] != KeyRemoteURL {
-		t.Errorf("changed = %v, want [%s]", changed, KeyRemoteURL)
+	if len(changed) != 1 || changed[0] != KeyRemoteHost {
+		t.Errorf("changed = %v, want [%s]", changed, KeyRemoteHost)
 	}
 
 	// Writing the same value again is not a change, so it must not fill the audit
 	// trail with rows that say nothing happened.
-	changed, err = s.ConfigSet(ctx, map[string]string{KeyRemoteURL: "http://10.13.13.2:5005/media"}, "test")
+	changed, err = s.ConfigSet(ctx, map[string]string{KeyRemoteHost: "10.13.13.2"}, "test")
 	if err != nil {
 		t.Fatalf("ConfigSet: %v", err)
 	}
@@ -57,14 +57,18 @@ func TestConfigValidation(t *testing.T) {
 	s := newStore(t)
 
 	cases := map[string]struct{ key, value string }{
-		"not a cidr":     {KeyWGAllowedIPs, "everything"},
-		"endpoint":       {KeyWGEndpoint, "rootserver"},
-		"not base64":     {KeyWGPeerKey, "definitely not a key"},
-		"short key":      {KeyWGPeerKey, "aGVsbG8="},
-		"mtu":            {KeyWGMTU, "9"},
-		"keepalive":      {KeyWGKeepalive, "-1"},
-		"scheme missing": {KeyRemoteURL, "10.13.13.2:5005/media"},
-		"timezone":       {KeyTimezone, "Middle/Earth"},
+		"not a cidr":      {KeyWGAllowedIPs, "everything"},
+		"endpoint":        {KeyWGEndpoint, "rootserver"},
+		"not base64":      {KeyWGPeerKey, "definitely not a key"},
+		"short key":       {KeyWGPeerKey, "aGVsbG8="},
+		"mtu":             {KeyWGMTU, "9"},
+		"keepalive":       {KeyWGKeepalive, "-1"},
+		"host is a path":  {KeyRemoteHost, "10.13.13.2/media"},
+		"host bad port":   {KeyRemoteHost, "10.13.13.2:0"},
+		"share is a path": {KeyRemoteShare, "media/Filme"},
+		"share climbs":    {KeyRemotePath, "../elsewhere"},
+		"update url":      {KeyUpdateURL, "ftp://nas/bin"},
+		"timezone":        {KeyTimezone, "Middle/Earth"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -247,7 +251,7 @@ func TestConfigDefaultsAreUsable(t *testing.T) {
 	}
 
 	if got := values.Duration(KeyMTimeTolerance); got < time.Second {
-		t.Errorf("mtime tolerance = %v; WebDAV dates carry whole seconds, so it must never be below one", got)
+		t.Errorf("mtime tolerance = %v; the manifest keeps whole milliseconds, so it must never be below one second", got)
 	}
 	if got := values.Int(KeyScanWorkers); got < 1 {
 		t.Errorf("scan workers = %d, want at least 1", got)

@@ -132,10 +132,10 @@
   }
 
   <p class="note">
-    An empty target is the publisher's address, taken from the WebDAV URL. A reply proves the
-    rootserver forwards between spokes, which is the single most likely reason for the whole thing
-    to fail and is not a jcc-mirror bug: the server's peer entries have to cover each client's
-    address, and it has to have IP forwarding on.
+    An empty target is the publisher's address, taken from the configured remote host. A reply
+    proves the rootserver forwards between spokes, which is the single most likely reason for the
+    whole thing to fail and is not a jcc-mirror bug: the server's peer entries have to cover each
+    client's address, and it has to have IP forwarding on.
   </p>
 </section>
 
@@ -188,9 +188,9 @@
   }
 
   <p class="note">
-    A ranged GET, timed end to end and then discarded. It is capped at 256 MiB, and the bandwidth
-    schedule applies to it like any other transfer — a probe inside a capped window measures the
-    cap, not the link.
+    A bounded read of one remote file, timed end to end and then discarded. It is capped at 256 MiB,
+    and the bandwidth schedule applies to it like any other transfer — a probe inside a capped
+    window measures the cap, not the link.
   </p>
 </section>
 
@@ -205,8 +205,8 @@
   @if (status()?.remote; as remote) {
     <div class="cards">
       <div class="card">
-        <div class="k">URL</div>
-        <div class="v mono path">{{ remote.url || 'not configured' }}</div>
+        <div class="k">Target</div>
+        <div class="v mono path">{{ remote.target || 'not configured' }}</div>
       </div>
       @if (remote.error) {
         <div class="card">
@@ -238,7 +238,7 @@
   }
 
   <p class="note">
-    One PROPFIND of the remote root. The answer is written to the event log as well, so it is still
+    One listing of the remote root. The answer is written to the event log as well, so it is still
     there after the page is reloaded.
   </p>
 </section>
@@ -272,7 +272,7 @@
   }
 
   @if (listing(); as l) {
-    <p class="note mono path">{{ l.url }} · {{ l.millis }} ms</p>
+    <p class="note mono path">{{ l.target }} · {{ l.millis }} ms</p>
     <div class="scroll">
       <table>
         <thead>
@@ -306,9 +306,9 @@
   }
 
   <p class="note">
-    Each step is exactly one PROPFIND, which is what a walk costs per directory — so the round trip
-    above multiplied by the number of directories is roughly what a scan takes, and it is what the
-    scan schedule should be set from.
+    Each step is exactly one directory listing, which is what a walk costs per directory — so the
+    round trip above multiplied by the number of directories is roughly what a scan takes, and it is
+    what the scan schedule should be set from.
   </p>
 </section>
 

@@ -96,14 +96,14 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 // sent out, not even masked into something a client might send back: Set says
 // whether one is stored, which is all a UI needs to render it.
 type configEntry struct {
-	Key       string `json:"key"`
-	Group     string `json:"group"`
-	Label     string `json:"label"`
-	Help      string `json:"help,omitempty"`
-	Value     string `json:"value,omitempty"`
-	Secret    bool   `json:"secret,omitempty"`
-	Required  bool   `json:"required,omitempty"`
-	Set       bool   `json:"set"`
+	Key      string `json:"key"`
+	Group    string `json:"group"`
+	Label    string `json:"label"`
+	Help     string `json:"help,omitempty"`
+	Value    string `json:"value,omitempty"`
+	Secret   bool   `json:"secret,omitempty"`
+	Required bool   `json:"required,omitempty"`
+	Set      bool   `json:"set"`
 }
 
 func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
@@ -278,8 +278,8 @@ func (a *App) probeRemote(ctx context.Context) map[string]any {
 	took := time.Since(start)
 	if err != nil {
 		a.Event(ctx, store.LevelError, store.KindRemoteProbe, "remote probe failed: "+err.Error(),
-			map[string]any{"url": client.BaseURL()})
-		return map[string]any{"error": err.Error(), "url": client.BaseURL()}
+			map[string]any{"target": client.Target()})
+		return map[string]any{"error": err.Error(), "target": client.Target()}
 	}
 
 	var dirs, files int
@@ -291,7 +291,7 @@ func (a *App) probeRemote(ctx context.Context) map[string]any {
 		}
 	}
 	data := map[string]any{
-		"url": client.BaseURL(), "dirs": dirs, "files": files,
+		"target": client.Target(), "dirs": dirs, "files": files,
 		"millis": took.Milliseconds(),
 	}
 	a.Event(ctx, store.LevelInfo, store.KindRemoteProbe,

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -89,18 +89,18 @@ func (a *App) handleGetDiagnostics(w http.ResponseWriter, r *http.Request) {
 }
 
 // RemoteListing is one directory of the publisher's tree, as the explorer shows
-// it. Millis is on it because how long a single PROPFIND takes is what the scan
+// it. Millis is on it because how long a single listing takes is what the scan
 // schedule is set from.
 type RemoteListing struct {
 	Path    string         `json:"path"`
-	URL     string         `json:"url"`
+	Target  string         `json:"target"`
 	Millis  int64          `json:"millis"`
 	Entries []remote.Entry `json:"entries"`
 }
 
-// handleRemoteList is the raw PROPFIND explorer. It changes nothing, but it does
-// cost the publisher a request, which is why it lists one directory rather than
-// walking.
+// handleRemoteList is the raw directory explorer. It changes nothing, but it does
+// cost the publisher a round trip, which is why it lists one directory rather
+// than walking.
 func (a *App) handleRemoteList(w http.ResponseWriter, r *http.Request) {
 	client, err := a.Remote()
 	if err != nil {
@@ -121,7 +121,7 @@ func (a *App) handleRemoteList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, RemoteListing{
-		Path: dir, URL: client.URLFor(dir), Millis: took.Milliseconds(), Entries: entries,
+		Path: dir, Target: client.TargetFor(dir), Millis: took.Milliseconds(), Entries: entries,
 	})
 }
 
@@ -163,7 +163,7 @@ func (a *App) handlePing(w http.ResponseWriter, r *http.Request) {
 }
 
 // pingTarget resolves what to ping: whatever was asked for, or - since the one
-// address worth checking is the publisher's - the host of the WebDAV URL.
+// address worth checking is the publisher's - the configured remote host.
 func (a *App) pingTarget(ctx context.Context, want string) (netip.Addr, error) {
 	if want = strings.TrimSpace(want); want != "" {
 		addr, err := netip.ParseAddr(want)
@@ -177,20 +177,22 @@ func (a *App) pingTarget(ctx context.Context, want string) (netip.Addr, error) {
 	if err != nil {
 		return netip.Addr{}, err
 	}
-	u, err := url.Parse(values.Get(store.KeyRemoteURL))
-	if err != nil {
-		return netip.Addr{}, errors.New("no address to ping: send one as `target`")
+	host := strings.TrimSpace(values.Get(store.KeyRemoteHost))
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
 	}
-	// A hostname cannot be pinged from here: the netstack resolver is only wired
-	// up for the WebDAV client, and the address that matters is the publisher's.
-	addr, err := netip.ParseAddr(u.Hostname())
+	// A hostname cannot be pinged from here: the netstack resolver is wired up for
+	// the connections the mirror opens, not for ICMP, and the address that matters
+	// is the publisher's.
+	addr, err := netip.ParseAddr(host)
 	if err != nil {
 		return netip.Addr{}, errors.New("no address to ping: send one as `target`")
 	}
 	return addr, nil
 }
 
-// ThroughputResult is a ranged GET timed end to end. It is the number that says
+// ThroughputResult is a bounded read of one remote file, timed end to end. It is
+// the number that says
 // whether netstack or the rootserver's uplink is the ceiling, which is the thing
 // the bandwidth schedule has to respect (DESIGN.md §2.2).
 type ThroughputResult struct {

@@ -12,7 +12,7 @@ import (
 
 // cmdScan builds the manifest. The publisher runs nothing of ours and offers no
 // file list, so the only way to know what he has is to walk the share one
-// PROPFIND per directory - and that walk is what every later command reads
+// directory listing at a time - and that walk is what every later command reads
 // (DESIGN.md §2.3).
 //
 // It is also the measurement the schedule rests on: a scan of the real collection

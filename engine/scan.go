@@ -32,7 +32,7 @@ type ScanResult struct {
 	Duration time.Duration `json:"duration"`
 }
 
-// Scan walks the pair's remote root into the manifest, one PROPFIND per
+// Scan walks the pair's remote root into the manifest, one directory listing per
 // directory, and sweeps what it did not find. With resume it continues an
 // interrupted walk instead of starting over (DESIGN.md §2.3).
 func (e *Engine) Scan(ctx context.Context, pair store.Pair, resume bool) (ScanResult, error) {
@@ -72,12 +72,12 @@ func (e *Engine) Scan(ctx context.Context, pair store.Pair, resume bool) (ScanRe
 	switch {
 	case walkErr != nil:
 		// Not a failure: a walk that stopped early is picked up where it left off.
-		// The alternative is throwing away ten minutes of PROPFINDs because a
-		// transfer window closed.
+		// The alternative is throwing away ten minutes of directory listings because
+		// a transfer window closed.
 		state, msg = store.ScanInterrupted, walkErr.Error()
 
 	// The non-empty assertion (DESIGN.md §2.5). A share that has been unmounted on
-	// the publisher's side answers every PROPFIND with an empty directory, and
+	// the publisher's side answers every listing with an empty directory, and
 	// sweeping on that would erase the only record of what he has.
 	//
 	// It catches a share that was already gone when the walk started, not one that
@@ -230,9 +230,9 @@ func (w *walk) listDir(ctx context.Context, dir string) error {
 	for _, e := range entries {
 		rel, ok := pairRel(w.pair, e.Path)
 		if !ok {
-			// A server that answers with an href outside the tree it was asked about
-			// is confused, or the base URL is wrong; either way it is not ours to
-			// store under this pair.
+			// A remote that reports a path outside the tree it was asked about is
+			// confused, or the pair's remote root is wrong; either way it is not ours
+			// to store under this pair.
 			w.engine.log.Warnf("scan: %q lies outside the pair root, skipping", e.Path)
 			continue
 		}
@@ -315,8 +315,8 @@ func (w *walk) report() func() {
 	return func() { once.Do(func() { close(done) }) }
 }
 
-// pairRel turns a path the remote reported - which is relative to the WebDAV
-// base URL - into one relative to the pair's remote root.
+// pairRel turns a path the remote reported - which is relative to the remote
+// root - into one relative to the pair's remote root.
 func pairRel(p store.Pair, remotePath string) (string, bool) {
 	if p.RemotePath == "" {
 		return remotePath, true

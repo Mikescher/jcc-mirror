@@ -227,9 +227,9 @@ func collectChanged(t *testing.T, s *Store, pairID int64, tolerance time.Duratio
 	return out
 }
 
-// WebDAV's getlastmodified is an RFC 1123 date in GMT and carries whole seconds
-// only, while the local timestamp is nanoseconds. Comparing for equality would
-// make every file look changed on every scan, forever, and re-transfer 30 TB
+// The manifest stores mtimes as milliseconds, while the local timestamp carries
+// whatever granularity its filesystem has. Comparing for equality would make
+// every file look changed on every scan, forever, and re-transfer 30 TB
 // (DESIGN.md §2.3).
 func TestChangedFilesMtimeTolerance(t *testing.T) {
 	const tolerance = 2 * time.Second
@@ -241,7 +241,7 @@ func TestChangedFilesMtimeTolerance(t *testing.T) {
 		want      bool
 	}{
 		{"the same instant", 0, 100, false},
-		{"a second of HTTP-date rounding", time.Second, 100, false},
+		{"a second of clock skew", time.Second, 100, false},
 		{"a second early", -time.Second, 100, false},
 		{"exactly the tolerance", tolerance, 100, false},
 		{"past the tolerance", tolerance + time.Second, 100, true},

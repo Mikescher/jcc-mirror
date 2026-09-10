@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -88,11 +90,59 @@ func TestReadViewsAreOpenAndAnswerJSON(t *testing.T) {
 			t.Errorf("GET %s did not answer JSON: %v", path, err)
 		}
 	}
+}
 
-	// The sync moved bytes over a real HTTP connection, so the meter the
-	// bandwidth series is sampled from must have seen them.
-	if got := m.app.meter.in.Load(); got < 2048 {
-		t.Errorf("the transport meter counted %d bytes in; the transfer alone was 2048", got)
+// TestTheMeterCountsWhatCrossesTheWire covers the counter the Bandwidth view is
+// sampled from. It sits on the dialer rather than on any request, because the
+// remote is not HTTP and there is no round trip to hook - so what it counts is
+// checked on a connection rather than on a run.
+func TestTheMeterCountsWhatCrossesTheWire(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	// An echo, so one exchange moves the same bytes in both directions and the
+	// two counters can be told apart.
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		io.Copy(conn, conn)
+	}()
+
+	a, _ := newApp(t)
+
+	a.mu.Lock()
+	dial := a.meteredDialLocked()
+	a.mu.Unlock()
+
+	conn, err := dial(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	sent := []byte("forty-two bytes of nothing in particular")
+	if _, err := conn.Write(sent); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	back := make([]byte, len(sent))
+	if _, err := io.ReadFull(conn, back); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	in, out := a.meter.take()
+	if in != int64(len(sent)) || out != int64(len(sent)) {
+		t.Errorf("meter counted %d in and %d out, want %d each", in, out, len(sent))
+	}
+	// take() is what a per-minute sample does, so the counters must be back to
+	// zero or every sample would carry the whole run's total again.
+	if in, out := a.meter.take(); in != 0 || out != 0 {
+		t.Errorf("a second sample counted %d in and %d out, want zero", in, out)
 	}
 }
 

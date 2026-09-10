@@ -16,14 +16,13 @@ import (
 	"testing"
 	"time"
 
-	xwebdav "golang.org/x/net/webdav"
-
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
-// mirror is a whole publisher behind a real WebDAV server, plus a destination
-// directory. The dashboard's runs go through exactly the code the daemon uses -
-// App.Remote returns a WebDAV client and nothing here fakes one.
+// mirror is a whole publisher's tree, plus the destination directory it is
+// mirrored into. The dashboard's runs go through exactly the code the daemon
+// uses; only what is behind App.Remote is local, because SMB has no in-process
+// server to stand one up with.
 type mirror struct {
 	app  *App
 	h    http.Handler
@@ -34,16 +33,14 @@ type mirror struct {
 
 func newMirror(t *testing.T) *mirror {
 	t.Helper()
-	a, h := newApp(t)
 
 	src, dst := t.TempDir(), t.TempDir()
-	srv := httptest.NewServer(&xwebdav.Handler{FileSystem: xwebdav.Dir(src), LockSystem: xwebdav.NewMemLS()})
-	t.Cleanup(srv.Close)
+	a, h := newAppWithRemote(t, src)
 
 	// The reserve is set to nothing: the default keeps 50 GiB free on the
 	// destination volume, and whether the machine running the tests has that much
 	// is not something these tests are about.
-	form := url.Values{store.KeyRemoteURL: {srv.URL}, store.KeyReserve: {"1"}}
+	form := url.Values{store.KeyReserve: {"1"}}
 	if rec := postForm(t, h, "/api/config", form); rec.Code != http.StatusOK {
 		t.Fatalf("configure the remote: %d %s", rec.Code, rec.Body)
 	}
@@ -161,8 +158,8 @@ func TestDashboardRunsTheWholeMirror(t *testing.T) {
 		}
 	}
 
-	// The second plan is the one that matters: it proves the round trip through a
-	// real WebDAV server preserved what the differ compares on.
+	// The second plan is the one that matters: it proves the round trip preserved
+	// what the differ compares on.
 	if after := m.run(t, RunPlan); after.Plan.Transfers() != 0 {
 		t.Errorf("a second plan still wants %d transfers", after.Plan.Transfers())
 	}

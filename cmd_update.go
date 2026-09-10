@@ -122,15 +122,19 @@ func cmdUpdate(ctx context.Context, args []string) error {
 	return nil
 }
 
-// updateSourceOf resolves the binary URL the same way the daemon does: a
-// relative one against the WebDAV root, with the publisher's credentials.
+// updateSourceOf reads the binary URL the daemon would use. Only the absolute
+// form works from here: a binary on the publisher's share is reached over SMB
+// through the tunnel, and this command deliberately opens no tunnel of its own.
 func updateSourceOf(values store.Values) (update.Source, error) {
-	resolved, err := update.ResolveURL(values.Get(store.KeyRemoteURL), values.Get(store.KeyUpdateURL))
+	rawURL, sharePath, err := update.Locate(values.Get(store.KeyUpdateURL))
 	if err != nil {
 		return update.Source{}, err
 	}
+	if sharePath != "" {
+		return update.Source{}, fmt.Errorf("%q is a path on the publisher's share, which is only reachable through the tunnel: install it from the dashboard", sharePath)
+	}
 	return update.Source{
-		URL:      resolved,
+		URL:      rawURL,
 		Username: values.Get(store.KeyRemoteUser),
 		Password: values.Get(store.KeyRemotePassword),
 	}, nil

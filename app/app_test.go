@@ -15,8 +15,6 @@ import (
 	"strings"
 	"testing"
 
-	xwebdav "golang.org/x/net/webdav"
-
 	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/store"
 )
@@ -38,6 +36,15 @@ func TestMain(m *testing.M) {
 // newApp starts a daemon against a fresh store and returns it with its handler.
 func newApp(t *testing.T) (*App, http.Handler) {
 	t.Helper()
+	return newAppWithRemote(t, "")
+}
+
+// newAppWithRemote is newApp with a local directory standing in for the
+// publisher's share. There is no in-process SMB server to point the daemon at,
+// so everything that has to reach the publisher - a probe, a scan, a run - is
+// driven off Options.RemoteDir instead (DESIGN.md §2.1).
+func newAppWithRemote(t *testing.T, remoteDir string) (*App, http.Handler) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	st, err := store.OpenFile(ctx, filepath.Join(t.TempDir(), "test.db"))
@@ -45,7 +52,7 @@ func newApp(t *testing.T) (*App, http.Handler) {
 		t.Fatalf("OpenFile: %v", err)
 	}
 
-	a := New(st, &logs.Logger{}, Options{Version: "test", DataDir: t.TempDir()})
+	a := New(st, &logs.Logger{}, Options{Version: "test", DataDir: t.TempDir(), RemoteDir: remoteDir})
 	h := a.Handler()
 	a.SetHandler(h)
 	if err := a.Start(ctx); err != nil {
@@ -219,9 +226,6 @@ func TestBadValueIsRejectedWithoutChangingAnything(t *testing.T) {
 }
 
 func TestProbeRecordsAnEvent(t *testing.T) {
-	a, h := newApp(t)
-	ctx := context.Background()
-
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "ClipCornDB"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -230,16 +234,9 @@ func TestProbeRecordsAnEvent(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	srv := httptest.NewServer(&xwebdav.Handler{
-		Prefix:     "/share",
-		FileSystem: xwebdav.Dir(dir),
-		LockSystem: xwebdav.NewMemLS(),
-	})
-	defer srv.Close()
+	a, h := newAppWithRemote(t, dir)
+	ctx := context.Background()
 
-	if rec := postForm(t, h, "/api/config", url.Values{store.KeyRemoteURL: {srv.URL + "/share"}}); rec.Code != http.StatusOK {
-		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
-	}
 	if rec := postForm(t, h, "/api/remote/probe", url.Values{}); rec.Code != http.StatusOK {
 		t.Fatalf("probe = %d: %s", rec.Code, rec.Body)
 	}
@@ -269,7 +266,9 @@ func TestRemoteIsRefusedWhileTheTunnelIsDown(t *testing.T) {
 		store.KeyWGEndpoint:   {"198.51.100.7:51820"},
 		store.KeyWGAddress:    {"10.13.13.3/32"},
 		store.KeyWGAllowedIPs: {"10.13.13.0/24"},
-		store.KeyRemoteURL:    {"http://10.13.13.2:5005/media"},
+		store.KeyRemoteHost:   {"10.13.13.2"},
+		store.KeyRemoteShare:  {"media"},
+		store.KeyRemoteUser:   {"ro"},
 	}); rec.Code != http.StatusOK {
 		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
 	}

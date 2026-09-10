@@ -281,7 +281,7 @@ func (e *Engine) runJob(ctx context.Context, pair store.Pair, job store.Job) (mo
 	if err != nil {
 		return false, fmt.Errorf("stat the partial file: %w", err)
 	}
-	// No source-side checksum exists over WebDAV, and none is needed: WireGuard
+	// No source-side checksum exists over SMB, and none is needed: WireGuard
 	// authenticates every packet. Truncation is the failure mode that remains, and
 	// this is what catches it (DESIGN.md §2.3).
 	if st.Size() != job.BytesTotal {

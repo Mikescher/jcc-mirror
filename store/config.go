@@ -32,9 +32,12 @@ const (
 	KeyWGMTU          = "wg.mtu"
 	KeyWGKeepalive    = "wg.keepalive"
 
-	KeyRemoteURL      = "remote.url"
+	KeyRemoteHost     = "remote.host"
+	KeyRemoteShare    = "remote.share"
+	KeyRemotePath     = "remote.path"
 	KeyRemoteUser     = "remote.user"
 	KeyRemotePassword = "remote.password"
+	KeyRemoteDomain   = "remote.domain"
 
 	KeySchedule     = "schedule.transfer"
 	KeyScanSchedule = "schedule.scan"
@@ -114,15 +117,15 @@ const SecretMask = "••••••••"
 // KeyDef describes one setting. The Config view is generated from this table, so a
 // key added in a later milestone costs no HTML.
 type KeyDef struct {
-	Name      string
-	Group     string
-	Label     string
-	Help      string
-	Default   string
-	Secret    bool // masked in the UI and in the audit trail
-	Seeded    bool // created at first start too, but meant to be overwritten
-	Required  bool // the tunnel or the remote does not come up without it
-	Validate  func(string) error
+	Name     string
+	Group    string
+	Label    string
+	Help     string
+	Default  string
+	Secret   bool // masked in the UI and in the audit trail
+	Seeded   bool // created at first start too, but meant to be overwritten
+	Required bool // the tunnel or the remote does not come up without it
+	Validate func(string) error
 }
 
 var keyDefs = []KeyDef{
@@ -166,7 +169,7 @@ var keyDefs = []KeyDef{
 	},
 	{
 		Name: KeyWGDNS, Group: "Tunnel", Label: "DNS",
-		Help:     "Resolvers reachable through the tunnel. Only needed when the WebDAV URL uses a hostname.",
+		Help:     "Resolvers reachable through the tunnel. Only needed when the remote host is a name rather than an address.",
 		Validate: validateOptionalAddrList,
 	},
 	{
@@ -183,19 +186,35 @@ var keyDefs = []KeyDef{
 	},
 
 	{
-		Name: KeyRemoteURL, Group: "Remote", Label: "WebDAV base URL",
-		Help:     "The remote root of the mirror, e.g. http://10.13.13.2:5005/media. Plain HTTP is fine and faster: the tunnel already encrypts.",
+		Name: KeyRemoteHost, Group: "Remote", Label: "Host",
+		Help:     "The publisher's SMB server, as host or host:port. It is reached through the tunnel, so this is his address inside it, e.g. 10.13.13.2. Port 445 unless it says otherwise.",
 		Required: true,
-		Validate: validateHTTPURL,
+		Validate: validateHostPort,
+	},
+	{
+		Name: KeyRemoteShare, Group: "Remote", Label: "Share",
+		Help:     "The share to mount, named the way DSM names it - the name on its own, with no server prefix and no path.",
+		Required: true,
+		Validate: validateShareName,
+	},
+	{
+		Name: KeyRemotePath, Group: "Remote", Label: "Path in the share",
+		Help:     "The directory inside the share that is the remote root of the mirror. Empty is the share itself; every pair's publisher directory is relative to whichever this is.",
+		Validate: validateRelPath,
 	},
 	{
 		Name: KeyRemoteUser, Group: "Remote", Label: "Username",
-		Help: "A read-only account on the publisher's DSM.",
+		Help:     "A read-only account on the publisher's DSM. SMB has no usable anonymous mode, so this is required even for a share that is open to everyone.",
+		Required: true,
 	},
 	{
 		Name: KeyRemotePassword, Group: "Remote", Label: "Password",
 		Help:   "Stored in plaintext: it is a read-only account reached over a private tunnel.",
 		Secret: true,
+	},
+	{
+		Name: KeyRemoteDomain, Group: "Remote", Label: "Domain",
+		Help: "Optional NTLM domain or workgroup. An account local to the NAS - which is what a DSM user is - needs none.",
 	},
 
 	{
@@ -223,13 +242,13 @@ var keyDefs = []KeyDef{
 
 	{
 		Name: KeyScanWorkers, Group: "Scan", Label: "Walk concurrency",
-		Help:     "PROPFINDs in flight. The walk is latency-bound, so a little parallelism helps a lot and more helps nothing.",
+		Help:     "Directory listings in flight. The walk is latency-bound, so a little parallelism helps a lot and more helps nothing.",
 		Default:  "8",
 		Validate: validatePositiveInt,
 	},
 	{
 		Name: KeyMTimeTolerance, Group: "Scan", Label: "Mtime tolerance",
-		Help:     "How far apart two timestamps may be and still count as the same file. WebDAV dates carry whole seconds only, so this must never be zero.",
+		Help:     "How far apart two timestamps may be and still count as the same file. The manifest keeps whole milliseconds and the destination volume has a granularity of its own, so this must never be zero.",
 		Default:  "2s",
 		Validate: validateDuration,
 	},
@@ -385,7 +404,7 @@ var keyDefs = []KeyDef{
 
 	{
 		Name: KeyUpdateURL, Group: "Update", Label: "Binary URL",
-		Help:     "Where a newer jcc-mirror is fetched from. A path like \"dist/jcc-mirror-amd64\" is relative to the WebDAV root, which is the usual setup: the binary sits on the share the mirror already reads, so the publisher needs nothing new. Empty switches updating off entirely.",
+		Help:     "Where a newer jcc-mirror is fetched from. A path like \"dist/jcc-mirror-amd64\" is read off the publisher's share, relative to the remote root, which is the usual setup: the binary sits where the mirror already reads, so the publisher needs nothing new. An absolute http(s) URL is fetched over the tunnel instead. Empty switches updating off entirely.",
 		Validate: validateUpdateURL,
 	},
 	{
@@ -396,7 +415,7 @@ var keyDefs = []KeyDef{
 	},
 	{
 		Name: KeyUpdateInterval, Group: "Update", Label: "Check every",
-		Help:     "How often to ask the share whether it has a newer binary. It is one HEAD request, so this can be short; it is checked at startup either way.",
+		Help:     "How often to ask the share whether it has a newer binary. It is one stat, so this can be short; it is checked at startup either way.",
 		Default:  "6h",
 		Validate: validateDuration,
 	},
@@ -759,10 +778,10 @@ func validateKeepalive(s string) error {
 	return nil
 }
 
-// validateUpdateURL takes either an absolute URL or a path on the WebDAV share.
-// Both end up as one absolute URL fetched over the tunnel; the relative form
-// exists because that is where the binary actually lives, and repeating the base
-// URL in a second setting is a way for the two to disagree.
+// validateUpdateURL takes either an absolute URL or a path on the publisher's
+// share. The relative form exists because that is where the binary actually
+// lives, and writing the remote root down a second time is a way for the two to
+// disagree.
 func validateUpdateURL(s string) error {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -796,10 +815,55 @@ func validateHTTPURL(s string) error {
 		return errors.New("no host")
 	}
 	// The username and password are settings of their own. In the URL they would
-	// be echoed by /healthz, by every status read and by the PROPFIND explorer,
-	// none of which mask anything.
+	// be echoed by /healthz and by every status read, neither of which masks
+	// anything.
 	if u.User != nil {
 		return errors.New("put the credentials in their own settings, not in the URL")
+	}
+	return nil
+}
+
+// validateHostPort takes the publisher's SMB server. It is looser than
+// validateEndpoint on purpose: the port is optional, because 445 is the only one
+// anybody serves SMB on.
+func validateHostPort(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return errors.New("required")
+	}
+
+	host := s
+	if h, port, err := net.SplitHostPort(s); err == nil {
+		if h == "" {
+			return errors.New("expected host or host:port")
+		}
+		if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
+			return fmt.Errorf("bad port %q", port)
+		}
+		host = h
+	} else if _, err := netip.ParseAddr(s); err != nil && strings.ContainsAny(s, ":[]") {
+		// Not host:port and not a bare IPv6 literal either, so the colons are a typo.
+		return errors.New("expected host or host:port")
+	}
+	if strings.ContainsAny(host, `/\`) {
+		return errors.New("a host on its own; the share and the path inside it are settings of their own")
+	}
+	return nil
+}
+
+// validateShareName takes the share as DSM names it. A separator in it would
+// make it a path, and the path inside the share is a setting of its own - one
+// that may be empty, which a share name may not.
+func validateShareName(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return errors.New("required")
+	}
+	if strings.ContainsAny(s, `/\`) {
+		return errors.New("the share name on its own, with no server prefix and no path")
+	}
+	if s == "." || s == ".." {
+		return errors.New("not a share name")
 	}
 	return nil
 }

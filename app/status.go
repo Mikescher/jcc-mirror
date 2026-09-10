@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"blackforestbytes.com/jcc-mirror/schedule"
@@ -73,7 +74,7 @@ type Peer struct {
 
 type RemoteStatus struct {
 	Configured bool   `json:"configured"`
-	URL        string `json:"url,omitempty"`
+	Target     string `json:"target,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 
@@ -100,13 +101,16 @@ func (a *App) Status(ctx context.Context) Status {
 		st.PublicKey = pub
 	}
 
-	values, err := a.store.Config(ctx)
-	if err == nil {
-		st.Remote.URL = values.Get(store.KeyRemoteURL)
-		st.Remote.Configured = st.Remote.URL != ""
-	}
-	if _, err := a.Remote(); err != nil {
+	// Taken from the client rather than from the settings, so what is reported is
+	// the target the mirror would actually read, port defaults and all.
+	if client, err := a.Remote(); err == nil {
+		st.Remote.Target, st.Remote.Configured = client.Target(), true
+	} else {
 		st.Remote.Error = err.Error()
+		values, cfgErr := a.store.Config(ctx)
+		st.Remote.Configured = cfgErr == nil &&
+			strings.TrimSpace(values.Get(store.KeyRemoteHost)) != "" &&
+			strings.TrimSpace(values.Get(store.KeyRemoteShare)) != ""
 	}
 
 	st.Schedule = a.ScheduleStatus()

@@ -6,19 +6,19 @@ import (
 
 	"blackforestbytes.com/jcc-mirror/format"
 	"blackforestbytes.com/jcc-mirror/logs"
-	"blackforestbytes.com/jcc-mirror/webdav"
+	"blackforestbytes.com/jcc-mirror/smb"
 	"blackforestbytes.com/jcc-mirror/wg"
 )
 
 // cmdStatus is M0 step 2: join from the container and see the tunnel come up.
 // It reports what a dashboard diagnostics view will later report - handshake age,
-// endpoint, byte counters - and optionally touches the WebDAV root, which is the
+// endpoint, byte counters - and optionally lists the remote root, which is the
 // smallest end-to-end proof that the whole path works.
 func cmdStatus(ctx context.Context, args []string) error {
 	fs, cfg := newFlagSet("status")
 	wait := fs.Duration("wait", 15*time.Second, "how long to wait for the first handshake")
 	watch := fs.Duration("watch", 0, "repeat at this interval instead of exiting once")
-	probe := fs.Bool("probe", true, "also PROPFIND the WebDAV root when -url is given")
+	probe := fs.Bool("probe", true, "also list the remote root when -host and -share are given")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -47,12 +47,13 @@ func cmdStatus(ctx context.Context, args []string) error {
 		cancel()
 	}
 
-	var client *webdav.Client
-	if *probe && cfg.davURL != "" {
-		client, err = cfg.openDAV(ctx, tun)
+	var client *smb.Client
+	if *probe && cfg.smbHost != "" && cfg.smbShare != "" {
+		client, err = cfg.openSMB(ctx, tun)
 		if err != nil {
 			return err
 		}
+		defer client.Close()
 	}
 
 	for {
@@ -90,12 +91,12 @@ func printTunnelStatus(logger *logs.Logger, tun *wg.Tunnel) error {
 }
 
 // probeRoot lists the remote root once. Failure is reported rather than returned:
-// the tunnel status above is still worth seeing when WebDAV is the broken half.
-func probeRoot(ctx context.Context, logger *logs.Logger, client *webdav.Client) {
+// the tunnel status above is still worth seeing when the share is the broken half.
+func probeRoot(ctx context.Context, logger *logs.Logger, client *smb.Client) {
 	start := time.Now()
 	entries, err := client.List(ctx, "")
 	if err != nil {
-		logger.Errorf("webdav: %s: %v", client.BaseURL(), err)
+		logger.Errorf("smb: %s: %v", client.Target(), err)
 		return
 	}
 
@@ -107,5 +108,5 @@ func probeRoot(ctx context.Context, logger *logs.Logger, client *webdav.Client) 
 			files++
 		}
 	}
-	logger.Infof("webdav: %s -> %d dirs, %d files in %s", client.BaseURL(), dirs, files, format.Duration(time.Since(start)))
+	logger.Infof("smb: %s -> %d dirs, %d files in %s", client.Target(), dirs, files, format.Duration(time.Since(start)))
 }

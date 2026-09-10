@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"blackforestbytes.com/jcc-mirror/smb"
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
@@ -30,9 +31,9 @@ const maintenanceInterval = time.Hour
 const sampleInterval = time.Minute
 
 // meter counts what actually crosses the wire to the publisher. It sits on the
-// transport's connections rather than on its round trips, so request lines,
-// headers and PROPFIND bodies are all in the number - the Bandwidth view is meant
-// to answer "what did this cost the link", not "how many file bytes landed".
+// connections rather than on the operations they carry, so SMB's own framing and
+// its directory listings are in the number too - the Bandwidth view is meant to
+// answer "what did this cost the link", not "how many file bytes landed".
 type meter struct {
 	in  atomic.Int64
 	out atomic.Int64
@@ -60,9 +61,30 @@ func (c *meteredConn) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// meteredTransportLocked is the transport the WebDAV client rides on: the
-// tunnel's when there is one, an ordinary one when there is not, with every
-// connection counted either way.
+// meteredDialLocked is how the SMB client reaches the publisher: through the
+// tunnel when there is one, out of the host network when there is not, with every
+// connection counted either way. Metering at the dial is the only place it can
+// happen now that the remote is not HTTP - there is no round trip to hook.
+func (a *App) meteredDialLocked() smb.DialFunc {
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		d := net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+		return d.DialContext(ctx, network, address)
+	}
+	if a.tunnel != nil {
+		dial = a.tunnel.DialContext
+	}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dial(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &meteredConn{Conn: conn, m: &a.meter}, nil
+	}
+}
+
+// meteredTransportLocked is the HTTP that is left: the self-updater's download
+// when the binary is served by a web server rather than sitting on the share. It
+// goes through the tunnel when there is one, and is counted like everything else.
 func (a *App) meteredTransportLocked() *http.Transport {
 	var tr *http.Transport
 	if a.tunnel != nil {

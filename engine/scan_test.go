@@ -82,8 +82,9 @@ func TestScanWalksTheWholeTree(t *testing.T) {
 }
 
 // TestScanNeverListsAnExcludedSubtree is the cheap half of an exclude: the walk
-// costs one PROPFIND per directory against a link with real latency, so an
-// excluded subtree must not be walked at all rather than walked and dropped.
+// costs one directory listing per directory against a link with real latency,
+// so an excluded subtree must not be walked at all rather than walked and
+// dropped.
 func TestScanNeverListsAnExcludedSubtree(t *testing.T) {
 	h := newHarness(t)
 	writeTree(h)
@@ -310,7 +311,7 @@ func TestScanRefusesAnEmptyRemoteRoot(t *testing.T) {
 }
 
 // TestScanStoresPairRelativePaths keeps the two coordinate systems apart: the
-// remote reports paths under the WebDAV root, the manifest holds them under the
+// remote reports paths under the remote root, the manifest holds them under the
 // pair's root, and the local side is joined from the latter.
 func TestScanStoresPairRelativePaths(t *testing.T) {
 	h := newHarness(t)

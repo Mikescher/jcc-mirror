@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -78,5 +79,47 @@ func TestLoadMigrationsAreNumberedWithoutGaps(t *testing.T) {
 		if m.version != i+1 {
 			t.Errorf("migration %q has version %d, want %d", m.name, m.version, i+1)
 		}
+	}
+}
+
+// TestSMBMigrationLeavesATrail: the WebDAV base URL is dropped rather than kept,
+// and it named the two things an operator now has to enter again - the
+// publisher's address and the directory the mirror was rooted at. Losing it in
+// silence would leave nothing to copy them from.
+//
+// The migration has already run on a fresh file, so the row it removes is put
+// back and the statements are replayed over it.
+func TestSMBMigrationLeavesATrail(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+
+	const stale = "http://10.13.13.2:5005/media"
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO config (key, value, updated_at) VALUES ('remote.url', ?, 0)`, stale); err != nil {
+		t.Fatalf("plant the stale row: %v", err)
+	}
+
+	body, err := migrationFS.ReadFile("migrations/0007_smb_remote.sql")
+	if err != nil {
+		t.Fatalf("read the migration: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, string(body)); err != nil {
+		t.Fatalf("apply the migration: %v", err)
+	}
+
+	var rows int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM config WHERE key = 'remote.url'`).Scan(&rows); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("the stale key survived the migration")
+	}
+
+	events, err := s.Events(ctx, EventFilter{Kinds: []string{KindConfigChanged}})
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 1 || !strings.Contains(events[0].Message, stale) {
+		t.Fatalf("the old URL was dropped without a trail: %+v", events)
 	}
 }

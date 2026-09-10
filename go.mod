@@ -3,6 +3,7 @@ module blackforestbytes.com/jcc-mirror
 go 1.27.0
 
 require (
+	github.com/hirochachacha/go-smb2 v1.1.0
 	golang.org/x/crypto v0.55.0
 	golang.org/x/net v0.58.0
 	golang.org/x/text v0.41.0
@@ -13,6 +14,7 @@ require (
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/geoffgarside/ber v1.1.0 // indirect
 	github.com/google/btree v1.1.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

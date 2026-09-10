@@ -420,7 +420,9 @@
           </label>
           <label class="field">
             <span class="name">Publisher directory</span>
-            <span class="help">Relative to the WebDAV base URL. Empty means its root.</span>
+            <span class="help">
+              Relative to the remote root inside the share. Empty means that root itself.
+            </span>
             <input
               type="text"
               autocomplete="off"
@@ -595,7 +597,9 @@
       </label>
       <label class="field">
         <span class="name">Publisher directory</span>
-        <span class="help">Relative to the WebDAV base URL. Empty means its root.</span>
+        <span class="help">
+          Relative to the remote root inside the share. Empty means that root itself.
+        </span>
         <input
           type="text"
           autocomplete="off"
@@ -665,13 +669,13 @@
       Test the remote
     </button>
     <span class="note">
-      One PROPFIND of the remote root through the tunnel. The answer also lands in the event log.
+      One listing of the remote root through the tunnel. The answer also lands in the event log.
     </span>
   </div>
 
   <dl class="facts">
-    <dt>base URL</dt>
-    <dd class="mono">{{ live.status()?.remote.url || 'not configured' }}</dd>
+    <dt>target</dt>
+    <dd class="mono">{{ live.status()?.remote.target || 'not configured' }}</dd>
     @if (live.status()?.remote.error; as remoteError) {
       <dt>last error</dt>
       <dd class="bad">{{ remoteError }}</dd>
@@ -684,7 +688,7 @@
   @if (probe(); as result) {
     <p class="note">
       {{ fmt.comma(result.dirs) }} directories and {{ fmt.comma(result.files) }} files in
-      <span class="mono">{{ result.url }}</span
+      <span class="mono">{{ result.target }}</span
       >, in {{ result.millis }} ms.
     </p>
   }

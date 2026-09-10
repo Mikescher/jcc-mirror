@@ -107,8 +107,8 @@ func (a *App) UpdateStatus(ctx context.Context) UpdateStatus {
 		st.Every = values.Duration(store.KeyUpdateInterval).String()
 		// Resolved without the remote client, so the panel still says where it
 		// would fetch from while the tunnel is down.
-		if url, err := updateURL(values); err == nil {
-			st.Source = url
+		if where, err := updateLocation(values); err == nil {
+			st.Source = where
 		}
 	}
 
@@ -139,11 +139,17 @@ func (a *App) updateReady() bool {
 	return a.upd.newer && a.upd.blocked == ""
 }
 
-// updateURL is the configured binary URL, resolved against the WebDAV root when
-// it is relative - which is where the binary actually lives, and why the base URL
-// is not written down a second time in a setting that could disagree with it.
-func updateURL(values store.Values) (string, error) {
-	return update.ResolveURL(values.Get(store.KeyRemoteURL), values.Get(store.KeyUpdateURL))
+// updateLocation is where the binary would come from, in the form the panel
+// shows it: a web address, or a path on the publisher's share.
+func updateLocation(values store.Values) (string, error) {
+	url, path, err := update.Locate(values.Get(store.KeyUpdateURL))
+	if err != nil {
+		return "", err
+	}
+	if path != "" {
+		return path, nil
+	}
+	return url, nil
 }
 
 // updateSource is that URL plus what it takes to fetch it: the publisher's
@@ -151,25 +157,28 @@ func updateURL(values store.Values) (string, error) {
 // encrypted path as everything else and the publisher needs nothing new
 // (DESIGN.md §5).
 func (a *App) updateSource(values store.Values) (update.Source, error) {
-	resolved, err := updateURL(values)
+	rawURL, sharePath, err := update.Locate(values.Get(store.KeyUpdateURL))
 	if err != nil {
 		return update.Source{}, err
 	}
-	// Not for the client but for the gate it applies: a request to an address
-	// that is only reachable through a tunnel that is down is a slow timeout
-	// rather than a clear answer.
-	if _, err := a.Remote(); err != nil {
+	// Wanted for the share-relative form, but read either way for the gate it
+	// applies: reaching an address that only exists through a tunnel that is down
+	// is a slow timeout rather than a clear answer.
+	client, err := a.Remote()
+	if err != nil {
 		return update.Source{}, err
 	}
 
 	src := update.Source{
-		URL:      resolved,
+		URL:      rawURL,
+		Path:     sharePath,
+		Share:    client,
 		Username: values.Get(store.KeyRemoteUser),
 		Password: values.Get(store.KeyRemotePassword),
 	}
 
 	a.mu.Lock()
-	tr := a.remoteTr
+	tr := a.httpTr
 	a.mu.Unlock()
 	if tr != nil {
 		// No Client.Timeout: the context bounds the whole operation, and a timeout

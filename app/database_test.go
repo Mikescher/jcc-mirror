@@ -38,7 +38,7 @@ func (m *mirror) here(t *testing.T, rel string) []byte {
 }
 
 // TestDashboardSyncsTheDatabase is the whole of DESIGN.md §3 from the operator's
-// side, against a real WebDAV server: the covers transfer, the per-user
+// side: the covers transfer, the per-user
 // databases do not, and the shared one goes through the gate at the end of the
 // run rather than through the queue.
 func TestDashboardSyncsTheDatabase(t *testing.T) {

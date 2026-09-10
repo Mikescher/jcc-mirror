@@ -1,7 +1,7 @@
 // Package remote is the publisher side of the mirror, reduced to the three
 // operations the engine actually needs. Everything else in jcc-mirror talks to
 // this interface, so the scanner, differ and transfer engine can be driven by a
-// local fake with no network and no WebDAV server (DESIGN.md §2.1).
+// local fake with no network and no share to mount (DESIGN.md §2.1).
 package remote
 
 import (
@@ -15,7 +15,7 @@ type Entry struct {
 	Path  string    `json:"path"`  // relative to the remote root, slash-separated, no leading slash, NFC-normalized
 	Name  string    `json:"name"`  // last path segment
 	Size  int64     `json:"size"`  // 0 for directories
-	MTime time.Time `json:"mtime"` // one-second granularity over WebDAV, see DESIGN.md §2.3
+	MTime time.Time `json:"mtime"` // as the remote reports it; the manifest keeps milliseconds, see DESIGN.md §2.3
 	IsDir bool      `json:"isDir"`
 }
 
@@ -29,9 +29,10 @@ type Remote interface {
 	// Stat returns the entry for a single path.
 	Stat(ctx context.Context, path string) (Entry, error)
 
-	// Open streams path starting at offset. A non-zero offset that the server
-	// silently ignores must be reported as an error, never as a short read -
-	// otherwise a resume writes the start of the file into the middle of it.
+	// Open streams path starting at offset. An implementation that cannot honour a
+	// non-zero offset must report an error, never hand back the file from the
+	// start - otherwise a resume writes the start of the file into the middle of
+	// it. Every implementation owes the resume logic that guarantee.
 	Open(ctx context.Context, path string, offset int64) (io.ReadCloser, error)
 }
 

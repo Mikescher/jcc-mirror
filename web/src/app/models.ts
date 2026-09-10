@@ -37,7 +37,7 @@ export interface Peer {
 
 export interface RemoteStatus {
   configured: boolean;
-  url?: string;
+  target?: string;
   error?: string;
 }
 
@@ -423,7 +423,7 @@ export interface RemoteEntry {
 
 export interface RemoteListing {
   path: string;
-  url: string;
+  target: string;
   millis: number;
   entries: RemoteEntry[];
 }

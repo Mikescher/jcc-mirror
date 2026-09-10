@@ -41,7 +41,7 @@ type Pair struct {
 	ID          int64     `json:"id"`
 	Name        string    `json:"name"`
 	Type        string    `json:"type"`
-	RemotePath  string    `json:"remotePath"` // relative to the WebDAV base URL; "" is its root
+	RemotePath  string    `json:"remotePath"` // relative to the remote root; "" is the root itself
 	LocalPath   string    `json:"localPath"`  // absolute, inside the container
 	Mode        string    `json:"mode"`
 	Includes    []string  `json:"includes"`
@@ -76,8 +76,8 @@ func (p *Pair) Normalize() error {
 		return fmt.Errorf("mode %q: want %q or %q", p.Mode, ModeAdditive, ModeMirror)
 	}
 
-	// The remote side is compared against PROPFIND hrefs, which the client hands
-	// back NFC-normalized; a remote path in NFD would match nothing at all.
+	// The remote side is compared against the paths the SMB client reports, which
+	// it hands back NFC-normalized; a remote path in NFD would match nothing at all.
 	p.RemotePath = norm.NFC.String(strings.Trim(strings.TrimSpace(p.RemotePath), "/"))
 	if p.RemotePath != "" {
 		p.RemotePath = strings.TrimPrefix(path.Clean("/"+p.RemotePath), "/")

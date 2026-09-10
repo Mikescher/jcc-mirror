@@ -14,7 +14,7 @@ import (
 
 // countingReader counts bytes and records when the last one arrived. The
 // timestamp is what makes a stalled transfer distinguishable from a slow one:
-// a WebDAV server that stops sending without closing the connection produces no
+// a publisher that stops sending without closing the connection produces no
 // error at all, and only the gap gives it away.
 type countingReader struct {
 	r     io.Reader

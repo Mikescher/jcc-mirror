@@ -9,11 +9,11 @@ import (
 
 	"blackforestbytes.com/jcc-mirror/format"
 	"blackforestbytes.com/jcc-mirror/logs"
-	"blackforestbytes.com/jcc-mirror/webdav"
+	"blackforestbytes.com/jcc-mirror/smb"
 )
 
 // cmdSoak is the last part of M0 step 5: leave a transfer running for hours and
-// see whether DSM's WebDAV holds up. A share that works perfectly for ninety
+// see whether DSM's SMB service holds up. A share that works perfectly for ninety
 // seconds and drops every connection at the ten-minute mark passes every other
 // command here, and would first show up with a 30 TB sync underway.
 //
@@ -22,7 +22,7 @@ import (
 // as much as the connection is.
 func cmdSoak(ctx context.Context, args []string) error {
 	fs, cfg := newFlagSet("soak")
-	path := fs.String("path", "", "remote file, relative to -url")
+	path := fs.String("path", "", "remote file, relative to the remote root")
 	duration := fs.Duration("duration", 4*time.Hour, "how long to keep going")
 	report := fs.Duration("report", time.Minute, "progress interval")
 	stallWarn := fs.Duration("stall-warn", 30*time.Second, "warn when no byte arrives for this long")
@@ -121,13 +121,13 @@ loop:
 		fmt.Printf("\n=> the server does drop long transfers, so the job state machine has to treat that as routine rather than exceptional (DESIGN.md §2.4)\n")
 		return nil
 	}
-	fmt.Printf("\n=> no interruptions in %s; long ranged GETs are safe against this server\n", format.Duration(elapsed))
+	fmt.Printf("\n=> no interruptions in %s; long reads are safe against this server\n", format.Duration(elapsed))
 	return nil
 }
 
 // streamFrom reads a file from offset to its end, discarding the bytes, and
 // returns how many arrived before it stopped.
-func streamFrom(ctx context.Context, client *webdav.Client, path string, offset int64, done, last *atomic.Int64) (int64, error) {
+func streamFrom(ctx context.Context, client *smb.Client, path string, offset int64, done, last *atomic.Int64) (int64, error) {
 	body, _, err := client.OpenRange(ctx, path, offset, 0)
 	if err != nil {
 		return 0, err

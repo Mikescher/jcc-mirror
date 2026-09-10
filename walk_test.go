@@ -3,20 +3,17 @@ package main
 import (
 	"context"
 	"fmt"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
-	xwebdav "golang.org/x/net/webdav"
-
 	"blackforestbytes.com/jcc-mirror/logs"
-	"blackforestbytes.com/jcc-mirror/webdav"
+	"blackforestbytes.com/jcc-mirror/remote/localfs"
 )
 
-// TestWalker exercises the breadth-first walk against a real WebDAV server over a
-// generated tree, which is the local fake the design asks for: the walk is the
-// most intricate part of the spike and needs no NAS to test.
+// TestWalker exercises the breadth-first walk over a generated tree, served by
+// the local fake the design asks for: the walk is the most intricate part of the
+// spike and needs no NAS to test.
 func TestWalker(t *testing.T) {
 	dir := t.TempDir()
 
@@ -27,13 +24,9 @@ func TestWalker(t *testing.T) {
 	)
 	wantDirs, wantFiles := buildTree(t, dir, "", levels, perLevel, filesPerNS)
 
-	h := &xwebdav.Handler{FileSystem: xwebdav.Dir(dir), LockSystem: xwebdav.NewMemLS()}
-	srv := httptest.NewServer(h)
-	defer srv.Close()
-
-	client, err := webdav.New(webdav.Config{BaseURL: srv.URL})
+	client, err := localfs.New(dir)
 	if err != nil {
-		t.Fatalf("webdav.New: %v", err)
+		t.Fatalf("localfs.New: %v", err)
 	}
 
 	for _, workers := range []int{1, 4} {
@@ -63,19 +56,15 @@ func TestWalkerMaxDepth(t *testing.T) {
 	dir := t.TempDir()
 	buildTree(t, dir, "", 3, 2, 1)
 
-	h := &xwebdav.Handler{FileSystem: xwebdav.Dir(dir), LockSystem: xwebdav.NewMemLS()}
-	srv := httptest.NewServer(h)
-	defer srv.Close()
-
-	client, err := webdav.New(webdav.Config{BaseURL: srv.URL})
+	client, err := localfs.New(dir)
 	if err != nil {
-		t.Fatalf("webdav.New: %v", err)
+		t.Fatalf("localfs.New: %v", err)
 	}
 
 	w := &walker{client: client, log: &logs.Logger{}, workers: 2}
 	w.walk(context.Background(), "", 1)
 
-	// One level means the root only: one PROPFIND, and its files.
+	// One level means the root only: one listing, and its files.
 	if w.requests != 1 {
 		t.Errorf("requests = %d, want 1", w.requests)
 	}

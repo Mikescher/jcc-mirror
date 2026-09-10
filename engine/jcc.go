@@ -214,7 +214,7 @@ func (e *Engine) DatabaseStatus(ctx context.Context, pair store.Pair) (DBStatus,
 	st := DBStatus{PairID: pair.ID, PairName: pair.Name, Path: rel}
 
 	// The publisher's copy. An existence check first, so "he has none" is an
-	// answer rather than an error to be guessed at from a failed PROPFIND.
+	// answer rather than an error to be guessed at from a failed stat.
 	there, err := probe.Exists(ctx, remotePath(pair, rel))
 	if err != nil {
 		return DBStatus{}, fmt.Errorf("look for %q on the publisher: %w", rel, err)
@@ -312,7 +312,7 @@ func (e *Engine) SyncDatabase(ctx context.Context, pair store.Pair, force bool) 
 
 	// Step 4. The database is the one file here where a short copy would be
 	// silently accepted by everything downstream, so it is checked against the
-	// size the PROPFIND reported rather than against the read alone.
+	// size the remote reported rather than against the read alone.
 	if n != st.Remote.Size {
 		discard()
 		return res, fmt.Errorf("short copy of %s: %d bytes of %d", st.Path, n, st.Remote.Size)
@@ -708,9 +708,9 @@ func (e *Engine) localLock(pair store.Pair, rel string) (LockState, error) {
 	return l, nil
 }
 
-// prober is the existence check the gate is built on. HEAD rather than a listing:
-// the lock sits beside a database that may be in a directory of ten thousand
-// covers, and its body is a PID from another machine that is never read.
+// prober is the existence check the gate is built on. One named path rather than
+// a listing: the lock sits beside a database that may be in a directory of ten
+// thousand covers, and its body is a PID from another machine that is never read.
 func (e *Engine) prober() (remote.Prober, error) {
 	p, ok := e.remote.(remote.Prober)
 	if !ok {

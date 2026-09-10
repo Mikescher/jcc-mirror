@@ -13,18 +13,18 @@ import (
 
 	"blackforestbytes.com/jcc-mirror/format"
 	"blackforestbytes.com/jcc-mirror/logs"
-	"blackforestbytes.com/jcc-mirror/webdav"
+	"blackforestbytes.com/jcc-mirror/smb"
 )
 
 // cmdGet is M0 step 5: pull a real, multi-gigabyte file off the share.
 //
 // -chunks is the question behind it. One TCP stream over a high-BDP link with any
 // loss will not fill the pipe, so the transfer engine is designed for two to four
-// ranged streams per file; this is where that gets measured against DSM rather
+// bounded streams per file; this is where that gets measured against DSM rather
 // than assumed (DESIGN.md §2.4).
 func cmdGet(ctx context.Context, args []string) error {
 	fs, cfg := newFlagSet("get")
-	path := fs.String("path", "", "remote file, relative to -url")
+	path := fs.String("path", "", "remote file, relative to the remote root")
 	out := fs.String("out", "", "write here; empty discards the bytes and only measures throughput")
 	offset := fs.Int64("offset", 0, "start at this byte offset")
 	length := fs.Int64("length", 0, "transfer at most this many bytes, 0 for the rest of the file")
@@ -108,7 +108,7 @@ func cmdGet(ctx context.Context, args []string) error {
 
 // fetch transfers [offset, offset+span) using n parallel ranged streams. inline
 // hashing is only possible with a single stream, where the bytes arrive in order.
-func fetch(ctx context.Context, client *webdav.Client, path string, offset, span int64, n int, file *os.File, inlineHash bool, done, last *atomic.Int64) (string, error) {
+func fetch(ctx context.Context, client *smb.Client, path string, offset, span int64, n int, file *os.File, inlineHash bool, done, last *atomic.Int64) (string, error) {
 	// A range shorter than the stream count would produce empty chunks, and an
 	// empty length means "to the end of the file" - each of them would then pull
 	// the whole file.
@@ -149,7 +149,7 @@ func fetch(ctx context.Context, client *webdav.Client, path string, offset, span
 
 // fetchChunk transfers one range. base is the offset the output file starts at, so
 // a chunk lands at the right place in it.
-func fetchChunk(ctx context.Context, client *webdav.Client, path string, from, count, base int64, file *os.File, inlineHash bool, done, last *atomic.Int64) (string, error) {
+func fetchChunk(ctx context.Context, client *smb.Client, path string, from, count, base int64, file *os.File, inlineHash bool, done, last *atomic.Int64) (string, error) {
 	body, _, err := client.OpenRange(ctx, path, from, count)
 	if err != nil {
 		return "", err

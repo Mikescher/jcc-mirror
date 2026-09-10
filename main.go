@@ -29,8 +29,8 @@ import (
 	"blackforestbytes.com/jcc-mirror/logs"
 	"blackforestbytes.com/jcc-mirror/remote"
 	"blackforestbytes.com/jcc-mirror/remote/localfs"
+	"blackforestbytes.com/jcc-mirror/smb"
 	"blackforestbytes.com/jcc-mirror/store"
-	"blackforestbytes.com/jcc-mirror/webdav"
 	"blackforestbytes.com/jcc-mirror/wg"
 )
 
@@ -77,11 +77,10 @@ var commands = []command{
 	{"pubkey", groupDiagnostics, "derive the public key of -wg-key, for the rootserver peer entry", cmdPubkey},
 	{"ping", groupDiagnostics, "ICMP-ping a WireGuard address through the tunnel (M0 step 1)", cmdPing},
 	{"status", groupDiagnostics, "bring the tunnel up and report handshake, endpoint and counters (M0 step 2)", cmdStatus},
-	{"propfind", groupDiagnostics, "list one remote directory (M0 step 3)", cmdPropfind},
-	{"depth", groupDiagnostics, "check whether the server honours Depth: infinity (M0 step 3)", cmdDepth},
+	{"ls", groupDiagnostics, "list one remote directory (M0 step 3)", cmdLs},
 	{"walk", groupDiagnostics, "time a full metadata walk of the remote tree (M0 step 4)", cmdWalk},
-	{"get", groupDiagnostics, "ranged GET, optionally in parallel chunks (M0 step 5)", cmdGet},
-	{"resume", groupDiagnostics, "abort a GET mid-file and prove the resume is byte-identical (M0 step 5)", cmdResume},
+	{"get", groupDiagnostics, "read a range of one file, optionally in parallel chunks (M0 step 5)", cmdGet},
+	{"resume", groupDiagnostics, "abort a read mid-file and prove the resume is byte-identical (M0 step 5)", cmdResume},
 	{"soak", groupDiagnostics, "stream for hours and report stalls, errors and throughput (M0 step 5)", cmdSoak},
 }
 
@@ -155,9 +154,12 @@ type config struct {
 	wgVerbose      bool
 	noTunnel       bool
 
-	davURL    string
-	davUser   string
-	davPass   string
+	smbHost   string
+	smbShare  string
+	smbPath   string
+	smbUser   string
+	smbPass   string
+	smbDomain string
 	remoteDir string
 
 	dataDir string
@@ -190,16 +192,19 @@ func newFlagSet(name string) (*flag.FlagSet, *config) {
 	fs.StringVar(&cfg.wgEndpoint, "wg-endpoint", "", "rootserver host:port")
 	fs.StringVar(&cfg.wgAddress, "wg-address", "", "our address inside the tunnel, e.g. 10.0.0.3/32")
 	fs.StringVar(&cfg.wgAllowedIPs, "wg-allowed-ips", "", "CIDRs routed into the tunnel; must cover the whole WG subnet, not just the publisher")
-	fs.StringVar(&cfg.wgDNS, "wg-dns", "", "resolvers reachable through the tunnel, only needed for a hostname in -url")
+	fs.StringVar(&cfg.wgDNS, "wg-dns", "", "resolvers reachable through the tunnel, only needed when -host is a name")
 	fs.IntVar(&cfg.wgKeepalive, "wg-keepalive", wg.DefaultKeepalive, "persistent keepalive in seconds")
 	fs.IntVar(&cfg.wgMTU, "wg-mtu", wg.DefaultMTU, "tunnel MTU; 1420 unless you know otherwise")
 	fs.BoolVar(&cfg.wgVerbose, "wg-verbose", false, "log the wireguard-go device chatter, including handshakes")
-	fs.BoolVar(&cfg.noTunnel, "no-tunnel", false, "talk to -url directly, without WireGuard - for testing against a local server")
+	fs.BoolVar(&cfg.noTunnel, "no-tunnel", false, "talk to -host directly, without WireGuard - for testing against a local server")
 
-	fs.StringVar(&cfg.davURL, "url", "", "WebDAV base URL, the remote root of the mirror")
-	fs.StringVar(&cfg.davUser, "user", "", "WebDAV user")
-	fs.StringVar(&cfg.davPass, "pass", "", "WebDAV password")
-	fs.StringVar(&cfg.remoteDir, "remote-dir", "", "serve this local directory as the remote instead of WebDAV, for development and testing")
+	fs.StringVar(&cfg.smbHost, "host", "", "the publisher's SMB server, host or host:port")
+	fs.StringVar(&cfg.smbShare, "share", "", "the share to mount, named the way the server names it")
+	fs.StringVar(&cfg.smbPath, "share-path", "", "directory inside the share that is the remote root; empty is the share itself")
+	fs.StringVar(&cfg.smbUser, "user", "", "SMB user")
+	fs.StringVar(&cfg.smbPass, "pass", "", "SMB password")
+	fs.StringVar(&cfg.smbDomain, "domain", "", "optional NTLM domain or workgroup")
+	fs.StringVar(&cfg.remoteDir, "remote-dir", "", "serve this local directory as the remote instead of the share, for development and testing")
 
 	fs.StringVar(&cfg.dataDir, "data", "", "take the settings left unset from the store in this data directory, e.g. "+staticDataDir)
 	fs.BoolVar(&cfg.verbose, "v", false, "verbose output")
@@ -238,9 +243,12 @@ func (cfg *config) fromStore(ctx context.Context) error {
 		{&cfg.wgAddress, store.KeyWGAddress},
 		{&cfg.wgAllowedIPs, store.KeyWGAllowedIPs},
 		{&cfg.wgDNS, store.KeyWGDNS},
-		{&cfg.davURL, store.KeyRemoteURL},
-		{&cfg.davUser, store.KeyRemoteUser},
-		{&cfg.davPass, store.KeyRemotePassword},
+		{&cfg.smbHost, store.KeyRemoteHost},
+		{&cfg.smbShare, store.KeyRemoteShare},
+		{&cfg.smbPath, store.KeyRemotePath},
+		{&cfg.smbUser, store.KeyRemoteUser},
+		{&cfg.smbPass, store.KeyRemotePassword},
+		{&cfg.smbDomain, store.KeyRemoteDomain},
 	} {
 		if *f.dst == "" {
 			*f.dst = cfg.stored.Get(f.key)
@@ -304,51 +312,58 @@ func (cfg *config) openTunnel(ctx context.Context, logger *logs.Logger) (*wg.Tun
 	return tun, nil
 }
 
-// openDAV builds the WebDAV client, routed through tun when there is one.
-func (cfg *config) openDAV(ctx context.Context, tun *wg.Tunnel) (*webdav.Client, error) {
+// openSMB builds the SMB client, dialing through tun when there is one.
+func (cfg *config) openSMB(ctx context.Context, tun *wg.Tunnel) (*smb.Client, error) {
 	if err := cfg.fromStore(ctx); err != nil {
 		return nil, err
 	}
-	if cfg.davURL == "" {
-		return nil, fmt.Errorf("missing -url (see -h)")
+	if cfg.smbHost == "" || cfg.smbShare == "" {
+		return nil, fmt.Errorf("missing -host or -share (see -h)")
 	}
 
-	dav := webdav.Config{
-		BaseURL:  cfg.davURL,
-		Username: cfg.davUser,
-		Password: cfg.davPass,
+	scfg := smb.Config{
+		Host:     cfg.smbHost,
+		Share:    cfg.smbShare,
+		Path:     cfg.smbPath,
+		User:     cfg.smbUser,
+		Password: cfg.smbPass,
+		Domain:   cfg.smbDomain,
 	}
 	if tun != nil {
-		dav.Transport = tun.Transport()
+		scfg.Dial = tun.DialContext
 	}
-	return webdav.New(dav)
+	return smb.New(scfg)
 }
 
-// openBoth is the setup every WebDAV command shares. The returned close function
-// is safe to defer even when the tunnel was never opened.
-func (cfg *config) openBoth(ctx context.Context, logger *logs.Logger) (*webdav.Client, *wg.Tunnel, func(), error) {
+// openBoth is the setup every remote command shares. The returned close function
+// is safe to defer even when the tunnel was never opened, and it ends the SMB
+// session rather than leaving the server holding one.
+func (cfg *config) openBoth(ctx context.Context, logger *logs.Logger) (*smb.Client, *wg.Tunnel, func(), error) {
 	tun, err := cfg.openTunnel(ctx, logger)
 	if err != nil {
 		return nil, nil, func() {}, err
 	}
-	closeFn := func() {
+	closeTun := func() {
 		if tun != nil {
 			tun.Close()
 		}
 	}
 
-	client, err := cfg.openDAV(ctx, tun)
+	client, err := cfg.openSMB(ctx, tun)
 	if err != nil {
-		closeFn()
+		closeTun()
 		return nil, nil, func() {}, err
 	}
-	return client, tun, closeFn, nil
+	return client, tun, func() {
+		client.Close()
+		closeTun()
+	}, nil
 }
 
 // openEngineRemote is what the mirror commands run against. With -remote-dir a
 // local directory stands in for the publisher's share, which is what lets the
-// whole of M2 be exercised with no NAS, no tunnel and no WebDAV server; it wins
-// over -url, and nothing about the tunnel is touched.
+// whole of M2 be exercised with no NAS, no tunnel and no share to mount; it wins
+// over -host, and nothing about the tunnel is touched.
 func (cfg *config) openEngineRemote(ctx context.Context, logger *logs.Logger) (remote.Remote, func(), error) {
 	if cfg.remoteDir != "" {
 		fs, err := localfs.New(cfg.remoteDir)
