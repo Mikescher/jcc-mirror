@@ -1,0 +1,32 @@
+<section class="panel head">
+  <div class="spread">
+    <h2>Configuration</h2>
+    <div class="row">
+      @if (store.loading()) {
+        <span class="note">loading…</span>
+      }
+      <button class="ghost small" type="button" (click)="store.load()">Refresh</button>
+    </div>
+  </div>
+
+  <p class="note">
+    There is no config file and nothing is read from the environment: every setting lives in the
+    database, takes effect the moment it is saved, and is recorded under Audit.
+  </p>
+
+  <nav class="tabs">
+    @for (page of pages; track page.path) {
+      <a [routerLink]="['/config', page.path]" routerLinkActive="active">{{ page.label }}</a>
+    }
+  </nav>
+
+  @if (page(); as open) {
+    <p class="note blurb">{{ open.blurb }}</p>
+  }
+</section>
+
+@if (store.error()) {
+  <div class="banner">{{ store.error() }}</div>
+}
+
+<router-outlet (activate)="activated()" />

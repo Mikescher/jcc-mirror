@@ -1,0 +1,31 @@
+/* The host is what sticks, not the bar inside it: a sticky box can only travel
+   inside its own containing block, and this one's is the whole page. */
+:host {
+  position: sticky;
+  bottom: 0.75rem;
+  z-index: 5;
+}
+
+/* Nothing to say, no grid track: the host would otherwise leave the page's gap
+   hanging under the last card. */
+:host:empty {
+  display: none;
+}
+
+.savebar {
+  display: grid;
+  gap: 0.6rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.7rem 0.9rem;
+  box-shadow: 0 6px 20px -8px rgb(0 0 0 / 45%);
+}
+
+.count {
+  font-size: 0.9rem;
+}
+
+.spacer {
+  flex: 1;
+}

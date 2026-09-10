@@ -1,0 +1,324 @@
+@if (error()) {
+  <div class="banner">{{ error() }}</div>
+}
+
+@for (p of pairs(); track p.id) {
+  <section class="panel pair">
+    <div class="head">
+      <h3 class="title">
+        {{ p.name }}
+        <span class="pill">{{ p.type }}</span>
+        <span class="pill">{{ p.mode }}</span>
+        @if (!p.enabled) {
+          <span class="pill warn">disabled</span>
+        }
+      </h3>
+      <span class="note">priority {{ p.priority }} — lower runs first</span>
+    </div>
+
+    <dl class="facts">
+      <dt>publisher</dt>
+      <dd class="mono">{{ p.remotePath || '(the remote root)' }}</dd>
+      <dt>here</dt>
+      <dd class="mono">{{ p.localPath }}</dd>
+      <dt>deletions</dt>
+      <dd>
+        @if (p.mode === 'mirror') {
+          @if (p.deleteGuard) {
+            more than {{ fmt.comma(p.deleteGuard) }} files in one run wait for approval
+          } @else {
+            no per-pair count limit; only the percentage guard applies
+          }
+        } @else {
+          none — this pair is additive
+        }
+      </dd>
+      @if (p.includes.length) {
+        <dt>includes</dt>
+        <dd class="mono">{{ p.includes.join(', ') }}</dd>
+      }
+      @if (p.excludes.length) {
+        <dt>excludes</dt>
+        <dd class="mono">{{ p.excludes.join(', ') }}</dd>
+      }
+    </dl>
+
+    <details>
+      <summary>Edit this pair</summary>
+
+      <div class="fields">
+        <label class="field">
+          <span class="name">Name</span>
+          <input
+            type="text"
+            autocomplete="off"
+            [value]="pairField(p, 'name')"
+            [disabled]="!unlocked()"
+            (input)="editPair(p.id, 'name', $any($event.target).value)"
+          />
+        </label>
+        <label class="field">
+          <span class="name">Type</span>
+          <select
+            [disabled]="!unlocked()"
+            (change)="editPair(p.id, 'type', $any($event.target).value)"
+          >
+            <option value="raw" [selected]="pairField(p, 'type') === 'raw'">raw</option>
+            <option value="jcc" [selected]="pairField(p, 'type') === 'jcc'">jcc</option>
+          </select>
+          <span class="help">
+            A jcc pair is the ClipCornDB directory: its database goes through the lock gate and the
+            per-user databases beside it are never copied.
+          </span>
+        </label>
+        <label class="field">
+          <span class="name">Publisher directory</span>
+          <input
+            type="text"
+            autocomplete="off"
+            [value]="pairField(p, 'remotePath')"
+            [disabled]="!unlocked()"
+            (input)="editPair(p.id, 'remotePath', $any($event.target).value)"
+          />
+          <span class="help">
+            Relative to the remote root inside the share. Empty means that root itself.
+          </span>
+        </label>
+        <label class="field">
+          <span class="name">Directory here</span>
+          <input
+            type="text"
+            autocomplete="off"
+            [value]="pairField(p, 'localPath')"
+            [disabled]="!unlocked()"
+            (input)="editPair(p.id, 'localPath', $any($event.target).value)"
+          />
+          <span class="help">Absolute, inside the container — the volume mount.</span>
+        </label>
+        <label class="field">
+          <span class="name">Mode</span>
+          <select
+            [disabled]="!unlocked()"
+            (change)="editPair(p.id, 'mode', $any($event.target).value)"
+          >
+            <option value="additive" [selected]="pairField(p, 'mode') === 'additive'">
+              additive
+            </option>
+            <option value="mirror" [selected]="pairField(p, 'mode') === 'mirror'">
+              mirror (quarantines what the publisher drops)
+            </option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="name">Delete guard</span>
+          <input
+            type="text"
+            autocomplete="off"
+            [value]="pairField(p, 'deleteGuard')"
+            [disabled]="!unlocked()"
+            (input)="editPair(p.id, 'deleteGuard', $any($event.target).value)"
+          />
+          <span class="help">
+            Deletions above this many files wait for approval; 0 leaves only the percentage guard.
+          </span>
+        </label>
+        <label class="field">
+          <span class="name">Excludes</span>
+          <input
+            type="text"
+            autocomplete="off"
+            [value]="pairField(p, 'excludes')"
+            [disabled]="!unlocked()"
+            (input)="editPair(p.id, 'excludes', $any($event.target).value)"
+          />
+          <span class="help">
+            Globs, comma separated. A directory glob drops its whole subtree and the walk never
+            lists it.
+          </span>
+        </label>
+        <label class="field">
+          <span class="name">Includes</span>
+          <input
+            type="text"
+            autocomplete="off"
+            [value]="pairField(p, 'includes')"
+            [disabled]="!unlocked()"
+            (input)="editPair(p.id, 'includes', $any($event.target).value)"
+          />
+          <span class="help">Empty mirrors everything the excludes did not drop.</span>
+        </label>
+        <label class="field">
+          <span class="name">Priority</span>
+          <input
+            type="text"
+            autocomplete="off"
+            [value]="pairField(p, 'priority')"
+            [disabled]="!unlocked()"
+            (input)="editPair(p.id, 'priority', $any($event.target).value)"
+          />
+          <span class="help">Lower runs first.</span>
+        </label>
+      </div>
+
+      <div class="row">
+        <label class="check">
+          <input
+            type="checkbox"
+            [checked]="pairField(p, 'enabled') === 'true'"
+            [disabled]="!unlocked()"
+            (change)="editPair(p.id, 'enabled', $any($event.target).checked ? 'true' : 'false')"
+          />
+          <span>Enabled</span>
+        </label>
+        <button
+          type="button"
+          [disabled]="!unlocked() || savingPair() === p.id || !pairDirty(p.id)"
+          (click)="savePair(p)"
+        >
+          Save
+        </button>
+        <button
+          class="ghost"
+          type="button"
+          [disabled]="!pairDirty(p.id)"
+          (click)="revertPair(p.id)"
+        >
+          Revert
+        </button>
+      </div>
+
+      @if (removing() === p.id) {
+        <div class="hold">
+          <strong>Remove {{ p.name }}?</strong>
+          <div class="note">
+            This forgets what was recorded about the pair — its manifest, its queue and its scan
+            history. Nothing under <span class="mono">{{ p.localPath }}</span> is touched.
+          </div>
+          <div class="row">
+            <button
+              class="danger small"
+              type="button"
+              [disabled]="!unlocked()"
+              (click)="removePair(p)"
+            >
+              Yes, remove it
+            </button>
+            <button class="ghost small" type="button" (click)="removing.set(0)">Cancel</button>
+          </div>
+        </div>
+      } @else {
+        <div class="row">
+          <button
+            class="danger small"
+            type="button"
+            [disabled]="!unlocked()"
+            (click)="removing.set(p.id)"
+          >
+            Remove this pair
+          </button>
+          <span class="note">Nothing under its local path is touched.</span>
+        </div>
+      }
+    </details>
+  </section>
+} @empty {
+  <section class="panel">
+    <p class="note">No pairs yet. Add one, then scan to find out what the publisher has.</p>
+  </section>
+}
+
+<section class="panel">
+  <h3>Add a pair</h3>
+  <p class="note">
+    In <strong>additive</strong> mode the tree here only ever grows — what the publisher no longer
+    has is kept. In <strong>mirror</strong> mode it is quarantined here too, behind the deletion
+    guards. A pair is additive until it is told otherwise, which is the point: run additive-only
+    until the diff is trusted.
+  </p>
+
+  <div class="fields">
+    <label class="field">
+      <span class="name">Name</span>
+      <input
+        type="text"
+        autocomplete="off"
+        placeholder="media"
+        [value]="newPair()['name']"
+        [disabled]="!unlocked()"
+        (input)="editNew('name', $any($event.target).value)"
+      />
+    </label>
+    <label class="field">
+      <span class="name">Type</span>
+      <select [disabled]="!unlocked()" (change)="editNew('type', $any($event.target).value)">
+        <option value="raw" [selected]="newPair()['type'] === 'raw'">raw</option>
+        <option value="jcc" [selected]="newPair()['type'] === 'jcc'">
+          jcc (the ClipCornDB directory)
+        </option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="name">Publisher directory</span>
+      <input
+        type="text"
+        autocomplete="off"
+        placeholder="Filme"
+        [value]="newPair()['remotePath']"
+        [disabled]="!unlocked()"
+        (input)="editNew('remotePath', $any($event.target).value)"
+      />
+      <span class="help">
+        Relative to the remote root inside the share. Empty means that root itself.
+      </span>
+    </label>
+    <label class="field">
+      <span class="name">Directory here</span>
+      <input
+        type="text"
+        autocomplete="off"
+        placeholder="/mnt/media/Filme"
+        [value]="newPair()['localPath']"
+        [disabled]="!unlocked()"
+        (input)="editNew('localPath', $any($event.target).value)"
+      />
+      <span class="help">
+        Absolute, inside the container — the volume mount, not the path on the NAS.
+      </span>
+    </label>
+    <label class="field">
+      <span class="name">Mode</span>
+      <select [disabled]="!unlocked()" (change)="editNew('mode', $any($event.target).value)">
+        <option value="additive" [selected]="newPair()['mode'] === 'additive'">additive</option>
+        <option value="mirror" [selected]="newPair()['mode'] === 'mirror'">mirror</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="name">Excludes</span>
+      <input
+        type="text"
+        autocomplete="off"
+        placeholder="**/*.tmp, Serien/Trash/**"
+        [value]="newPair()['excludes']"
+        [disabled]="!unlocked()"
+        (input)="editNew('excludes', $any($event.target).value)"
+      />
+      <span class="help">Globs, comma separated. Optional.</span>
+    </label>
+  </div>
+
+  <div class="row">
+    <label class="check">
+      <input
+        type="checkbox"
+        [checked]="newPair()['enabled'] === 'true'"
+        [disabled]="!unlocked()"
+        (change)="editNew('enabled', $any($event.target).checked ? 'true' : 'false')"
+      />
+      <span>Enabled</span>
+    </label>
+    <button type="button" [disabled]="!unlocked() || adding()" (click)="createPair()">Add</button>
+    <span class="note">
+      It starts at priority 100 with no delete guard; both are editable once it exists.
+    </span>
+  </div>
+</section>

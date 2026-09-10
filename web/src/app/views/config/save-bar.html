@@ -1,0 +1,31 @@
+@if (form.pending() || form.error() || form.saved().length) {
+  <div class="savebar">
+    @if (form.error()) {
+      <div class="banner">{{ form.error() }}</div>
+    }
+
+    @if (form.saved().length) {
+      <p class="note">
+        Saved <span class="mono">{{ form.saved().join(', ') }}</span
+        >. Anything not listed already had that value.
+      </p>
+    }
+
+    @if (form.pending()) {
+      <div class="row">
+        <strong class="count">
+          {{ fmt.comma(form.pending()) }} unsaved
+          {{ form.pending() === 1 ? 'change' : 'changes' }}
+        </strong>
+        <span class="spacer"></span>
+        @if (!form.unlocked()) {
+          <span class="note">Unlock to save.</span>
+        }
+        <button class="ghost" type="button" (click)="form.revert()">Revert</button>
+        <button type="button" [disabled]="!form.unlocked() || form.saving()" (click)="form.save()">
+          {{ form.saving() ? 'Saving…' : 'Save' }}
+        </button>
+      </div>
+    }
+  </div>
+}

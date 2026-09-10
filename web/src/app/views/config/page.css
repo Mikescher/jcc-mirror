@@ -1,0 +1,38 @@
+/* Every config page is a stack of cards with that page's save bar at the end.
+   The router puts these elements outside the shell's template, so the layout has
+   to come from the page's own host rather than from a parent selector. */
+:host {
+  display: grid;
+  gap: var(--gap);
+  align-content: start;
+}
+
+/* A panel written by the page itself, as opposed to a group of fields: one
+   rhythm for the prose, controls and tables stacked inside it. */
+:host section.panel {
+  display: grid;
+  gap: 0.7rem;
+  align-content: start;
+}
+
+:host section.panel > * {
+  margin-block: 0;
+}
+/* Two panels side by side where they fit, each keeping its own height rather
+   than being stretched to its neighbour's. */
+:host .split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(29rem, 1fr));
+  gap: var(--gap);
+  align-items: start;
+}
+
+:host textarea {
+  width: 100%;
+}
+
+/* What a page projects into a group card is still the page's own markup, so its
+   rhythm is set here; the card only supplies the rule above it. */
+:host .foot > * {
+  margin-block: 0;
+}

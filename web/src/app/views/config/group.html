@@ -1,0 +1,52 @@
+<section class="panel">
+  <h3>{{ group().name }}</h3>
+
+  <div class="fields">
+    @for (entry of entries(); track entry.key) {
+      <label class="field">
+        <span class="name">
+          {{ entry.label }}
+          @if (entry.required) {
+            <span class="bad" title="required">*</span>
+          }
+        </span>
+
+        @if (isBoolean(entry)) {
+          <span class="toggle">
+            <input
+              type="checkbox"
+              [checked]="form.checked(entry)"
+              [disabled]="!unlocked()"
+              (change)="form.edit(entry.key, $any($event.target).checked ? 'true' : 'false')"
+            />
+            <span class="note">{{ form.checked(entry) ? 'on' : 'off' }}</span>
+          </span>
+        } @else if (entry.secret) {
+          <input
+            type="password"
+            autocomplete="new-password"
+            [placeholder]="entry.set ? 'stored — leave blank to keep it' : 'not set'"
+            [value]="form.draft()[entry.key] ?? ''"
+            [disabled]="!unlocked()"
+            (input)="form.edit(entry.key, $any($event.target).value)"
+          />
+        } @else {
+          <input
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            [value]="form.value(entry)"
+            [disabled]="!unlocked()"
+            (input)="form.edit(entry.key, $any($event.target).value)"
+          />
+        }
+
+        @if (entry.help) {
+          <span class="help">{{ entry.help }}</span>
+        }
+      </label>
+    }
+  </div>
+
+  <div class="foot"><ng-content /></div>
+</section>

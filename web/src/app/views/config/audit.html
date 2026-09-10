@@ -1,0 +1,44 @@
+<section class="panel">
+  <div class="spread">
+    <h3>The last 50 changes</h3>
+    <button class="ghost small" type="button" (click)="load()">Refresh</button>
+  </div>
+
+  <p class="note">
+    A secret's values are recorded masked, so the trail says a password changed and never what it
+    changed to.
+  </p>
+
+  @if (error()) {
+    <div class="banner">{{ error() }}</div>
+  }
+
+  @if (audit().length) {
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>when</th>
+            <th>key</th>
+            <th>from</th>
+            <th>to</th>
+            <th>by</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of audit(); track row.id) {
+            <tr>
+              <td class="mono">{{ fmt.clock(row.ts) }}</td>
+              <td class="mono">{{ row.key }}</td>
+              <td class="mono dim">{{ row.old || '(unset)' }}</td>
+              <td class="mono">{{ row.new }}</td>
+              <td class="mono dim">{{ row.actor }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  } @else {
+    <p class="note">Nothing has been changed yet.</p>
+  }
+</section>

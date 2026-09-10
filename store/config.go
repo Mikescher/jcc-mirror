@@ -255,13 +255,13 @@ var keyDefs = []KeyDef{
 
 	{
 		Name: KeyTransferChunks, Group: "Transfer", Label: "Streams per file",
-		Help:     "Parallel ranged streams within one file; 1 is strictly sequential. Files are still transferred one at a time.",
+		Help:     "Parallel reads at different offsets within one file; 1 is strictly sequential. Files are still transferred one at a time.",
 		Default:  "4",
 		Validate: validatePositiveInt,
 	},
 	{
 		Name: KeyChunkSize, Group: "Transfer", Label: "Chunk size",
-		Help:     "The span one stream fetches per request. Also the resume granularity: an interrupted file loses at most this much per stream.",
+		Help:     "The span one stream reads before it asks for the next. Also the resume granularity: an interrupted file loses at most this much per stream.",
 		Default:  "64MiB",
 		Validate: validateSize,
 	},

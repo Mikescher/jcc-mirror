@@ -65,19 +65,30 @@ h3 {
 }
 
 h1 {
-  font-size: 1.2rem;
+  font-size: 1.3rem;
 }
 
+/* The title of a panel or a page. It has to win against the h3 inside it, which
+   is what the size and the weight are for: they are the only thing telling a
+   reader which of two headings contains the other. */
 h2 {
-  font-size: 0.95rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  margin-bottom: 0.75rem;
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-bottom: 0.85rem;
 }
 
 h3 {
-  font-size: 0.9rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  margin-bottom: 0.6rem;
+}
+
+/* A heading carrying a name rather than a section label, which is why it does
+   not take the sub-heading's spacing. */
+h3.title {
+  margin-bottom: 0;
 }
 
 a {
@@ -127,10 +138,18 @@ main.stack > *:not(router-outlet) {
   flex-wrap: wrap;
 }
 
-.grid2 {
+/* A form laid out in as many columns as the width allows, every field keeping
+   its own height so a long help text under one does not push the next row down.
+   */
+.fields {
   display: grid;
-  gap: 0 1.5rem;
-  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
+  gap: 1.1rem 1.75rem;
+  align-items: start;
+}
+
+.fields > label.field {
+  margin: 0;
 }
 
 section.panel {
@@ -252,6 +271,12 @@ button.small {
   font-size: 0.8rem;
 }
 
+/* The checkboxes are the only control that would otherwise be painted in the
+   browser's own blue. */
+input[type='checkbox'] {
+  accent-color: var(--accent);
+}
+
 input[type='text'],
 input[type='password'],
 input[type='number'],
@@ -274,18 +299,23 @@ textarea {
 
 label.field {
   display: block;
-  margin-bottom: 0.9rem;
+  margin-bottom: 1.05rem;
 }
 
 label.field .name {
+  display: block;
   font-weight: 600;
+  margin-bottom: 0.3rem;
 }
 
+/* Help sits under the control it explains and stays quiet: it is the longest
+   text on a settings page and the reason the fields used to be enormous. */
 label.field .help {
   display: block;
   color: var(--muted);
-  font-size: 0.8rem;
-  margin: 0.1rem 0 0.3rem;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  margin-top: 0.3rem;
 }
 
 label.field input[type='text'],
@@ -298,6 +328,32 @@ label.check {
   display: flex;
   gap: 0.45rem;
   align-items: baseline;
+}
+
+dl.facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.15rem 0.8rem;
+  margin: 0;
+}
+
+dl.facts dt {
+  color: var(--muted);
+}
+
+dl.facts dd {
+  margin: 0;
+}
+
+details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* A base64 key has no break opportunities of its own. */
+.break {
+  word-break: break-all;
 }
 
 /* ---- tables ------------------------------------------------------------- */
@@ -369,13 +425,14 @@ table.grid th.day {
   padding-right: 0.4rem;
 }
 
+/* No background of its own: the cell classes below carry it, and a rule here
+   would outrank them. The bandwidth heatmap paints its cells inline. */
 table.grid td {
   width: 1.05rem;
   height: 1.05rem;
   padding: 0;
   border: 1px solid var(--card);
   border-radius: 2px;
-  background: var(--line);
 }
 
 .cell-off {

@@ -1,0 +1,185 @@
+@if (now(); as n) {
+  <section class="panel">
+    <h3>Right now</h3>
+
+    @if (n.error) {
+      <div class="banner">
+        {{ n.error }}
+        <div class="note">
+          A schedule that will not parse closes the transfer window rather than being ignored, so
+          nothing moves until the rules below read.
+        </div>
+      </div>
+    }
+
+    <div class="cards">
+      <div class="card">
+        <div class="k">Transfers</div>
+        <div class="v">
+          @if (n.transfer.open) {
+            <span class="pill ok">{{ fmt.cap(n.transfer.limit) }}</span>
+          } @else {
+            <span class="pill">closed</span>
+          }
+        </div>
+        <div class="note">
+          until {{ fmt.clock(n.transfer.until) }}
+          @if (!n.transfer.open && n.nextOpen) {
+            · opens {{ fmt.clock(n.nextOpen) }}
+          }
+        </div>
+      </div>
+      <div class="card">
+        <div class="k">Scans</div>
+        <div class="v">
+          @if (n.scan.open) {
+            <span class="pill ok">open</span>
+          } @else {
+            <span class="pill">closed</span>
+          }
+        </div>
+        <div class="note">every {{ n.scanEvery }} · until {{ fmt.clock(n.scan.until) }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Unattended</div>
+        <div class="v">
+          @if (n.automatic) {
+            <span class="pill ok">on</span>
+          } @else {
+            <span class="pill warn">off</span>
+          }
+        </div>
+        <div class="note">
+          @if (n.automatic) {
+            The scheduler starts scans and syncs by itself inside the windows.
+          } @else {
+            Runs only start when someone presses a button. The caps apply either way.
+          }
+        </div>
+      </div>
+      <div class="card">
+        <div class="k">Timezone</div>
+        <div class="v mono">{{ n.timezone }}</div>
+        <div class="note">{{ nowHere()?.text }} — the grids are drawn in this zone</div>
+      </div>
+    </div>
+  </section>
+}
+
+@if (schedule(); as s) {
+  <div class="split">
+    <section class="panel">
+      <h3>Transfer window</h3>
+
+      <div class="scroll">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th></th>
+              @for (hour of hours; track hour) {
+                <th>{{ hour }}</th>
+              }
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of s.transfer.cells; track $index; let day = $index) {
+              <tr>
+                <th class="day">{{ s.transfer.days[day] }}</th>
+                @for (cell of row; track $index; let hour = $index) {
+                  <td
+                    [class]="cellClass(cell, day, hour)"
+                    [title]="cellTitle(s.transfer.days, day, hour, cell)"
+                  ></td>
+                }
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <div class="legend">
+        <span><i class="cell-full"></i>no limit</span>
+        <span><i class="cell-cap"></i>capped</span>
+        <span><i class="cell-off"></i>closed</span>
+        <span><i class="cell-now"></i>this hour</span>
+      </div>
+
+      <label class="field">
+        <span class="name">Transfer rules</span>
+        <input
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          [value]="form.rules(transferKey, s.transfer.rules)"
+          [disabled]="!unlocked()"
+          (input)="form.edit(transferKey, $any($event.target).value)"
+        />
+        <span class="help">
+          <span class="mono">* * = 5MiB; * 2-8 = full</span> is 5 MiB/s everywhere and unlimited
+          from 02:00 to 08:00. Later rules win, so the first is the base and the rest are the
+          exceptions. Empty means always, at full speed. The caps apply to every transfer, scheduled
+          or started by hand.
+        </span>
+      </label>
+    </section>
+
+    <section class="panel">
+      <h3>Scan window</h3>
+
+      <div class="scroll">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th></th>
+              @for (hour of hours; track hour) {
+                <th>{{ hour }}</th>
+              }
+            </tr>
+          </thead>
+          <tbody>
+            @for (row of s.scan.cells; track $index; let day = $index) {
+              <tr>
+                <th class="day">{{ s.scan.days[day] }}</th>
+                @for (cell of row; track $index; let hour = $index) {
+                  <td
+                    [class]="cellClass(cell, day, hour)"
+                    [title]="cellTitle(s.scan.days, day, hour, cell, true)"
+                  ></td>
+                }
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <div class="legend">
+        <span><i class="cell-full"></i>open</span>
+        <span><i class="cell-off"></i>closed</span>
+        <span><i class="cell-now"></i>this hour</span>
+      </div>
+
+      <label class="field">
+        <span class="name">Scan rules</span>
+        <input
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          [value]="form.rules(scanKey, s.scan.rules)"
+          [disabled]="!unlocked()"
+          (input)="form.edit(scanKey, $any($event.target).value)"
+        />
+        <span class="help">
+          <span class="mono">* 3-6 = on; * 6-3 = off</span> — this grid only opens and closes, so a
+          rate is refused here rather than quietly ignored. A walk costs real time but no bandwidth
+          worth capping.
+        </span>
+      </label>
+    </section>
+  </div>
+}
+
+@for (group of groups(); track group.name) {
+  <config-group [group]="group" [except]="[transferKey, scanKey]" />
+}
+
+<config-save-bar />

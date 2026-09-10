@@ -1,0 +1,97 @@
+<section class="panel import">
+  <h3>Import the config the server gave you</h3>
+  <p class="note">
+    Paste the whole WireGuard client config — the one the server generated, private key and all. It
+    fills every tunnel field below in one go. Directives a userspace tunnel cannot honour, such as
+    <span class="mono">PostUp</span>, are skipped and named back to you.
+  </p>
+
+  <textarea
+    rows="7"
+    spellcheck="false"
+    autocomplete="off"
+    placeholder="[Interface]&#10;PrivateKey = …&#10;Address = 10.13.13.3/32&#10;DNS = 10.13.13.1&#10;&#10;[Peer]&#10;PublicKey = …&#10;AllowedIPs = 0.0.0.0/0, ::/0&#10;Endpoint = vpn.example.com:51820&#10;PersistentKeepalive = 25"
+    [value]="importText()"
+    [disabled]="!unlocked()"
+    (input)="importText.set($any($event.target).value)"
+  ></textarea>
+
+  <div class="row">
+    <button
+      type="button"
+      [disabled]="!unlocked() || importing() || !importText().trim()"
+      (click)="importWireguard()"
+    >
+      Import
+    </button>
+    @if (!unlocked()) {
+      <span class="note">Press Unlock to import.</span>
+    }
+  </div>
+
+  @if (importError()) {
+    <div class="banner">{{ importError() }}</div>
+  }
+  @if (imported(); as keys) {
+    <p class="note">
+      @if (keys.length) {
+        Set <span class="mono">{{ keys.join(', ') }}</span
+        >.
+      } @else {
+        That config is what was already stored, so nothing changed.
+      }
+      @if (importIgnored().length) {
+        Skipped <span class="mono">{{ importIgnored().join(', ') }}</span
+        >: this tunnel has no host side for them to act on.
+      }
+    </p>
+  }
+</section>
+
+@for (group of groups(); track group.name) {
+  <config-group [group]="group">
+    @if (group.name === 'Tunnel') {
+      <dl class="facts">
+        <dt>our public key</dt>
+        <dd class="mono break">{{ live.status()?.publicKey || 'not generated yet' }}</dd>
+      </dl>
+      <p class="note">
+        Derived from the private key above, so it is worth a glance: it has to match the peer entry
+        the WireGuard server holds for this container.
+      </p>
+    }
+
+    @if (group.name === 'Remote') {
+      <div class="row">
+        <button type="button" [disabled]="!unlocked() || probing()" (click)="testRemote()">
+          Test the remote
+        </button>
+        <span class="note">
+          One listing of the remote root through the tunnel. The answer also lands in the event log.
+        </span>
+      </div>
+
+      <dl class="facts">
+        <dt>target</dt>
+        <dd class="mono">{{ live.status()?.remote.target || 'not configured' }}</dd>
+        @if (live.status()?.remote.error; as remoteError) {
+          <dt>last error</dt>
+          <dd class="bad">{{ remoteError }}</dd>
+        }
+      </dl>
+
+      @if (probeError()) {
+        <div class="banner">{{ probeError() }}</div>
+      }
+      @if (probe(); as result) {
+        <p class="note">
+          {{ fmt.comma(result.dirs) }} directories and {{ fmt.comma(result.files) }} files in
+          <span class="mono">{{ result.target }}</span
+          >, in {{ result.millis }} ms.
+        </p>
+      }
+    }
+  </config-group>
+}
+
+<config-save-bar />

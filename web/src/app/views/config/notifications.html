@@ -1,0 +1,22 @@
+@for (group of groups(); track group.name) {
+  <config-group [group]="group">
+    <div class="row">
+      <button type="button" [disabled]="!unlocked() || sending()" (click)="sendTest()">
+        Send a test
+      </button>
+      <span class="note">
+        Ignores the toggles above: pressing it is the request. Save first — it sends with what is
+        stored, not with what is typed.
+      </span>
+    </div>
+
+    @if (sendError()) {
+      <div class="banner">{{ sendError() }}</div>
+    }
+    @if (sent()) {
+      <p class="note">Sent. If nothing arrives, the user id or key is not the one SCN holds.</p>
+    }
+  </config-group>
+}
+
+<config-save-bar />
