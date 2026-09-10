@@ -7,16 +7,20 @@ import (
 	"blackforestbytes.com/jcc-mirror/wg"
 )
 
-// cmdPubkey derives the public key belonging to -wg-key. It is the one
-// value the rootserver needs in order to add this container as a peer, and it
-// needs no tunnel and no network.
-func cmdPubkey(_ context.Context, args []string) error {
+// cmdPubkey derives the public key belonging to the configured private one. It
+// is what the WireGuard server's peer entry for this container should hold, so
+// it is worth comparing after importing a config; it needs no tunnel and no
+// network.
+func cmdPubkey(ctx context.Context, args []string) error {
 	fs, cfg := newFlagSet("pubkey")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := cfg.fromStore(ctx); err != nil {
+		return err
+	}
 	if cfg.wgPrivateKey == "" {
-		return fmt.Errorf("missing -wg-key (generate one with `wg genkey`)")
+		return fmt.Errorf("missing -wg-key, and no -data directory holding one")
 	}
 
 	pub, err := wg.PublicKey(cfg.wgPrivateKey)
