@@ -167,6 +167,11 @@ type config struct {
 	// bytes, but it is read where the engine is built.
 	limit string
 
+	// fs is kept so fromStore can tell a flag that was given from one that only
+	// carries its default. An int flag has no empty value to test for, and 0 is a
+	// legal keepalive, so there is no sentinel that would do instead.
+	fs *flag.FlagSet
+
 	stored     store.Values
 	storedOnce sync.Once
 	storedErr  error
@@ -177,7 +182,7 @@ type config struct {
 // or - with -data - from the same sqlite config the daemon runs on (DESIGN.md §6).
 func newFlagSet(name string) (*flag.FlagSet, *config) {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
-	cfg := &config{}
+	cfg := &config{fs: fs}
 
 	fs.StringVar(&cfg.wgPrivateKey, "wg-key", "", "our WireGuard private key, base64")
 	fs.StringVar(&cfg.wgPeerKey, "wg-peer", "", "the rootserver's WireGuard public key, base64")
@@ -239,6 +244,23 @@ func (cfg *config) fromStore(ctx context.Context) error {
 	} {
 		if *f.dst == "" {
 			*f.dst = cfg.stored.Get(f.key)
+		}
+	}
+
+	given := map[string]bool{}
+	cfg.fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	for _, f := range []struct {
+		dst  *int
+		flag string
+		key  string
+	}{
+		{&cfg.wgMTU, "wg-mtu", store.KeyWGMTU},
+		{&cfg.wgKeepalive, "wg-keepalive", store.KeyWGKeepalive},
+	} {
+		// Presence rather than a non-zero value: 0 is a keepalive that means "send
+		// none", and reading it as "nothing stored" would put 25 back.
+		if !given[f.flag] && cfg.stored.Get(f.key) != "" {
+			*f.dst = cfg.stored.Int(f.key)
 		}
 	}
 	return nil
