@@ -11,13 +11,16 @@ ARG BUILDSTAMP=unknown
 # dropped onto the NAS by the self-updater without a libc to match.
 RUN CGO_ENABLED=0 go build -ldflags "-X main.version=$VERSION -X main.buildStamp=$BUILDSTAMP" -o /out/jcc-mirror .
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:latest
 
 COPY --from=build /out/jcc-mirror /usr/local/bin/jcc-mirror
 
 # No cap_add, no devices, no network_mode: host. The WireGuard tunnel lives inside
-# the process, so an ordinary unprivileged container is all that is needed.
-USER nonroot:nonroot
+# the process, so no capability beyond the default set is needed.
+#
+# No USER either: a fixed uid cannot write a bind-mounted NAS share whose ACL does
+# not name it, and the image cannot know that uid. Root can, and can chown what it
+# writes to the share's owner. Pin the uid per host with compose's `user:` instead.
 WORKDIR /data
 
 # The entrypoint stays the bare binary so `docker compose run ... pairs -data /data`

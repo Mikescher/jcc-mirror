@@ -13,10 +13,12 @@ services:
       - ./data:/data                # sqlite state, the WireGuard identity, DB backups, updated binaries
       - /volume1/media:/mnt/media
       - /volume1/clipcorn:/mnt/clipcorn
-    # The uid/gid that owns the media share. Docker applies it before the process
-    # starts, so there is no privilege-dropping entrypoint and no PUID/PGID - and
-    # without it every transfer fails at its last syscall, the rename.
-    user: "1026:100"
+    # Optional: the uid/gid that owns the media share. Docker applies it before the
+    # process starts, so there is no privilege-dropping entrypoint and no PUID/PGID.
+    # Only set it to a uid the share's ACL actually grants write to - on a Synology
+    # that is a DSM user, not an invented uid. Left unset the process runs as root,
+    # which every share accepts and which lets it chown what it writes.
+    #user: "1026:100"
 
     # The mirror and the diagnostics run in the same image and read the same
     # settings, so neither needs anything passing to it twice:
