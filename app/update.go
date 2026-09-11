@@ -107,7 +107,7 @@ func (a *App) UpdateStatus(ctx context.Context) UpdateStatus {
 		st.Every = values.Duration(store.KeyUpdateInterval).String()
 		// Resolved without the remote client, so the panel still says where it
 		// would fetch from while the tunnel is down.
-		if where, err := updateLocation(values); err == nil {
+		if where, err := a.updateLocation(ctx, values); err == nil {
 			st.Source = where
 		}
 	}
@@ -140,46 +140,62 @@ func (a *App) updateReady() bool {
 }
 
 // updateLocation is where the binary would come from, in the form the panel
-// shows it: a web address, or a path on the publisher's share.
-func updateLocation(values store.Values) (string, error) {
+// shows it: a web address, or a path on a remote's share prefixed with the
+// remote's name.
+func (a *App) updateLocation(ctx context.Context, values store.Values) (string, error) {
 	url, path, err := update.Locate(values.Get(store.KeyUpdateURL))
 	if err != nil {
 		return "", err
 	}
-	if path != "" {
-		return path, nil
+	if path == "" {
+		return url, nil
 	}
-	return url, nil
+	if rec, err := a.store.ResolveRemote(ctx, values.Get(store.KeyUpdateRemote)); err == nil {
+		return rec.Name + ": " + path, nil
+	}
+	return path, nil
 }
 
-// updateSource is that URL plus what it takes to fetch it: the publisher's
-// credentials and the tunnel's transport, so the download rides the same
-// encrypted path as everything else and the publisher needs nothing new
+// updateSource is that URL plus what it takes to fetch it: the account of the
+// remote update.remote names and the tunnel's transport, so the download rides
+// the same encrypted path as everything else and the publisher needs nothing new
 // (DESIGN.md §5).
-func (a *App) updateSource(values store.Values) (update.Source, error) {
+func (a *App) updateSource(ctx context.Context, values store.Values) (update.Source, error) {
 	rawURL, sharePath, err := update.Locate(values.Get(store.KeyUpdateURL))
 	if err != nil {
 		return update.Source{}, err
 	}
-	// Wanted for the share-relative form, but read either way for the gate it
-	// applies: reaching an address that only exists through a tunnel that is down
-	// is a slow timeout rather than a clear answer.
-	client, err := a.Remote()
-	if err != nil {
-		return update.Source{}, err
-	}
+	src := update.Source{URL: rawURL, Path: sharePath}
 
-	src := update.Source{
-		URL:      rawURL,
-		Path:     sharePath,
-		Share:    client,
-		Username: values.Get(store.KeyRemoteUser),
-		Password: values.Get(store.KeyRemotePassword),
+	ref := strings.TrimSpace(values.Get(store.KeyUpdateRemote))
+	rec, err := a.store.ResolveRemote(ctx, ref)
+	switch {
+	case err == nil:
+		src.Username, src.Password = rec.User, rec.Password
+	case !errors.Is(err, store.ErrNoRemote):
+		return update.Source{}, err
+	case ref != "":
+		// A remote that was named and is gone is a mistake to report, not a reason
+		// to fetch without its account.
+		return update.Source{}, fmt.Errorf("%s: %w", store.KeyUpdateRemote, err)
+	case sharePath != "" && a.opts.RemoteDir == "":
+		return update.Source{}, fmt.Errorf("a share-relative update URL needs a remote to read it from: %w", err)
 	}
 
 	a.mu.Lock()
+	switch {
+	case sharePath != "":
+		src.Share, err = a.remoteLocked(rec.ID)
+	default:
+		// Applied to a web address too: one that only exists through a tunnel that
+		// is down is a slow timeout rather than a clear answer.
+		err = a.tunnelGateLocked()
+	}
 	tr := a.httpTr
 	a.mu.Unlock()
+	if err != nil {
+		return update.Source{}, err
+	}
 	if tr != nil {
 		// No Client.Timeout: the context bounds the whole operation, and a timeout
 		// here would cut a download that is merely slow.
@@ -196,7 +212,7 @@ func (a *App) CheckUpdate(ctx context.Context) (update.Release, bool, error) {
 	if err != nil {
 		return update.Release{}, false, err
 	}
-	src, err := a.updateSource(values)
+	src, err := a.updateSource(ctx, values)
 	if err != nil {
 		a.noteCheck(nil, false, "", err)
 		return update.Release{}, false, err
@@ -259,7 +275,7 @@ func (a *App) ApplyUpdate(ctx context.Context, force bool) (update.State, error)
 	if err != nil {
 		return update.State{}, err
 	}
-	src, err := a.updateSource(values)
+	src, err := a.updateSource(ctx, values)
 	if err != nil {
 		return update.State{}, err
 	}

@@ -11,21 +11,19 @@ import {
 } from '@angular/core';
 import { Api } from '../api';
 import { Live } from '../live';
-import type { DiagnosticsView, LogLine, RemoteListing, Space, UpdateStatus } from '../models';
+import type {
+  DiagnosticsView,
+  LogLine,
+  RemoteListing,
+  RemoteProbe,
+  Space,
+  UpdateStatus,
+} from '../models';
 import * as fmt from '../format';
 
 /** How many lines the tail keeps. It is a tail: older than this is what the
  *  Events view is for. */
 const logLines = 1000;
-
-/** What the remote probe answers with. It is a bare map on the wire because the
- *  handler builds the same shape for the event it writes. */
-interface Probe {
-  target?: string;
-  dirs?: number;
-  files?: number;
-  millis?: number;
-}
 
 /** DiagnosticsPage is every question worth asking when the mirror is not
  *  working, in the order they are worth asking them: the tunnel, then the route
@@ -51,6 +49,11 @@ export class DiagnosticsPage {
   readonly status = computed(() => this.live.status() ?? this.view()?.status);
   readonly pairs = computed(() => this.view()?.pairs ?? []);
   readonly notify = computed(() => this.view()?.notify ?? []);
+  readonly remotes = computed(() => this.status()?.remotes ?? []);
+
+  /** The remote the probe, the tree, the throughput read and an empty ping
+   *  target go to. 0 leaves the choice to the daemon, which takes the first. */
+  readonly remote = signal(0);
 
   readonly pingTarget = signal('');
   readonly pingResult = signal<{ target: string; millis: number } | undefined>(undefined);
@@ -65,7 +68,7 @@ export class DiagnosticsPage {
   readonly throughputError = signal('');
   readonly throughputBusy = signal(false);
 
-  readonly reach = signal<Probe | undefined>(undefined);
+  readonly reach = signal<RemoteProbe | undefined>(undefined);
   readonly reachError = signal('');
   readonly reaching = signal(false);
 
@@ -146,11 +149,24 @@ export class DiagnosticsPage {
 
   // ---- the probes ---------------------------------------------------------
 
+  /** A listing and a timing belong to the remote they were taken from, so they
+   *  go when another one is chosen. */
+  chooseRemote(id: number): void {
+    this.remote.set(id);
+    this.path.set('');
+    this.listing.set(undefined);
+    this.listError.set('');
+    this.throughput.set(undefined);
+    this.throughputError.set('');
+  }
+
   async ping(): Promise<void> {
     this.pinging.set(true);
     this.pingError.set('');
     try {
-      this.pingResult.set(await this.api.ping(this.pingTarget().trim()));
+      this.pingResult.set(
+        await this.api.ping(this.pingTarget().trim(), this.remote() || undefined),
+      );
     } catch (err) {
       this.pingResult.set(undefined);
       this.pingError.set(message(err));
@@ -165,7 +181,11 @@ export class DiagnosticsPage {
     try {
       const want = Number(this.probeBytes().trim());
       this.throughput.set(
-        await this.api.throughput(this.probePath().trim(), want > 0 ? want : undefined),
+        await this.api.throughput(
+          this.probePath().trim(),
+          want > 0 ? want : undefined,
+          this.remote() || undefined,
+        ),
       );
     } catch (err) {
       this.throughput.set(undefined);
@@ -179,7 +199,7 @@ export class DiagnosticsPage {
     this.reaching.set(true);
     this.reachError.set('');
     try {
-      this.reach.set((await this.api.probeRemote()) as Probe);
+      this.reach.set(await this.api.probeRemote(this.remote() || undefined));
     } catch (err) {
       this.reach.set(undefined);
       this.reachError.set(message(err));
@@ -193,7 +213,7 @@ export class DiagnosticsPage {
     this.listBusy.set(true);
     this.listError.set('');
     try {
-      this.listing.set(await this.api.remoteList(path));
+      this.listing.set(await this.api.remoteList(path, this.remote() || undefined));
     } catch (err) {
       this.listError.set(message(err));
     } finally {

@@ -14,9 +14,8 @@ import (
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
-// cmdPairs configures what is mirrored. A pair is one directory of the
-// publisher's share mapped onto one directory here, and until the dashboard grows
-// an editor in M6 this is the only way to make one (DESIGN.md §6).
+// cmdPairs configures what is mirrored. A pair is one directory of one of the
+// publisher's remotes mapped onto one directory here (DESIGN.md §6).
 //
 // Nothing here touches a file on disk. Adding a pair records an intention;
 // removing one forgets what was recorded about it, and leaves everything that was
@@ -62,11 +61,21 @@ func pairsList(ctx context.Context, args []string) error {
 		return nil
 	}
 
+	remotes, err := st.Remotes(ctx)
+	if err != nil {
+		return err
+	}
+	remoteNames := map[int64]string{}
+	for _, r := range remotes {
+		remoteNames[r.ID] = r.Name
+	}
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprint(w, "  id\tname\ttype\tmode\tprio\ton\tremote\tlocal\n")
+	fmt.Fprint(w, "  id\tname\ttype\tmode\tprio\ton\tfrom\tremote\tlocal\n")
 	for _, p := range pairs {
-		fmt.Fprintf(w, "  %d\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-			p.ID, p.Name, p.Type, p.Mode, p.Priority, yesNo(p.Enabled), orDash(p.RemotePath), p.LocalPath)
+		fmt.Fprintf(w, "  %d\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
+			p.ID, p.Name, p.Type, p.Mode, p.Priority, yesNo(p.Enabled),
+			orDash(remoteNames[p.RemoteID]), orDash(p.RemotePath), p.LocalPath)
 	}
 	if err := w.Flush(); err != nil {
 		return err
@@ -101,6 +110,15 @@ func printPairState(ctx context.Context, st *store.Store, p store.Pair) error {
 	}
 
 	fmt.Printf("\n%s (#%d)\n", p.Name, p.ID)
+	if p.RemoteID == 0 {
+		fmt.Printf("  remote         none - nothing runs until `jcc-mirror pairs set %s -from <remote>`\n", p.Name)
+	} else {
+		r, err := st.RemoteByID(ctx, p.RemoteID)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("  remote         %q, %s\n", r.Name, remoteTarget(r))
+	}
 	if len(p.Includes) > 0 {
 		fmt.Printf("  includes       %s\n", strings.Join(p.Includes, ", "))
 	}
@@ -139,16 +157,67 @@ func pairsAdd(ctx context.Context, args []string) error {
 	}
 	defer st.Close()
 
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	r, err := remoteForNewPair(ctx, st, cfg.from, given["from"])
+	if err != nil {
+		return err
+	}
+	p.RemoteID = r.ID
+
 	if err := st.CreatePair(ctx, p); err != nil {
 		return err
 	}
 	recordPairChange(ctx, st, *p, "added")
 
 	fmt.Printf("added pair %q (#%d)\n", p.Name, p.ID)
+	if p.RemoteID != 0 {
+		fmt.Printf("  remote         %q, %s\n", r.Name, remoteTarget(r))
+	}
 	fmt.Printf("  publisher      %s\n", orDash(p.RemotePath))
 	fmt.Printf("  here           %s\n", p.LocalPath)
+	if p.RemoteID == 0 {
+		fmt.Printf("\n=> the pair reads from no remote, so nothing can run yet: add one with\n   `jcc-mirror remotes add`, then `jcc-mirror pairs set %s -from <remote>`\n", p.Name)
+		return nil
+	}
 	fmt.Printf("\n=> nothing is mirrored yet: `scan -pair %s`, then `plan`, then `sync`\n", p.Name)
 	return nil
+}
+
+// remoteForNewPair is the remote a new pair reads from. Without -from, one
+// stored remote is the only answer; with several, a guess would mirror the wrong
+// share, so the choice is asked for.
+func remoteForNewPair(ctx context.Context, st *store.Store, from string, given bool) (store.Remote, error) {
+	if given {
+		return pairRemote(ctx, st, from)
+	}
+
+	remotes, err := st.Remotes(ctx)
+	if err != nil {
+		return store.Remote{}, err
+	}
+	switch len(remotes) {
+	case 0:
+		return store.Remote{}, nil
+	case 1:
+		return remotes[0], nil
+	}
+
+	names := make([]string, len(remotes))
+	for i, r := range remotes {
+		names[i] = r.Name
+	}
+	return store.Remote{}, fmt.Errorf("%d remotes are stored (%s): say which one the pair reads from with -from",
+		len(remotes), strings.Join(names, ", "))
+}
+
+// pairRemote resolves -from as the remote a pair reads from, where an empty
+// value given on purpose means none.
+func pairRemote(ctx context.Context, st *store.Store, ref string) (store.Remote, error) {
+	if strings.TrimSpace(ref) == "" {
+		return store.Remote{}, nil
+	}
+	return st.FindRemote(ctx, ref)
 }
 
 func pairsSet(ctx context.Context, args []string) error {
@@ -194,6 +263,12 @@ func pairsSet(ctx context.Context, args []string) error {
 			p.Name = edit.Name
 		case "type":
 			p.Type = edit.Type
+		case "from":
+			r, err := pairRemote(ctx, st, cfg.from)
+			if err != nil {
+				return err
+			}
+			p.RemoteID = r.ID
 		case "remote":
 			p.RemotePath = edit.RemotePath
 		case "local":
@@ -224,7 +299,7 @@ func pairsSet(ctx context.Context, args []string) error {
 
 	// A pair whose paths or globs moved describes a different set of files, and the
 	// manifest still describes the old one.
-	if given["remote"] || given["local"] || given["include"] || given["exclude"] {
+	if given["from"] || given["remote"] || given["local"] || given["include"] || given["exclude"] {
 		fmt.Printf("\n=> the pair covers something else now; scan it again before the next sync\n")
 	}
 	return printPairState(ctx, st, p)
@@ -284,17 +359,18 @@ func pairsRemove(ctx context.Context, args []string) error {
 }
 
 // pairFields are the flags that describe a pair, in the order they are reported.
-var pairFields = []string{"name", "type", "remote", "local", "mode", "include", "exclude", "priority", "guard", "enabled"}
+var pairFields = []string{"name", "type", "from", "remote", "local", "mode", "include", "exclude", "priority", "guard", "enabled"}
 
-// pairFlags registers those fields on a flag set and returns the pair they fill.
-// The defaults are what `add` wants; `set` reads fs.Visit instead and ignores
-// every value that was not typed.
+// pairFlags registers those fields on a flag set and returns the pair they fill,
+// all but -from, which is one of the flags every command shares. The defaults are
+// what `add` wants; `set` reads fs.Visit instead and ignores every value that was
+// not typed.
 func pairFlags(fs *flag.FlagSet) (*store.Pair, *bool) {
 	p := &store.Pair{}
 
 	fs.StringVar(&p.Name, "name", "", "what the pair is called; every other command refers to it by this or by its id")
 	fs.StringVar(&p.Type, "type", store.PairRaw, "\"raw\", or \"jcc\" for the ClipCornDB directory: hard exclusions and a lock gate on the database")
-	fs.StringVar(&p.RemotePath, "remote", "", "directory on the publisher's share, relative to the remote root; empty means that root itself")
+	fs.StringVar(&p.RemotePath, "remote", "", "directory on the pair's remote, relative to that remote's root; empty means the root itself")
 	fs.StringVar(&p.LocalPath, "local", "", "absolute directory here that the pair mirrors into")
 	fs.StringVar(&p.Mode, "mode", store.ModeAdditive, "\"additive\" or \"mirror\"; a mirror pair quarantines what the publisher drops, behind the guards")
 	fs.IntVar(&p.Priority, "priority", 100, "lower runs first")
@@ -319,7 +395,7 @@ func recordPairChange(ctx context.Context, st *store.Store, p store.Pair, what s
 		Message: fmt.Sprintf("pair %q %s from the command line", p.Name, what),
 		Data: map[string]any{
 			"action": what, "id": p.ID, "name": p.Name, "type": p.Type, "mode": p.Mode,
-			"remotePath": p.RemotePath, "localPath": p.LocalPath, "enabled": p.Enabled,
+			"remoteId": p.RemoteID, "remotePath": p.RemotePath, "localPath": p.LocalPath, "enabled": p.Enabled,
 		},
 	})
 	if err != nil {

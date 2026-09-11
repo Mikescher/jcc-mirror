@@ -12,11 +12,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -63,6 +65,7 @@ var commands = []command{
 	{"update", groupDaemon, "check the share for a newer binary, install it, or step back off one", cmdUpdate},
 	{"version", groupDaemon, "print the version and build timestamp", cmdVersion},
 
+	{"remotes", groupMirror, "list, add, change and remove the publisher's shares the pairs read from", cmdRemotes},
 	{"pairs", groupMirror, "list, add, change and remove the directory pairs", cmdPairs},
 	{"scan", groupMirror, "walk a pair's remote root into the manifest", cmdScan},
 	{"plan", groupMirror, "say what a sync would do, and change nothing", cmdPlan},
@@ -132,7 +135,7 @@ func usage() {
 			}
 		}
 	}
-	fmt.Fprintf(os.Stderr, "\nEvery command takes -h. The daemon is configured in the dashboard; the mirror\nand the diagnostics take -data to work on the same sqlite state, and -remote-dir\nto run against a local directory instead of the publisher's share.\n")
+	fmt.Fprintf(os.Stderr, "\nEvery command takes -h. The daemon is configured in the dashboard; the mirror\nand the diagnostics take -data to work on the same sqlite state, -from to read\na stored remote other than the pair's own or the first, and -remote-dir to run\nagainst a local directory instead of any share.\n")
 }
 
 func cmdVersion(context.Context, []string) error {
@@ -160,6 +163,7 @@ type config struct {
 	smbUser   string
 	smbPass   string
 	smbDomain string
+	from      string
 	remoteDir string
 
 	dataDir string
@@ -177,6 +181,18 @@ type config struct {
 	stored     store.Values
 	storedOnce sync.Once
 	storedErr  error
+
+	// fromRemote is what -from resolves to, or the first remote when it was not
+	// given. The error is kept rather than returned, because only the commands
+	// that open the share have any use for a remote.
+	fromRemote    store.Remote
+	fromRemoteErr error
+
+	// remoteName is the stored remote the SMB settings were completed from. Once
+	// it is set - or remotePicked is, for a remote the flags describe alone - no
+	// other remote is mixed in.
+	remoteName   string
+	remotePicked bool
 }
 
 // newFlagSet builds a diagnostic command's flag set with the shared flags already
@@ -204,6 +220,7 @@ func newFlagSet(name string) (*flag.FlagSet, *config) {
 	fs.StringVar(&cfg.smbUser, "user", "", "SMB user")
 	fs.StringVar(&cfg.smbPass, "pass", "", "SMB password")
 	fs.StringVar(&cfg.smbDomain, "domain", "", "optional NTLM domain or workgroup")
+	fs.StringVar(&cfg.from, "from", "", "the stored remote, by name or id; the SMB flags left unset are taken from it. Defaults to a pair's own remote, and elsewhere to the first one")
 	fs.StringVar(&cfg.remoteDir, "remote-dir", "", "serve this local directory as the remote instead of the share, for development and testing")
 
 	fs.StringVar(&cfg.dataDir, "data", "", "take the settings left unset from the store in this data directory, e.g. "+staticDataDir)
@@ -226,7 +243,10 @@ func (cfg *config) fromStore(ctx context.Context) error {
 			return
 		}
 		defer st.Close()
-		cfg.stored, cfg.storedErr = st.Config(ctx)
+		if cfg.stored, cfg.storedErr = st.Config(ctx); cfg.storedErr != nil {
+			return
+		}
+		cfg.fromRemote, cfg.fromRemoteErr = st.ResolveRemote(ctx, cfg.from)
 	})
 	if cfg.storedErr != nil {
 		return cfg.storedErr
@@ -243,12 +263,6 @@ func (cfg *config) fromStore(ctx context.Context) error {
 		{&cfg.wgAddress, store.KeyWGAddress},
 		{&cfg.wgAllowedIPs, store.KeyWGAllowedIPs},
 		{&cfg.wgDNS, store.KeyWGDNS},
-		{&cfg.smbHost, store.KeyRemoteHost},
-		{&cfg.smbShare, store.KeyRemoteShare},
-		{&cfg.smbPath, store.KeyRemotePath},
-		{&cfg.smbUser, store.KeyRemoteUser},
-		{&cfg.smbPass, store.KeyRemotePassword},
-		{&cfg.smbDomain, store.KeyRemoteDomain},
 	} {
 		if *f.dst == "" {
 			*f.dst = cfg.stored.Get(f.key)
@@ -272,6 +286,56 @@ func (cfg *config) fromStore(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// remoteFromStore fills the SMB settings left unset from a stored remote: the
+// one -from names, or the first. A mirror command has picked its pair's remote
+// before this runs, and that choice stands.
+func (cfg *config) remoteFromStore(ctx context.Context) error {
+	if err := cfg.fromStore(ctx); err != nil {
+		return err
+	}
+	if cfg.remotePicked {
+		return nil
+	}
+	if cfg.dataDir == "" {
+		if strings.TrimSpace(cfg.from) != "" {
+			return fmt.Errorf("-from names a stored remote, so it needs -data")
+		}
+		return nil
+	}
+
+	switch {
+	case cfg.fromRemoteErr == nil:
+		cfg.useRemote(cfg.fromRemote)
+	case errors.Is(cfg.fromRemoteErr, store.ErrNoRemote) && strings.TrimSpace(cfg.from) == "":
+		// Nothing is stored yet, so the flags are all there is.
+	default:
+		return fmt.Errorf("-from: %w", cfg.fromRemoteErr)
+	}
+	return nil
+}
+
+// useRemote takes the SMB settings no flag gave from r, and makes r the remote
+// for the rest of the command.
+func (cfg *config) useRemote(r store.Remote) {
+	for _, f := range []struct {
+		dst *string
+		val string
+	}{
+		{&cfg.smbHost, r.Host},
+		{&cfg.smbShare, r.Share},
+		{&cfg.smbPath, r.Path},
+		{&cfg.smbUser, r.User},
+		{&cfg.smbPass, r.Password},
+		{&cfg.smbDomain, r.Domain},
+	} {
+		if *f.dst == "" {
+			*f.dst = f.val
+		}
+	}
+	cfg.remoteName = r.Name
+	cfg.remotePicked = true
 }
 
 // openTunnel brings the tunnel up, or returns nil when -no-tunnel was given.
@@ -314,11 +378,11 @@ func (cfg *config) openTunnel(ctx context.Context, logger *logs.Logger) (*wg.Tun
 
 // openSMB builds the SMB client, dialing through tun when there is one.
 func (cfg *config) openSMB(ctx context.Context, tun *wg.Tunnel) (*smb.Client, error) {
-	if err := cfg.fromStore(ctx); err != nil {
+	if err := cfg.remoteFromStore(ctx); err != nil {
 		return nil, err
 	}
 	if cfg.smbHost == "" || cfg.smbShare == "" {
-		return nil, fmt.Errorf("missing -host or -share (see -h)")
+		return nil, fmt.Errorf("missing -host or -share, and no stored remote to take them from (see -h, and `jcc-mirror remotes add -h`)")
 	}
 
 	scfg := smb.Config{
@@ -354,6 +418,9 @@ func (cfg *config) openBoth(ctx context.Context, logger *logs.Logger) (*smb.Clie
 		closeTun()
 		return nil, nil, func() {}, err
 	}
+	if cfg.remoteName != "" {
+		logger.Infof("smb: %s, remote %q", client.Target(), cfg.remoteName)
+	}
 	return client, tun, func() {
 		client.Close()
 		closeTun()
@@ -363,7 +430,7 @@ func (cfg *config) openBoth(ctx context.Context, logger *logs.Logger) (*smb.Clie
 // openEngineRemote is what the mirror commands run against. With -remote-dir a
 // local directory stands in for the publisher's share, which is what lets the
 // whole of M2 be exercised with no NAS, no tunnel and no share to mount; it wins
-// over -host, and nothing about the tunnel is touched.
+// over -host, -from and a pair's remote, and nothing about the tunnel is touched.
 func (cfg *config) openEngineRemote(ctx context.Context, logger *logs.Logger) (remote.Remote, func(), error) {
 	if cfg.remoteDir != "" {
 		fs, err := localfs.New(cfg.remoteDir)

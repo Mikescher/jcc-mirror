@@ -23,7 +23,7 @@ by one Server-Sent Events stream, a per-minute bandwidth series that rolls
 itself up rather than growing without bound, a read-only mode that one button in
 the header lifts, and push notifications over SCN coalesced hard enough to live
 inside a daily quota. And on top of all of it, M7's **self-update**: a binary
-fetched from the same share the mirror already reads, checked, smoke-run and
+fetched from a share the mirror already reads, checked, smoke-run and
 re-exec'd in place, with a supervisor that puts the old one back if the new one
 will not start.
 
@@ -50,28 +50,30 @@ depend on the tunnel, so a first boot against an empty database answers on
    on — `ListenPort`, `PostUp`, `Table` — are skipped and named back to you.
    Every one of those fields can be typed instead; the importer only saves the
    typing.
-3. Under it, fill in the remote: the publisher's address inside the tunnel, the
-   share, the directory inside the share the mirror is rooted at, and a read-only
-   account on his DSM. SMB has no usable anonymous mode, so the account is
-   required even for a share that is open to everyone.
-4. Save. The tunnel comes up in place — no restart — and the same dashboard also
+3. Save. The tunnel comes up in place — no restart — and the same dashboard also
    starts answering on `http://<our-tunnel-address>:8080`, which is how the
    publisher reaches it with no port forward.
-5. **Test the remote** proves the whole path end to end. Its answer lands in the
-   event log.
+4. On **Remotes**, add the publisher's share: his address inside the tunnel, the
+   share, the directory inside it the remote is rooted at, and a read-only
+   account on his DSM. One remote per share; add a second for a second share.
+   SMB has no usable anonymous mode, so the account is required even for a share
+   that is open to everyone. Each pair then picks the remote it reads from on
+   the **Pairs** tab.
+5. **Test the remote** proves the whole path end to end, one remote at a time.
+   Its answer lands in the event log.
 
 A private key is made up at first start so the tunnel has an identity before
 anyone has configured one, and the container log prints the public half of
 whatever is stored. It is worth a glance after an import: it has to match the
 peer entry the rootserver holds for this container.
 
-Every endpoint is open, so a setting can be changed from `curl` as easily as from
+Every endpoint is open, so a remote can be added from `curl` as easily as from
 the page:
 
 ```bash
 curl -H 'Content-Type: application/json' \
-     -d '{"remote.host":"10.13.13.2","remote.share":"media"}' \
-     http://<synology>:8080/api/config
+     -d '{"name":"media","host":"10.13.13.2","share":"media","user":"ro","password":"…"}' \
+     http://<synology>:8080/api/remotes
 ```
 
 There is no credential anywhere in this, which cuts both ways: nothing can be
@@ -88,9 +90,10 @@ request.
 | `GET /` and every route under it | The dashboard. Unknown paths answer with the shell, because the router is on the client |
 | `GET /healthz` | Status as JSON; 503 only when the database has stopped answering |
 | `GET /api/stream` | Server-Sent Events: `state` frames with the status and the running operation, plus `events` and `changes` as they happen, and `log` frames carrying the container's own log |
-| `GET /api/status` · `/api/schedule` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/changes` · `/api/pairs` · `/api/jobs` · `/api/scans` · `/api/trash` · `/api/runs` · `/api/bandwidth` · `/api/diagnostics` · `/api/update` · `/api/remote/list` | Read views. Secrets are never returned; `status` carries the current window and cap |
-| `POST /api/config` · `/api/remote/probe` | A settings save, and one listing of the remote root to prove the path end to end |
+| `GET /api/status` · `/api/schedule` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/changes` · `/api/remotes` · `/api/pairs` · `/api/jobs` · `/api/scans` · `/api/trash` · `/api/runs` · `/api/bandwidth` · `/api/diagnostics` · `/api/update` · `/api/remote/list` (optional `remote`) | Read views. Secrets are never returned — a remote says whether it has a password and nothing more; `status` carries the current window and cap, and `remotes` |
+| `POST /api/config` · `/api/remote/probe` (optional `remote`) | A settings save, and one listing of a remote's root to prove the path end to end |
 | `POST /api/config/wireguard/import` (`config`) | A whole wg-quick file, spread over the tunnel settings through that same save; answers with what it changed and what it had to skip |
+| `POST /api/remotes` · `/api/remotes/update` · `/api/remotes/delete` | JSON or a form, with `id` naming the remote on the last two. A blank password keeps the stored one and `clearPassword` clears it; a delete answers 409 while a pair still reads from the remote |
 | `POST /api/pairs` · `/api/pairs/update` · `/api/pairs/delete` | JSON or a form; a JSON body may carry one key and changes only that |
 | `POST /api/pairs/deletions` (`id`, `decision`) | The one click a held deletion waits for |
 | `POST /api/pairs/database/rollback` (`id`, optional `backup`) | Puts a kept copy of a jcc pair's database back; answers when it is done |
@@ -99,8 +102,11 @@ request.
 | `POST /api/runs/cancel` | Stopping is routine: a walk stays resumable and every transfer keeps its watermark |
 | `GET /api/update` | The self-updater's panel: what is running, what the share has, what the last update did |
 | `POST /api/update/check` · `/api/update/apply` (optional `force`) · `/api/update/rollback` | Apply and rollback answer as soon as the binary is in place; the daemon then re-execs, so the next request reaches the new process at the same address |
-| `POST /api/diagnostics/ping` · `/api/diagnostics/throughput` | The M0 measurements, from the page rather than a shell |
+| `POST /api/diagnostics/ping` · `/api/diagnostics/throughput` (optional `remote`) | The M0 measurements, from the page rather than a shell |
 | `POST /api/notify/test` | Sends one message, ignoring the per-event toggles, and answers with what SCN said |
+
+`remote`, where an endpoint takes one, is a remote's id; left out, it is the
+first remote.
 
 ## The mirror
 
@@ -122,20 +128,29 @@ Synology it usually is.
 
 **From the CLI.** Every command takes `-data`, so they all work on the same sqlite
 state the daemon runs on, and `-remote-dir` points the mirror at a local
-directory instead of the publisher's share — the whole milestone can be exercised
+directory instead of the pair's remote — the whole milestone can be exercised
 with no NAS and no tunnel. SMB has no in-process server the way HTTP does, which
 is why that flag exists at all: without it nothing here could be run end to end
 except against a real share, and it is what the tests run on.
 
-A pair is one directory over there mapped onto one directory here. Nothing is
-mirrored until one exists:
+A remote is one share over there, and a pair is one directory of a remote mapped
+onto one directory here. Nothing is mirrored until both exist:
 
 ```bash
-jcc-mirror pairs add -data /data -name media \
+jcc-mirror remotes add -data /data -name media \
+    -host 10.13.13.2 -share media -user ro -pass '…'
+jcc-mirror pairs add -data /data -name media -from media \
     -remote "Filme" -local /mnt/media/Filme -mode additive \
     -exclude "**/*.tmp,Serien/Trash/**"
 jcc-mirror pairs -data /data
 ```
+
+With one remote stored, `-from` can be left off and the pair reads from that one;
+with several, `pairs add` asks which. `pairs set <pair> -from <remote>` moves a
+pair to another remote, `remotes set` changes only the flags it is given — an
+explicit `-pass ""` clears the password — and `remotes rm` refuses a remote while
+a pair still reads from it. The mirror commands read through the pair's own
+remote; `-from` on any of them reads through another for that one run.
 
 Then the three steps, in order. They are separate commands because each answers
 a different question, and because the first weeks are meant to be run by hand:
@@ -399,8 +414,8 @@ history view share a schema rather than agreeing by accident.
 | **Changes** | Per-file history — added, replaced, deleted, failed — filterable by pair and operation. It is the only place one file's fate is recorded. |
 | **Events** | Scans and syncs with their durations, the database replaced or skipped for a lock, deletion guards, tunnel edges, configuration changes, errors. Each row can be expanded into the JSON it carries. |
 | **Bandwidth** | The per-minute series drawn as inline SVG, plus the 7×24 heatmap that makes the weekday/weekend shape visible. Minutes are rolled up to hours after a week and to days after a quarter — a per-minute series kept forever is half a million rows a year. |
-| **Config** | Eight tabs behind the one nav item — connection, schedule, pairs, transfer, jCC, notifications, system, audit — each with its own draft and its own save bar at the foot of the viewport. The fields are still generated from the key registry, so a key added later costs no HTML; a route-to-group table is the one place a settings group is told which tab it belongs on, and a group no tab claims lands on **System** rather than disappearing. |
-| **Diagnostics** | Handshake age and endpoint, RTT through the tunnel, a throughput probe, remote reachability, a directory-by-directory explorer of the remote tree, free space per pair, "explain plan", the notification state, the self-update panel and a live log tail. |
+| **Config** | Nine tabs behind the one nav item — connection, remotes, schedule, pairs, transfer, jCC, notifications, system, audit — each with its own draft and its own save bar at the foot of the viewport. The fields are still generated from the key registry, so a key added later costs no HTML; a route-to-group table is the one place a settings group is told which tab it belongs on, and a group no tab claims lands on **System** rather than disappearing. |
+| **Diagnostics** | Handshake age and endpoint, RTT through the tunnel, a throughput probe, the reachability of each remote, a directory-by-directory explorer of any remote's tree, free space per pair, "explain plan", the notification state, the self-update panel and a live log tail. |
 
 Every view is drawn from an open endpoint, the log tail — on
 `GET /api/diagnostics` and as `log` frames on the stream — included; the Unlock
@@ -447,16 +462,18 @@ run that produced it — it is telemetry, not a step.
 "Update in place without restarting docker" is not literally possible — the
 kernel holds the running executable's inode — but re-execing gives exactly the
 property that was wanted: same PID, same container, nothing for the orchestration
-to notice. The new binary lives on the same share the mirror already reads, so
-the publisher still needs nothing but the file service he is already running.
+to notice. The new binary lives on a share the mirror already reads, so the
+publisher still needs nothing but the file service he is already running.
 
-Point it at one under **Update** in Config. A path is read off the share with the
-mirror's own client, relative to the remote root — the usual setup, and it keeps
-the publisher's address written down in one place. An absolute `http(s)` URL is
-fetched over the tunnel instead:
+Point it at one under **Update** in Config. A path is read with the mirror's own
+client off the remote `update.remote` names — the first remote while it is
+empty — relative to that remote's root: the usual setup, and it keeps the
+publisher's address written down in one place. An absolute `http(s)` URL is
+fetched over the tunnel instead, with that remote's account:
 
 ```
 update.url       dist/jcc-mirror-amd64
+update.remote    media
 update.auto      false
 update.interval  6h
 ```
@@ -548,8 +565,9 @@ read-only and the container is unprivileged:
 
 The spike commands are kept: each answers a question the design rests on, and
 they are the diagnostics when something is wrong. `-data /data` takes every
-setting left unset from the same sqlite the daemon runs on, so they need no flags
-once the dashboard is configured.
+setting left unset from the same sqlite the daemon runs on — the share they open
+is the first remote, or the one `-from` names by name or id — so they need no
+flags once the dashboard is configured.
 
 | # | Question | Command | Why it could sink the design |
 |---|---|---|---|
@@ -563,6 +581,7 @@ once the dashboard is configured.
 docker compose run --rm jcc-mirror ping     -data /data -target <publisher-tunnel-addr> -count 10
 docker compose run --rm jcc-mirror status   -data /data
 docker compose run --rm jcc-mirror ls       -data /data -path "" -limit 50
+docker compose run --rm jcc-mirror ls       -data /data -from archive -path ""
 docker compose run --rm jcc-mirror walk     -data /data -workers 8 -out /data/manifest.ndjson
 docker compose run --rm jcc-mirror resume   -data /data -path "Filme/Some.Big.File.mkv" -length $((256<<20))
 docker compose run --rm jcc-mirror soak     -data /data -path "Filme/Some.Big.File.mkv" -duration 4h
@@ -570,7 +589,8 @@ docker compose run --rm jcc-mirror soak     -data /data -path "Filme/Some.Big.Fi
 
 Every setting can still be given as a flag instead, and a flag always wins over
 the stored value — trying something other than what is configured is the point.
-The remote is `-host`, `-share`, `-share-path`, `-user`, `-pass` and `-domain`;
+The remote is `-host`, `-share`, `-share-path`, `-user`, `-pass` and `-domain`,
+and each of them wins over the stored remote field by field;
 `-no-tunnel` talks to `-host` out of the host network rather than through
 WireGuard, and `-remote-dir` needs no server at all — `ls` and `walk` run against
 a local directory with the same code and the same output. Run `jcc-mirror help`
@@ -607,20 +627,22 @@ never passes through a compose file, a shell history or `ps`.
 
 The engine's settings live in the same table and appear in the same form, because
 the key registry is what the Config view is generated from — a setting added in a
-later milestone costs no HTML. The tunnel's nine settings are under **Tunnel**
-and the publisher's host, share, path in the share, account and NTLM domain under
-**Remote**; the two grids, the unattended switch and the scan interval are under
+later milestone costs no HTML. The tunnel's nine settings are under **Tunnel**;
+the two grids, the unattended switch and the scan interval are under
 **Schedule**; walk concurrency and the mtime tolerance under **Scan**; streams
 per file, chunk size, attempts, retry backoff, post-copy hashing and the
 free-space reserve under **Transfer**; the deletion threshold and quarantine
 retention under **Deletion**; the database's name and directory, the stale-lock
 threshold and how many copies to keep under **jCC**; the SCN credentials, the
 per-event toggles and the tunnel-down grace under **Notifications**; where the
-binary comes from — a path on the share or an absolute URL — whether to install
-it unattended and how often to look under **Update**; and how long the event log
-and the per-file history are kept under **Retention**, a year each by default,
-swept once an hour. The pairs themselves are the exception — they are rows of
-their own, edited in the Config view or with `jcc-mirror pairs`.
+binary comes from — a path on a share or an absolute URL — which remote it is
+read from, whether to install it unattended and how often to look under
+**Update**; and how long the event log and the per-file history are kept under
+**Retention**, a year each by default, swept once an hour. The remotes and the
+pairs are the exception — they are rows of their own, one remote per share on
+the publisher's side with its host, share, path in the share, account and NTLM
+domain, edited on the **Remotes** and **Pairs** tabs or with `jcc-mirror remotes`
+and `jcc-mirror pairs`.
 
 ## Publisher-side setup
 
@@ -697,7 +719,7 @@ app/           the running daemon: tunnel lifecycle, scheduler, the dashboard's
                API, the SSE stream, the bandwidth meter and rollups, the
                notification policy, and the embedded UI with its dev proxy. What
                it reads the publisher with is an interface, so Options.RemoteDir
-               can put a local directory where the share is
+               can put a local directory where the remotes are
 schedule/      the 7x24 grid: parsing, rendering, and when the answer next
                changes
 engine/        the mirror: scan.go walks, diff.go plans, transfer.go moves
@@ -707,7 +729,7 @@ engine/        the mirror: scan.go walks, diff.go plans, transfer.go moves
                globbing, limiter.go is the shared bandwidth cap and space.go
                the free-space preflight
 store/         sqlite state: migrations, config with audit, events, and the
-               engine's tables - pairs, manifest, scans, files, jobs, changes,
+               engine's tables - remotes, pairs, manifest, scans, files, jobs, changes,
                delete_approvals, db_backups - plus the dashboard's bw_samples
                and the notifications' notify_state
 wg/            wireguard-go + netstack: the tunnel, ping and device status, and

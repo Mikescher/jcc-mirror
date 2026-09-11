@@ -41,7 +41,8 @@ type Pair struct {
 	ID          int64     `json:"id"`
 	Name        string    `json:"name"`
 	Type        string    `json:"type"`
-	RemotePath  string    `json:"remotePath"` // relative to the remote root; "" is the root itself
+	RemoteID    int64     `json:"remoteId"`   // the remote it reads from; 0 is none yet, and nothing runs until one is set
+	RemotePath  string    `json:"remotePath"` // relative to the remote's root; "" is that root itself
 	LocalPath   string    `json:"localPath"`  // absolute, inside the container
 	Mode        string    `json:"mode"`
 	Includes    []string  `json:"includes"`
@@ -94,6 +95,9 @@ func (p *Pair) Normalize() error {
 	p.Includes = cleanPatterns(p.Includes)
 	p.Excludes = cleanPatterns(p.Excludes)
 
+	if p.RemoteID < 0 {
+		return fmt.Errorf("remote id %d cannot be negative", p.RemoteID)
+	}
 	if p.Priority == 0 {
 		p.Priority = 100
 	}
@@ -118,6 +122,9 @@ func (s *Store) CreatePair(ctx context.Context, p *Pair) error {
 	if err := p.Normalize(); err != nil {
 		return err
 	}
+	if err := s.checkRemote(ctx, p.RemoteID); err != nil {
+		return err
+	}
 
 	inc, exc, err := marshalPatterns(p)
 	if err != nil {
@@ -126,10 +133,10 @@ func (s *Store) CreatePair(ctx context.Context, p *Pair) error {
 
 	now := time.Now()
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO pairs (name, type, remote_path, local_path, mode, includes, excludes,
+		`INSERT INTO pairs (name, type, remote_id, remote_path, local_path, mode, includes, excludes,
 		                    delete_guard, priority, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.Name, p.Type, p.RemotePath, p.LocalPath, p.Mode, inc, exc,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.Name, p.Type, remoteRef(p.RemoteID), p.RemotePath, p.LocalPath, p.Mode, inc, exc,
 		p.DeleteGuard, p.Priority, boolInt(p.Enabled), now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		return fmt.Errorf("create pair %q: %w", p.Name, err)
@@ -146,6 +153,9 @@ func (s *Store) UpdatePair(ctx context.Context, p *Pair) error {
 	if err := p.Normalize(); err != nil {
 		return err
 	}
+	if err := s.checkRemote(ctx, p.RemoteID); err != nil {
+		return err
+	}
 
 	inc, exc, err := marshalPatterns(p)
 	if err != nil {
@@ -154,11 +164,11 @@ func (s *Store) UpdatePair(ctx context.Context, p *Pair) error {
 
 	now := time.Now()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE pairs SET name = ?, type = ?, remote_path = ?, local_path = ?, mode = ?,
+		`UPDATE pairs SET name = ?, type = ?, remote_id = ?, remote_path = ?, local_path = ?, mode = ?,
 		                  includes = ?, excludes = ?, delete_guard = ?, priority = ?,
 		                  enabled = ?, updated_at = ?
 		 WHERE id = ?`,
-		p.Name, p.Type, p.RemotePath, p.LocalPath, p.Mode, inc, exc,
+		p.Name, p.Type, remoteRef(p.RemoteID), p.RemotePath, p.LocalPath, p.Mode, inc, exc,
 		p.DeleteGuard, p.Priority, boolInt(p.Enabled), now.UnixMilli(), p.ID)
 	if err != nil {
 		return fmt.Errorf("update pair %d: %w", p.ID, err)
@@ -183,7 +193,7 @@ func (s *Store) DeletePair(ctx context.Context, id int64) error {
 	return nil
 }
 
-const pairColumns = `id, name, type, remote_path, local_path, mode, includes, excludes,
+const pairColumns = `id, name, type, remote_id, remote_path, local_path, mode, includes, excludes,
                      delete_guard, priority, enabled, created_at, updated_at`
 
 // Pairs returns every configured pair, in the order a sync run walks them.
@@ -244,11 +254,12 @@ type rowScanner interface{ Scan(...any) error }
 func scanPair(row rowScanner) (Pair, error) {
 	var (
 		p                Pair
+		remoteID         sql.NullInt64
 		inc, exc         string
 		enabled          int
 		created, updated int64
 	)
-	if err := row.Scan(&p.ID, &p.Name, &p.Type, &p.RemotePath, &p.LocalPath, &p.Mode,
+	if err := row.Scan(&p.ID, &p.Name, &p.Type, &remoteID, &p.RemotePath, &p.LocalPath, &p.Mode,
 		&inc, &exc, &p.DeleteGuard, &p.Priority, &enabled, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Pair{}, err
@@ -262,9 +273,19 @@ func scanPair(row rowScanner) (Pair, error) {
 	if err := json.Unmarshal([]byte(exc), &p.Excludes); err != nil {
 		return Pair{}, fmt.Errorf("pair %d: decode excludes: %w", p.ID, err)
 	}
+	p.RemoteID = remoteID.Int64
 	p.Enabled = enabled != 0
 	p.CreatedAt, p.UpdatedAt = time.UnixMilli(created), time.UnixMilli(updated)
 	return p, nil
+}
+
+// remoteRef stores "no remote" as NULL, which is what the foreign key accepts;
+// 0 would be a reference to a row that cannot exist.
+func remoteRef(id int64) any {
+	if id == 0 {
+		return nil
+	}
+	return id
 }
 
 func marshalPatterns(p *Pair) (string, string, error) {

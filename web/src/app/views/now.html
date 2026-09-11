@@ -196,13 +196,19 @@
             @if (!p.enabled) {
               <span class="pill dim">disabled</span>
             }
+            @if (!p.remoteId) {
+              <span class="pill warn">no remote</span>
+            }
             @if (behind(p) > 0) {
               <span class="pill warn">{{ fmt.count(behind(p), 'file') }} behind</span>
             } @else {
               <span class="pill ok">level with the publisher</span>
             }
           </div>
-          <span class="note mono path">{{ p.remotePath }} → {{ p.localPath }}</span>
+          <span class="note mono path"
+            >{{ p.remoteName ? p.remoteName + ':' : '' }}{{ p.remotePath }} →
+            {{ p.localPath }}</span
+          >
         </div>
 
         <div class="scroll">

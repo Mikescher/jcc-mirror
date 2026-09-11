@@ -1,5 +1,5 @@
 // Package app is the running daemon: the sqlite store, the WireGuard tunnel it is
-// configured from, the SMB client that rides on it, and the dashboard that
+// configured from, the SMB clients that ride on it, and the dashboard that
 // reports on all three.
 //
 // Everything is driven from the config table, so there is nothing to know before
@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,10 +55,10 @@ type Options struct {
 	// the build embedded in the binary. Empty in every deployment.
 	DevUI string
 	// RemoteDir serves a local directory as the publisher's share instead of
-	// opening an SMB session, and overrides the remote settings entirely. Empty
-	// in every deployment: it is what lets the daemon - dashboard, scheduler and
-	// runs alike - be exercised with no NAS and no tunnel, the same way the
-	// mirror commands take -remote-dir (DESIGN.md §2.1).
+	// opening SMB sessions: it stands in for every remote, and for a pair that
+	// names none. Empty in every deployment: it is what lets the daemon -
+	// dashboard, scheduler and runs alike - be exercised with no NAS and no
+	// tunnel, the same way the mirror commands take -remote-dir (DESIGN.md §2.1).
 	RemoteDir string
 }
 
@@ -117,11 +118,17 @@ type App struct {
 	tunnelErr error
 	tunnelLn  net.Listener
 	tunnelSrv *http.Server
-	remote    Remote
-	remoteErr error
-	// httpTr is the metered transport through the tunnel. Nothing about the
-	// remote uses it any more - it is what the self-updater downloads over when
-	// the binary is served by HTTP rather than sitting on the share.
+	// remotes holds one client per stored remote, keyed by its id. remotesTun is
+	// the tunnel they were built on: each carries that tunnel's dialer, so a
+	// tunnel that is opened, replaced or closed means building all of them anew.
+	remotes    map[int64]*remoteClient
+	remotesTun *wg.Tunnel
+	// local is Options.RemoteDir's directory, which stands in for every remote.
+	local    Remote
+	localErr error
+	// httpTr is the metered transport through the tunnel. No remote uses it - it
+	// is what the self-updater downloads over when the binary is served by HTTP
+	// rather than sitting on a share.
 	httpTr    *http.Transport
 	wantTun   bool // the tunnel is configured, whether or not it is currently open
 	up        bool // last reported tunnel state, so events fire on the edge only
@@ -209,7 +216,14 @@ func (a *App) Close(ctx context.Context) {
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	for id := range a.remotes {
+		a.closeRemoteLocked(id)
+	}
 	a.closeTunnelLocked()
+	if a.httpTr != nil {
+		a.httpTr.CloseIdleConnections()
+		a.httpTr = nil
+	}
 }
 
 // awaitBackground waits for the run and the notifications it produced to finish
@@ -243,6 +257,11 @@ func (a *App) Reload(ctx context.Context) {
 		a.log.Errorf("config: %v", err)
 		return
 	}
+	remotes, err := a.store.Remotes(ctx)
+	if err != nil {
+		a.log.Errorf("remotes: %v", err)
+		return
+	}
 
 	a.loadSchedule(values)
 
@@ -265,7 +284,14 @@ func (a *App) Reload(ctx context.Context) {
 		a.openTunnelLocked(ctx, cfg)
 	}
 
-	a.openRemoteLocked(values)
+	// The updater's own transport, which is HTTP and has nothing to do with the
+	// remotes: it exists whenever the tunnel does.
+	if a.httpTr != nil {
+		a.httpTr.CloseIdleConnections()
+	}
+	a.httpTr = a.meteredTransportLocked()
+
+	a.reconcileRemotesLocked(remotes)
 }
 
 // openTunnelLocked replaces the running tunnel with one built from cfg.
@@ -323,72 +349,104 @@ func (a *App) closeTunnelLocked() {
 	}
 	a.tunnelCfg = tunnelSettings{}
 	a.up = false
-	a.closeRemoteLocked()
-	a.remoteErr = nil
 }
 
-// closeRemoteLocked ends the SMB session. It is not something a garbage
-// collector does: the session is a TCP connection to the publisher, and a client
-// dropped without this leaks one per reload.
-func (a *App) closeRemoteLocked() {
-	if a.remote != nil {
-		if err := a.remote.Close(); err != nil {
-			a.log.Debugf("smb: closing the previous session: %v", err)
-		}
-		a.remote = nil
-	}
-	if a.httpTr != nil {
-		a.httpTr.CloseIdleConnections()
-		a.httpTr = nil
+// remoteClient is one remote's SMB client, with the settings it was built from so
+// a reload can tell whether it still matches its row.
+type remoteClient struct {
+	client   Remote
+	settings remoteSettings
+	err      error // why no client could be built
+}
+
+// remoteSettings is the part of a remote the session is built from. The name is
+// not in it: renaming a remote must not cost the sync reading from it its
+// session.
+type remoteSettings struct {
+	host, share, path, user, password, domain string
+}
+
+func remoteSettingsOf(r store.Remote) remoteSettings {
+	return remoteSettings{
+		host: r.Host, share: r.Share, path: r.Path,
+		user: r.User, password: r.Password, domain: r.Domain,
 	}
 }
 
-// openRemoteLocked rebuilds the SMB client. It is rebuilt on every reload
-// because it carries the tunnel's dialer, which a reconnect replaces - and the
-// one it had must be closed rather than dropped, or every configuration change
-// costs a live session on the publisher.
-func (a *App) openRemoteLocked(values store.Values) {
-	a.closeRemoteLocked()
-
-	// The updater's own transport, which is HTTP and has nothing to do with the
-	// settings below: it exists whenever the tunnel does.
-	a.httpTr = a.meteredTransportLocked()
-
+// reconcileRemotesLocked brings the clients in line with the stored remotes. Only
+// what changed is rebuilt: a remote edited on the dashboard must not end the
+// session a sync on another remote is in the middle of.
+func (a *App) reconcileRemotesLocked(remotes []store.Remote) {
 	if dir := a.opts.RemoteDir; dir != "" {
-		fake, err := localfs.New(dir)
-		if err != nil {
-			a.remoteErr = err
-			a.log.Errorf("remote: %v", err)
-			return
+		if a.local == nil {
+			fake, err := localfs.New(dir)
+			if err != nil {
+				a.localErr = err
+				a.log.Errorf("remote: %v", err)
+				return
+			}
+			a.local, a.localErr = localRemote{fake}, nil
 		}
-		a.remote, a.remoteErr = localRemote{fake}, nil
 		return
 	}
 
-	host := strings.TrimSpace(values.Get(store.KeyRemoteHost))
-	share := strings.TrimSpace(values.Get(store.KeyRemoteShare))
-	if host == "" || share == "" {
-		a.remoteErr = nil
-		return
+	retunnel := a.remotesTun != a.tunnel
+	a.remotesTun = a.tunnel
+	if a.remotes == nil {
+		a.remotes = map[int64]*remoteClient{}
 	}
 
+	stored := make(map[int64]bool, len(remotes))
+	for _, r := range remotes {
+		stored[r.ID] = true
+		want := remoteSettingsOf(r)
+		if c, ok := a.remotes[r.ID]; ok && !retunnel && c.settings == want {
+			continue
+		}
+		a.closeRemoteLocked(r.ID)
+		a.remotes[r.ID] = a.openRemoteLocked(r, want)
+	}
+	for id := range a.remotes {
+		if !stored[id] {
+			a.closeRemoteLocked(id)
+		}
+	}
+}
+
+// openRemoteLocked builds the client for one remote.
+func (a *App) openRemoteLocked(r store.Remote, settings remoteSettings) *remoteClient {
 	client, err := smb.New(smb.Config{
-		Host:     host,
-		Share:    share,
-		Path:     values.Get(store.KeyRemotePath),
-		User:     values.Get(store.KeyRemoteUser),
-		Password: values.Get(store.KeyRemotePassword),
-		Domain:   values.Get(store.KeyRemoteDomain),
+		Host:     settings.host,
+		Share:    settings.share,
+		Path:     settings.path,
+		User:     settings.user,
+		Password: settings.password,
+		Domain:   settings.domain,
 		// Always a dialer of ours, tunnel or not: it is what counts the bytes the
 		// Bandwidth view draws.
 		Dial: a.meteredDialLocked(),
 	})
 	if err != nil {
-		a.remoteErr = err
-		a.log.Errorf("smb: %v", err)
+		a.log.Errorf("smb: remote %q: %v", r.Name, err)
+		return &remoteClient{settings: settings, err: err}
+	}
+	return &remoteClient{client: client, settings: settings}
+}
+
+// closeRemoteLocked ends one remote's session and forgets its client. It is not
+// something a garbage collector does: the session is a TCP connection to the
+// publisher, and a client dropped without this leaks one per reload.
+func (a *App) closeRemoteLocked(id int64) {
+	c, ok := a.remotes[id]
+	if !ok {
 		return
 	}
-	a.remote, a.remoteErr = client, nil
+	if c.client != nil {
+		if err := c.client.Close(); err != nil {
+			a.log.Debugf("smb: closing the previous session: %v", err)
+		}
+	}
+	delete(a.remotes, id)
 }
 
 // Remote is the publisher's share as the daemon uses it: the read-only tree, the
@@ -417,24 +475,129 @@ type Remote interface {
 	TargetFor(rel string) string
 }
 
-// Remote returns the configured client, or an error explaining which half of the
-// setup is still missing.
-func (a *App) Remote() (Remote, error) {
+// localRemoteName is what the status calls Options.RemoteDir's directory when no
+// remote is stored for it to stand in for.
+const localRemoteName = "local directory"
+
+// Remote returns the client of one stored remote, or an error saying why it
+// cannot be used.
+func (a *App) Remote(id int64) (Remote, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.remoteLocked(id)
+}
+
+func (a *App) remoteLocked(id int64) (Remote, error) {
+	if a.opts.RemoteDir != "" {
+		switch {
+		case a.localErr != nil:
+			return nil, a.localErr
+		case a.local == nil:
+			return nil, errors.New("the local directory standing in for the remote is not open yet")
+		}
+		return a.local, nil
+	}
+
+	c, ok := a.remotes[id]
+	switch {
+	case !ok:
+		return nil, fmt.Errorf("%w with id %d", store.ErrNoRemote, id)
+	case c.err != nil:
+		return nil, c.err
+	}
+	if err := a.tunnelGateLocked(); err != nil {
+		return nil, err
+	}
+	return c.client, nil
+}
+
+// tunnelGateLocked refuses to reach the publisher while a configured tunnel is
+// down. The connection would be opened out of the host network instead, which
+// for a private WG address means a slow timeout rather than a clear answer. With
+// no tunnel configured at all it is let through.
+func (a *App) tunnelGateLocked() error {
+	if a.tunnel == nil && a.wantTun {
+		return errors.New("the tunnel is configured but not up, so the remote is unreachable")
+	}
+	return nil
+}
+
+// RemoteFor returns the client a pair reads with.
+func (a *App) RemoteFor(p store.Pair) (Remote, error) {
+	if p.RemoteID == 0 && a.opts.RemoteDir == "" {
+		return nil, fmt.Errorf("pair %q reads from no remote: choose one on the Pairs tab", p.Name)
+	}
+	return a.Remote(p.RemoteID)
+}
+
+// resolveRemote reads the `remote` a request may name, by id. Naming none - or
+// 0 - means the first remote. With Options.RemoteDir set and no remote stored,
+// the directory answers under a record of its own with id 0.
+func (a *App) resolveRemote(ctx context.Context, raw string) (store.Remote, error) {
+	raw = strings.TrimSpace(raw)
+	if raw != "" && raw != "0" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return store.Remote{}, badRequest(fmt.Errorf("remote %q is not an id", raw))
+		}
+		return a.store.RemoteByID(ctx, id)
+	}
+
+	r, err := a.store.ResolveRemote(ctx, "")
+	if errors.Is(err, store.ErrNoRemote) && a.opts.RemoteDir != "" {
+		return store.Remote{Name: localRemoteName}, nil
+	}
+	return r, err
+}
+
+// remoteFromRequest is resolveRemote plus the client for what it found.
+func (a *App) remoteFromRequest(ctx context.Context, raw string) (store.Remote, Remote, error) {
+	r, err := a.resolveRemote(ctx, raw)
+	if err != nil {
+		return store.Remote{}, nil, err
+	}
+	client, err := a.Remote(r.ID)
+	if err != nil {
+		return r, nil, err
+	}
+	return r, client, nil
+}
+
+// remoteState is what the status and the Remotes tab report of one remote: the
+// target its client reads, which is known even while the tunnel gate refuses it,
+// and why it cannot be used if it cannot.
+func (a *App) remoteState(id int64) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	target := ""
 	switch {
-	case a.remoteErr != nil:
-		return nil, a.remoteErr
-	case a.remote == nil:
-		return nil, errors.New("no remote configured: set the publisher's host and share")
-	case a.tunnel == nil && a.wantTun:
-		// The session would be opened out of the host network instead, which for a
-		// private WG address means a slow timeout rather than a clear answer. With
-		// no tunnel configured at all it is let through: that is the local-fake case.
-		return nil, errors.New("the tunnel is configured but not up, so the remote is unreachable")
+	case a.opts.RemoteDir != "":
+		if a.local != nil {
+			target = a.local.Target()
+		}
+	case a.remotes[id] != nil && a.remotes[id].client != nil:
+		target = a.remotes[id].client.Target()
 	}
-	return a.remote, nil
+	_, err := a.remoteLocked(id)
+	return target, err
+}
+
+// nonNFCNames sums the walk's warning counter over every client.
+func (a *App) nonNFCNames() int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	var n int64
+	for _, c := range a.remotes {
+		if c.client != nil {
+			n += c.client.NonNFCNames()
+		}
+	}
+	if a.local != nil {
+		n += a.local.NonNFCNames()
+	}
+	return n
 }
 
 // PublicKey is the half of our WireGuard identity the rootserver knows us by. It

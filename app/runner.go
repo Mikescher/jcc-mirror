@@ -119,7 +119,7 @@ func (a *App) startRun(ctx context.Context, kind string, pair store.Pair, auto, 
 		return Run{}, fmt.Errorf("pair %q is disabled", pair.Name)
 	}
 
-	eng, err := a.newEngine(ctx)
+	eng, err := a.newEngine(ctx, pair)
 	if err != nil {
 		return Run{}, err
 	}
@@ -151,11 +151,11 @@ func (a *App) startRun(ctx context.Context, kind string, pair store.Pair, auto, 
 	return *run, nil
 }
 
-// newEngine builds an engine on the settings and the remote as they are now. It
-// is rebuilt per run rather than held: a configuration change replaces the
-// tunnel, and with it the transport every request rides on.
-func (a *App) newEngine(ctx context.Context) (*engine.Engine, error) {
-	client, err := a.Remote()
+// newEngine builds an engine on the settings and the pair's remote as they are
+// now. It is rebuilt per run rather than held: a configuration change replaces
+// the tunnel, and with it the transport every request rides on.
+func (a *App) newEngine(ctx context.Context, pair store.Pair) (*engine.Engine, error) {
+	client, err := a.RemoteFor(pair)
 	if err != nil {
 		return nil, err
 	}

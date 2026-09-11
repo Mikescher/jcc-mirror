@@ -20,8 +20,15 @@ export const configPages: readonly ConfigPage[] = [
     path: 'connection',
     label: 'Connection',
     blurb:
-      'The tunnel to the rootserver and the SMB share behind it. Nothing is mirrored until both of these answer.',
-    groups: ['Tunnel', 'Remote'],
+      'The WireGuard tunnel to the rootserver, which every remote is reached through. Nothing is mirrored until it is up.',
+    groups: ['Tunnel'],
+  },
+  {
+    path: 'remotes',
+    label: 'Remotes',
+    blurb:
+      "The publisher's SMB shares, reached through the tunnel. Each pair reads from one of them.",
+    groups: [],
   },
   {
     path: 'schedule',
@@ -34,7 +41,7 @@ export const configPages: readonly ConfigPage[] = [
     path: 'pairs',
     label: 'Pairs',
     blurb:
-      "One directory of the publisher's share mapped onto one directory here. Nothing is mirrored until a pair exists.",
+      'One directory of a remote mapped onto one directory here. Nothing is mirrored until a pair exists.',
     groups: [],
   },
   {

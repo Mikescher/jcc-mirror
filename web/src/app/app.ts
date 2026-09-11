@@ -37,6 +37,15 @@ export class App {
     }
   });
 
+  readonly remotes = computed(() => this.status()?.remotes ?? []);
+  /** One `name: error` line per remote that is failing; empty when none is. */
+  readonly unreachable = computed(() =>
+    this.remotes()
+      .filter((r) => r.error)
+      .map((r) => `${r.name}: ${r.error}`)
+      .join('\n'),
+  );
+
   constructor() {
     this.live.connect();
   }

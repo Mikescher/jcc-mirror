@@ -10,7 +10,7 @@ export interface Status {
   database: string;
   publicKey?: string;
   tunnel: TunnelStatus;
-  remote: RemoteStatus;
+  remotes: RemoteStatus[];
   schedule: ScheduleStatus;
   /** The badge in the topbar. The rest of the update panel is a view of its own;
    *  this is the only part of it worth carrying on every live frame. */
@@ -36,7 +36,8 @@ export interface Peer {
 }
 
 export interface RemoteStatus {
-  configured: boolean;
+  id: number;
+  name: string;
   target?: string;
   error?: string;
 }
@@ -125,6 +126,9 @@ export interface Pair {
   id: number;
   name: string;
   type: 'raw' | 'jcc';
+  /** 0 is none: nothing runs for the pair until one is chosen. */
+  remoteId: number;
+  /** Relative to the root of the pair's remote. */
   remotePath: string;
   localPath: string;
   mode: 'additive' | 'mirror';
@@ -177,6 +181,7 @@ export interface DBBackup {
 }
 
 export interface PairView extends Pair {
+  remoteName?: string;
   RemoteFiles: number;
   RemoteBytes: number;
   LocalFiles: number;
@@ -413,6 +418,38 @@ export interface UpdateState {
   rollbackReason?: string;
 }
 
+/** One SMB share of the publisher's, rooted at a directory inside it. The
+ *  password never leaves the daemon; passwordSet is all the page learns. */
+export interface Remote {
+  id: number;
+  name: string;
+  host: string;
+  share: string;
+  path: string;
+  user: string;
+  passwordSet: boolean;
+  domain: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RemoteView extends Remote {
+  /** Empty while the daemon holds no client for it. */
+  target: string;
+  error?: string;
+  /** The names of the pairs reading from it. */
+  pairs: string[];
+}
+
+export interface RemoteProbe {
+  remote: number;
+  name: string;
+  target: string;
+  dirs: number;
+  files: number;
+  millis: number;
+}
+
 export interface RemoteEntry {
   path: string;
   name: string;
@@ -422,6 +459,8 @@ export interface RemoteEntry {
 }
 
 export interface RemoteListing {
+  remote: number;
+  name: string;
   path: string;
   target: string;
   millis: number;

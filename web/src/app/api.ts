@@ -9,7 +9,10 @@ import type {
   Job,
   Pair,
   PairView,
+  Remote,
   RemoteListing,
+  RemoteProbe,
+  RemoteView,
   Restored,
   Run,
   Scan,
@@ -97,11 +100,15 @@ export class Api {
   config = () => this.get<ConfigEntry[]>('/api/config');
   audit = (limit = 50) => this.get<AuditEntry[]>('/api/config/audit', { limit });
   pairs = () => this.get<PairView[]>('/api/pairs');
+  remotes = () => this.get<RemoteView[]>('/api/remotes');
   runs = () => this.get<{ current?: Run; history?: Run[] }>('/api/runs');
   diagnostics = () => this.get<DiagnosticsView>('/api/diagnostics');
   trash = (pair?: number) => this.get<TrashView[]>('/api/trash', { pair });
   scans = (pair: number, limit = 20) => this.get<Scan[]>('/api/scans', { pair, limit });
-  remoteList = (path: string) => this.get<RemoteListing>('/api/remote/list', { path });
+  /** `remote` is a remote's id; left out, the daemon asks the first one. The
+   *  same holds for the probe, the ping and the throughput read below. */
+  remoteList = (path: string, remote?: number) =>
+    this.get<RemoteListing>('/api/remote/list', { path, remote });
   update = () => this.get<UpdateStatus>('/api/update');
 
   events(filter: { limit?: number; kind?: string[]; level?: string[]; pair?: number } = {}) {
@@ -146,18 +153,28 @@ export class Api {
       { config },
     );
 
-  probeRemote = () => this.post<Record<string, unknown>>('/api/remote/probe');
+  probeRemote = (remote?: number) => this.post<RemoteProbe>('/api/remote/probe', { remote });
 
   /** Ignores the per-event toggles: pressing it is the request. Without it a
    *  mistyped user key means notifications silently never arrive. */
   testNotification = () => this.post<{ sent: boolean }>('/api/notify/test');
-  ping = (target?: string) =>
-    this.post<{ target: string; millis: number }>('/api/diagnostics/ping', { target });
-  throughput = (path: string, bytes?: number) =>
+  /** An empty target pings the chosen remote's host. */
+  ping = (target?: string, remote?: number) =>
+    this.post<{ target: string; millis: number }>('/api/diagnostics/ping', { target, remote });
+  throughput = (path: string, bytes?: number, remote?: number) =>
     this.post<{ path: string; bytes: number; millis: number }>('/api/diagnostics/throughput', {
       path,
       bytes,
+      remote,
     });
+
+  createRemote = (fields: Record<string, unknown>) => this.post<Remote>('/api/remotes', fields);
+  /** Sends only what changed. A blank or absent password keeps the stored one;
+   *  `clearPassword: true` is the only way to drop it. */
+  updateRemote = (fields: Record<string, unknown>) =>
+    this.post<Remote>('/api/remotes/update', fields);
+  /** Refused with a 409 naming the pairs while any pair still reads from it. */
+  deleteRemote = (id: number) => this.post<Remote>('/api/remotes/delete', { id });
 
   createPair = (fields: Record<string, unknown>) => this.post<Pair>('/api/pairs', fields);
   updatePair = (fields: Record<string, unknown>) => this.post<Pair>('/api/pairs/update', fields);

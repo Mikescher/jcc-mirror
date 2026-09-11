@@ -16,7 +16,7 @@ import (
 // The plumbing the six mirror commands share. They all work on the same state the
 // daemon does - the pairs, the manifest, the job queue - so they all need -data,
 // and with -remote-dir they all run against a local directory instead of the
-// publisher's share (DESIGN.md §2.3, §2.4).
+// pair's remote (DESIGN.md §2.3, §2.4).
 
 // openStore opens the state the daemon runs on. sqlite in WAL mode takes a second
 // connection from another process in its stride, so this is safe to run against a
@@ -28,28 +28,40 @@ func (cfg *config) openStore(ctx context.Context) (*store.Store, error) {
 	return store.Open(ctx, cfg.dataDir)
 }
 
-// openEngine builds the engine on the stored settings. The close function closes
-// the store and the remote, tunnel included, and is safe to defer.
+// openEngine builds the engine on the stored settings for the pair ref names,
+// reading through that pair's remote, and returns the pair with it. The close
+// function closes the store and the remote, tunnel included, and is safe to
+// defer.
 //
 // Every mirror command opens the remote, including the two that never send a
 // request over it: engine.New needs one to exist. -remote-dir is the cheap way to
 // run those without a tunnel.
-func (cfg *config) openEngine(ctx context.Context, logger *logs.Logger) (*engine.Engine, *store.Store, func(), error) {
+func (cfg *config) openEngine(ctx context.Context, logger *logs.Logger, ref string) (*engine.Engine, *store.Store, store.Pair, func(), error) {
 	st, err := cfg.openStore(ctx)
 	if err != nil {
-		return nil, nil, func() {}, err
+		return nil, nil, store.Pair{}, func() {}, err
+	}
+	fail := func(err error) (*engine.Engine, *store.Store, store.Pair, func(), error) {
+		st.Close()
+		return nil, nil, store.Pair{}, func() {}, err
+	}
+
+	pair, err := openPair(ctx, st, ref)
+	if err != nil {
+		return fail(err)
+	}
+	if err := cfg.pickRemote(ctx, st, pair); err != nil {
+		return fail(err)
 	}
 
 	values, err := st.Config(ctx)
 	if err != nil {
-		st.Close()
-		return nil, nil, func() {}, err
+		return fail(err)
 	}
 
 	rem, closeRemote, err := cfg.openEngineRemote(ctx, logger)
 	if err != nil {
-		st.Close()
-		return nil, nil, func() {}, err
+		return fail(err)
 	}
 	closeFn := func() {
 		closeRemote()
@@ -60,15 +72,45 @@ func (cfg *config) openEngine(ctx context.Context, logger *logs.Logger) (*engine
 	opts.DataDir = cfg.dataDir
 	if opts.Limiter, err = cfg.limiter(values, logger); err != nil {
 		closeFn()
-		return nil, nil, func() {}, err
+		return nil, nil, store.Pair{}, func() {}, err
 	}
 
 	eng, err := engine.New(st, rem, logger, opts)
 	if err != nil {
 		closeFn()
-		return nil, nil, func() {}, err
+		return nil, nil, store.Pair{}, func() {}, err
 	}
-	return eng, st, closeFn, nil
+	return eng, st, pair, closeFn, nil
+}
+
+// pickRemote settles the remote a mirror command reads p through: the one -from
+// names, or else the pair's own. The SMB flags still win field by field, and
+// -host with -share describes a share on its own, so only a pair with neither a
+// remote nor -host is refused.
+func (cfg *config) pickRemote(ctx context.Context, st *store.Store, p store.Pair) error {
+	if cfg.remoteDir != "" {
+		return nil
+	}
+
+	switch {
+	case strings.TrimSpace(cfg.from) != "":
+		r, err := st.FindRemote(ctx, cfg.from)
+		if err != nil {
+			return fmt.Errorf("-from: %w", err)
+		}
+		cfg.useRemote(r)
+	case p.RemoteID != 0:
+		r, err := st.RemoteByID(ctx, p.RemoteID)
+		if err != nil {
+			return fmt.Errorf("pair %q: %w", p.Name, err)
+		}
+		cfg.useRemote(r)
+	case cfg.smbHost != "":
+		cfg.remotePicked = true
+	default:
+		return fmt.Errorf("pair %q reads from no remote: set one with `jcc-mirror pairs set %s -from <remote>`", p.Name, p.Name)
+	}
+	return nil
 }
 
 // openLocalEngine builds an engine with no publisher behind it, for the

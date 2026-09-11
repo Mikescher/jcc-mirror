@@ -3,7 +3,7 @@
 }
 
 @for (p of pairs(); track p.id) {
-  <section class="panel pair">
+  <section class="panel record">
     <div class="head">
       <h3 class="title">
         {{ p.name }}
@@ -12,13 +12,24 @@
         @if (!p.enabled) {
           <span class="pill warn">disabled</span>
         }
+        @if (!p.remoteId) {
+          <span class="pill warn">no remote</span>
+        }
       </h3>
       <span class="note">priority {{ p.priority }} — lower runs first</span>
     </div>
 
+    @if (!p.remoteId) {
+      <div class="hold">
+        This pair reads from no remote, so nothing runs for it until one is chosen below.
+      </div>
+    }
+
     <dl class="facts">
+      <dt>remote</dt>
+      <dd>{{ p.remoteName || 'none' }}</dd>
       <dt>publisher</dt>
-      <dd class="mono">{{ p.remotePath || '(the remote root)' }}</dd>
+      <dd class="mono">{{ p.remotePath || "(the remote's root)" }}</dd>
       <dt>here</dt>
       <dd class="mono">{{ p.localPath }}</dd>
       <dt>deletions</dt>
@@ -72,6 +83,26 @@
           </span>
         </label>
         <label class="field">
+          <span class="name">Remote</span>
+          <select
+            [disabled]="!unlocked()"
+            (change)="editPair(p.id, 'remoteId', $any($event.target).value)"
+          >
+            @if (!p.remoteId) {
+              <option value="0" [selected]="pairField(p, 'remoteId') === '0'">none</option>
+            }
+            @for (r of remotes(); track r.id) {
+              <option [value]="r.id" [selected]="pairField(p, 'remoteId') === '' + r.id">
+                {{ r.name }}
+              </option>
+            }
+          </select>
+          <span class="help">
+            The share it reads from. Remotes are set up under
+            <a routerLink="/config/remotes">Remotes</a>.
+          </span>
+        </label>
+        <label class="field">
           <span class="name">Publisher directory</span>
           <input
             type="text"
@@ -81,7 +112,7 @@
             (input)="editPair(p.id, 'remotePath', $any($event.target).value)"
           />
           <span class="help">
-            Relative to the remote root inside the share. Empty means that root itself.
+            Relative to the root of the pair's remote. Empty means that root itself.
           </span>
         </label>
         <label class="field">
@@ -235,6 +266,12 @@
     guards. A pair is additive until it is told otherwise, which is the point: run additive-only
     until the diff is trusted.
   </p>
+  @if (!remotes().length) {
+    <div class="hold">
+      There are no remotes yet. Add one under <a routerLink="/config/remotes">Remotes</a> first: a
+      pair without one is stored, but nothing runs for it.
+    </div>
+  }
 
   <div class="fields">
     <label class="field">
@@ -257,6 +294,18 @@
         </option>
       </select>
     </label>
+    @if (remotes().length) {
+      <label class="field">
+        <span class="name">Remote</span>
+        <select [disabled]="!unlocked()" (change)="editNew('remoteId', $any($event.target).value)">
+          @for (r of remotes(); track r.id) {
+            <option [value]="r.id" [selected]="newPair()['remoteId'] === '' + r.id">
+              {{ r.name }}
+            </option>
+          }
+        </select>
+      </label>
+    }
     <label class="field">
       <span class="name">Publisher directory</span>
       <input
@@ -268,7 +317,7 @@
         (input)="editNew('remotePath', $any($event.target).value)"
       />
       <span class="help">
-        Relative to the remote root inside the share. Empty means that root itself.
+        Relative to the root of the remote above. Empty means that root itself.
       </span>
     </label>
     <label class="field">

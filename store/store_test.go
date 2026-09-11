@@ -27,7 +27,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first open: %v", err)
 	}
-	if _, err := s.ConfigSet(ctx, map[string]string{KeyRemoteUser: "ro"}, "test"); err != nil {
+	if _, err := s.ConfigSet(ctx, map[string]string{KeyNotifyChannel: "ro"}, "test"); err != nil {
 		t.Fatalf("ConfigSet: %v", err)
 	}
 	s.Close()
@@ -38,7 +38,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 	defer s.Close()
 
-	got, err := s.ConfigGet(ctx, KeyRemoteUser)
+	got, err := s.ConfigGet(ctx, KeyNotifyChannel)
 	if err != nil {
 		t.Fatalf("ConfigGet: %v", err)
 	}

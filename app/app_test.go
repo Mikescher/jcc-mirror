@@ -116,13 +116,13 @@ func TestHealthOnAFirstBoot(t *testing.T) {
 func TestActionsAndReadsAreBothOpen(t *testing.T) {
 	_, h := newApp(t)
 
-	for _, path := range []string{"/healthz", "/api/status", "/api/config", "/api/events", "/"} {
+	for _, path := range []string{"/healthz", "/api/status", "/api/config", "/api/events", "/api/remotes", "/"} {
 		if rec := do(t, h, httptest.NewRequest(http.MethodGet, path, nil)); rec.Code != http.StatusOK {
 			t.Errorf("GET %s = %d, want 200", path, rec.Code)
 		}
 	}
 
-	if rec := postForm(t, h, "/api/config", url.Values{store.KeyRemoteUser: {"ro"}}); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyNotifyChannel: {"ro"}}); rec.Code != http.StatusOK {
 		t.Fatalf("POST /api/config = %d: %s", rec.Code, rec.Body)
 	}
 
@@ -140,21 +140,21 @@ func TestSettingsTakeAFormOrJSON(t *testing.T) {
 	a, h := newApp(t)
 	ctx := context.Background()
 
-	if rec := postForm(t, h, "/api/config", url.Values{store.KeyRemoteUser: {"ro"}}); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyNotifyChannel: {"ro"}}); rec.Code != http.StatusOK {
 		t.Fatalf("a form body = %d: %s", rec.Code, rec.Body)
 	}
-	if got, err := a.Store().ConfigGet(ctx, store.KeyRemoteUser); err != nil || got != "ro" {
-		t.Fatalf("after the form the user is %q (err %v)", got, err)
+	if got, err := a.Store().ConfigGet(ctx, store.KeyNotifyChannel); err != nil || got != "ro" {
+		t.Fatalf("after the form the channel is %q (err %v)", got, err)
 	}
 
-	body := strings.NewReader(`{` + strconv.Quote(store.KeyRemoteUser) + `:"rw"}`)
+	body := strings.NewReader(`{` + strconv.Quote(store.KeyNotifyChannel) + `:"rw"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/config", body)
 	req.Header.Set("Content-Type", "application/json")
 	if rec := do(t, h, req); rec.Code != http.StatusOK {
 		t.Fatalf("a JSON body = %d: %s", rec.Code, rec.Body)
 	}
-	if got, err := a.Store().ConfigGet(ctx, store.KeyRemoteUser); err != nil || got != "rw" {
-		t.Errorf("after the JSON body the user is %q (err %v)", got, err)
+	if got, err := a.Store().ConfigGet(ctx, store.KeyNotifyChannel); err != nil || got != "rw" {
+		t.Errorf("after the JSON body the channel is %q (err %v)", got, err)
 	}
 }
 
@@ -162,32 +162,32 @@ func TestBlankSecretKeepsTheStoredOne(t *testing.T) {
 	a, h := newApp(t)
 	ctx := context.Background()
 
-	if rec := postForm(t, h, "/api/config", url.Values{store.KeyRemotePassword: {"hunter2"}}); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyNotifyUserKey: {"hunter2"}}); rec.Code != http.StatusOK {
 		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
 	}
 
-	// The dashboard is never sent a stored password, so an untouched field comes
+	// The dashboard is never sent a stored secret, so an untouched field comes
 	// back blank - and must not wipe it.
 	if rec := postForm(t, h, "/api/config", url.Values{
-		store.KeyRemotePassword: {""},
-		store.KeyRemoteUser:     {"ro"},
+		store.KeyNotifyUserKey: {""},
+		store.KeyNotifyChannel: {"ro"},
 	}); rec.Code != http.StatusOK {
 		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
 	}
 
-	got, err := a.Store().ConfigGet(ctx, store.KeyRemotePassword)
+	got, err := a.Store().ConfigGet(ctx, store.KeyNotifyUserKey)
 	if err != nil {
 		t.Fatalf("ConfigGet: %v", err)
 	}
 	if got != "hunter2" {
-		t.Errorf("password after a blank submit = %q", got)
+		t.Errorf("secret after a blank submit = %q", got)
 	}
 }
 
 func TestSecretsNeverLeaveTheProcess(t *testing.T) {
 	a, h := newApp(t)
 
-	if rec := postForm(t, h, "/api/config", url.Values{store.KeyRemotePassword: {"hunter2"}}); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyNotifyUserKey: {"hunter2"}}); rec.Code != http.StatusOK {
 		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
 	}
 	priv, err := a.Store().ConfigGet(context.Background(), store.KeyWGPrivateKey)
@@ -200,7 +200,7 @@ func TestSecretsNeverLeaveTheProcess(t *testing.T) {
 		req.Header.Set("Accept", "text/html")
 		body := do(t, h, req).Body.String()
 
-		for name, secret := range map[string]string{"password": "hunter2", "private key": priv} {
+		for name, secret := range map[string]string{"user key": "hunter2", "private key": priv} {
 			if strings.Contains(body, secret) {
 				t.Errorf("GET %s leaked the %s", path, name)
 			}
@@ -266,15 +266,13 @@ func TestRemoteIsRefusedWhileTheTunnelIsDown(t *testing.T) {
 		store.KeyWGEndpoint:   {"198.51.100.7:51820"},
 		store.KeyWGAddress:    {"10.13.13.3/32"},
 		store.KeyWGAllowedIPs: {"10.13.13.0/24"},
-		store.KeyRemoteHost:   {"10.13.13.2"},
-		store.KeyRemoteShare:  {"media"},
-		store.KeyRemoteUser:   {"ro"},
 	}); rec.Code != http.StatusOK {
 		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
 	}
 	defer a.Close(context.Background())
 
-	if _, err := a.Remote(); err != nil {
+	rem := createRemote(t, h, map[string]any{"name": "nas", "host": "10.13.13.2", "share": "media", "user": "ro"})
+	if _, err := a.Remote(rem.ID); err != nil {
 		t.Fatalf("with the tunnel open the remote should be usable: %v", err)
 	}
 

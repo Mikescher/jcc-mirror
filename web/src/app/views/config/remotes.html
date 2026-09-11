@@ -1,0 +1,207 @@
+@if (error()) {
+  <div class="banner">{{ error() }}</div>
+}
+
+@for (r of remotes(); track r.id) {
+  <section class="panel record">
+    <div class="head">
+      <h3 class="title">
+        {{ r.name }}
+        @if (errorOf(r)) {
+          <span class="pill bad">unreachable</span>
+        }
+        @if (!r.pairs.length) {
+          <span class="pill dim">unused</span>
+        }
+      </h3>
+    </div>
+
+    <dl class="facts">
+      <dt>target</dt>
+      <dd class="mono">{{ targetOf(r) || 'not connected yet' }}</dd>
+      <dt>username</dt>
+      <dd class="mono">{{ r.user }}</dd>
+      <dt>password</dt>
+      <dd>{{ r.passwordSet ? 'stored' : 'not set' }}</dd>
+      <dt>domain</dt>
+      <dd class="mono">{{ r.domain || 'none' }}</dd>
+      <dt>pairs</dt>
+      <dd>{{ r.pairs.join(', ') || 'none reads from it' }}</dd>
+      @if (errorOf(r); as remoteError) {
+        <dt>last error</dt>
+        <dd class="bad">{{ remoteError }}</dd>
+      }
+    </dl>
+
+    <div class="row">
+      <button type="button" [disabled]="!unlocked() || testing() === r.id" (click)="test(r)">
+        Test
+      </button>
+      <span class="note">
+        One listing of this remote's root through the tunnel. The answer also lands in the event
+        log.
+      </span>
+    </div>
+
+    @if (tests()[r.id]; as t) {
+      @if (t.error) {
+        <div class="banner">{{ t.error }}</div>
+      }
+      @if (t.probe; as result) {
+        <p class="note">
+          {{ fmt.comma(result.dirs) }} directories and {{ fmt.comma(result.files) }} files in
+          <span class="mono">{{ result.target }}</span
+          >, in {{ result.millis }} ms.
+        </p>
+      }
+    }
+
+    <details>
+      <summary>Edit this remote</summary>
+
+      <div class="fields">
+        @for (f of inputs; track f.key) {
+          <label class="field">
+            <span class="name">{{ f.label }}</span>
+            @if (f.key === 'password') {
+              <input
+                type="password"
+                autocomplete="new-password"
+                [placeholder]="r.passwordSet ? 'stored — leave blank to keep it' : 'not set'"
+                [value]="remoteField(r, 'password')"
+                [disabled]="!unlocked() || remoteField(r, 'clearPassword') === 'true'"
+                (input)="editRemote(r, 'password', $any($event.target).value)"
+              />
+            } @else {
+              <input
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                [placeholder]="f.placeholder ?? ''"
+                [value]="remoteField(r, f.key)"
+                [disabled]="!unlocked()"
+                (input)="editRemote(r, f.key, $any($event.target).value)"
+              />
+            }
+            @if (f.help) {
+              <span class="help">{{ f.help }}</span>
+            }
+          </label>
+        }
+      </div>
+
+      <div class="row">
+        @if (r.passwordSet) {
+          <label class="check">
+            <input
+              type="checkbox"
+              [checked]="remoteField(r, 'clearPassword') === 'true'"
+              [disabled]="!unlocked()"
+              (change)="clearPassword(r, $any($event.target).checked)"
+            />
+            <span>Clear the stored password</span>
+          </label>
+        }
+        <button
+          type="button"
+          [disabled]="!unlocked() || savingRemote() === r.id || !remoteDirty(r.id)"
+          (click)="saveRemote(r)"
+        >
+          Save
+        </button>
+        <button
+          class="ghost"
+          type="button"
+          [disabled]="!remoteDirty(r.id)"
+          (click)="revertRemote(r.id)"
+        >
+          Revert
+        </button>
+      </div>
+
+      @if (removing() === r.id) {
+        <div class="hold">
+          <strong>Remove {{ r.name }}?</strong>
+          @if (r.pairs.length) {
+            <div class="note">
+              <strong>{{ r.pairs.join(', ') }}</strong>
+              {{ r.pairs.length === 1 ? 'still reads' : 'still read' }} from it. A remote is only
+              removed once no pair does: move {{ r.pairs.length === 1 ? 'it' : 'them' }} to another
+              remote under <a routerLink="/config/pairs">Pairs</a> first.
+            </div>
+          } @else {
+            <div class="note">
+              No pair reads from it. This forgets its settings and its stored password; nothing on
+              the share is touched.
+            </div>
+          }
+          <div class="row">
+            <button
+              class="danger small"
+              type="button"
+              [disabled]="!unlocked() || r.pairs.length > 0"
+              (click)="removeRemote(r)"
+            >
+              Yes, remove it
+            </button>
+            <button class="ghost small" type="button" (click)="removing.set(0)">Cancel</button>
+          </div>
+        </div>
+      } @else {
+        <div class="row">
+          <button
+            class="danger small"
+            type="button"
+            [disabled]="!unlocked()"
+            (click)="removing.set(r.id)"
+          >
+            Remove this remote
+          </button>
+          <span class="note">Only once no pair reads from it.</span>
+        </div>
+      }
+    </details>
+  </section>
+} @empty {
+  <section class="panel">
+    <p class="note">
+      No remotes yet. Add the publisher's share below; until one exists, no pair has anything to
+      read from.
+    </p>
+  </section>
+}
+
+<section class="panel">
+  <h3>Add a remote</h3>
+  <p class="note">
+    One share on the publisher's DSM, rooted at a directory inside it. Every pair reads from one
+    remote, and its publisher directory is relative to that root.
+  </p>
+
+  <div class="fields">
+    @for (f of inputs; track f.key) {
+      <label class="field">
+        <span class="name">{{ f.label }}</span>
+        <input
+          [type]="f.key === 'password' ? 'password' : 'text'"
+          [autocomplete]="f.key === 'password' ? 'new-password' : 'off'"
+          spellcheck="false"
+          [placeholder]="f.placeholder ?? ''"
+          [value]="newRemote()[f.key]"
+          [disabled]="!unlocked()"
+          (input)="editNew(f.key, $any($event.target).value)"
+        />
+        @if (f.help) {
+          <span class="help">{{ f.help }}</span>
+        }
+      </label>
+    }
+  </div>
+
+  <div class="row">
+    <button type="button" [disabled]="!unlocked() || adding()" (click)="createRemote()">Add</button>
+    @if (!unlocked()) {
+      <span class="note">Press Unlock to add one.</span>
+    }
+  </div>
+</section>

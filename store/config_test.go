@@ -20,21 +20,21 @@ func TestConfigDefaultsAndSet(t *testing.T) {
 	if got := values.Get(KeyTimezone); got != "Europe/Berlin" {
 		t.Errorf("default timezone = %q, want Europe/Berlin", got)
 	}
-	if got := values.Get(KeyRemoteHost); got != "" {
+	if got := values.Get(KeyNotifyChannel); got != "" {
 		t.Errorf("unset key = %q, want empty", got)
 	}
 
-	changed, err := s.ConfigSet(ctx, map[string]string{KeyRemoteHost: "10.13.13.2"}, "test")
+	changed, err := s.ConfigSet(ctx, map[string]string{KeyNotifyChannel: "mirror"}, "test")
 	if err != nil {
 		t.Fatalf("ConfigSet: %v", err)
 	}
-	if len(changed) != 1 || changed[0] != KeyRemoteHost {
-		t.Errorf("changed = %v, want [%s]", changed, KeyRemoteHost)
+	if len(changed) != 1 || changed[0] != KeyNotifyChannel {
+		t.Errorf("changed = %v, want [%s]", changed, KeyNotifyChannel)
 	}
 
 	// Writing the same value again is not a change, so it must not fill the audit
 	// trail with rows that say nothing happened.
-	changed, err = s.ConfigSet(ctx, map[string]string{KeyRemoteHost: "10.13.13.2"}, "test")
+	changed, err = s.ConfigSet(ctx, map[string]string{KeyNotifyChannel: "mirror"}, "test")
 	if err != nil {
 		t.Fatalf("ConfigSet: %v", err)
 	}
@@ -57,18 +57,14 @@ func TestConfigValidation(t *testing.T) {
 	s := newStore(t)
 
 	cases := map[string]struct{ key, value string }{
-		"not a cidr":      {KeyWGAllowedIPs, "everything"},
-		"endpoint":        {KeyWGEndpoint, "rootserver"},
-		"not base64":      {KeyWGPeerKey, "definitely not a key"},
-		"short key":       {KeyWGPeerKey, "aGVsbG8="},
-		"mtu":             {KeyWGMTU, "9"},
-		"keepalive":       {KeyWGKeepalive, "-1"},
-		"host is a path":  {KeyRemoteHost, "10.13.13.2/media"},
-		"host bad port":   {KeyRemoteHost, "10.13.13.2:0"},
-		"share is a path": {KeyRemoteShare, "media/Filme"},
-		"share climbs":    {KeyRemotePath, "../elsewhere"},
-		"update url":      {KeyUpdateURL, "ftp://nas/bin"},
-		"timezone":        {KeyTimezone, "Middle/Earth"},
+		"not a cidr": {KeyWGAllowedIPs, "everything"},
+		"endpoint":   {KeyWGEndpoint, "rootserver"},
+		"not base64": {KeyWGPeerKey, "definitely not a key"},
+		"short key":  {KeyWGPeerKey, "aGVsbG8="},
+		"mtu":        {KeyWGMTU, "9"},
+		"keepalive":  {KeyWGKeepalive, "-1"},
+		"update url": {KeyUpdateURL, "ftp://nas/bin"},
+		"timezone":   {KeyTimezone, "Middle/Earth"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -122,8 +118,8 @@ func TestConfigAuditMasksSecrets(t *testing.T) {
 	s := newStore(t)
 
 	if _, err := s.ConfigSet(ctx, map[string]string{
-		KeyRemotePassword: "hunter2",
-		KeyRemoteUser:     "ro",
+		KeyNotifyUserKey: "hunter2",
+		KeyNotifyChannel: "ro",
 	}, "test"); err != nil {
 		t.Fatalf("ConfigSet: %v", err)
 	}
@@ -137,11 +133,11 @@ func TestConfigAuditMasksSecrets(t *testing.T) {
 	}
 	for _, e := range entries {
 		switch e.Key {
-		case KeyRemotePassword:
+		case KeyNotifyUserKey:
 			if e.New != SecretMask {
-				t.Errorf("audit recorded the password as %q", e.New)
+				t.Errorf("audit recorded the secret as %q", e.New)
 			}
-		case KeyRemoteUser:
+		case KeyNotifyChannel:
 			if e.New != "ro" {
 				t.Errorf("audit of a non-secret = %q, want ro", e.New)
 			}
@@ -149,12 +145,12 @@ func TestConfigAuditMasksSecrets(t *testing.T) {
 	}
 
 	// The value itself is still readable, of course - only the trail is masked.
-	got, err := s.ConfigGet(ctx, KeyRemotePassword)
+	got, err := s.ConfigGet(ctx, KeyNotifyUserKey)
 	if err != nil {
 		t.Fatalf("ConfigGet: %v", err)
 	}
 	if got != "hunter2" {
-		t.Errorf("stored password = %q", got)
+		t.Errorf("stored secret = %q", got)
 	}
 }
 

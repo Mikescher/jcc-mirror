@@ -28,7 +28,7 @@ All settled. Nothing here is still open for debate; §9 is the build order.
 | Content awareness | Zero. jcc-mirror moves bytes and does not know what is in them. |
 | Topology | Hub-and-spoke: a rootserver runs the WireGuard server, both NASes are clients. Endpoint is a stable IP, so no DNS re-resolution is needed. |
 | Notifications | SCN (`simplecloudnotifier.de`), configured in the dashboard. See §4.1. |
-| Update trust | No signing. Fetch from the share, or from an absolute URL, compare timestamps, smoke-test, keep the previous binary. |
+| Update trust | No signing. Fetch from one of the shares, or from an absolute URL, compare timestamps, smoke-test, keep the previous binary. |
 | Module path | `blackforestbytes.com/jcc-mirror` |
 
 **Safety rules carried into the build.** Uncontested, listed once so they do not get lost in the
@@ -156,10 +156,10 @@ file; and `RangeReader`, one `OpenRange(path, offset, length)` for the transfer 
 without a length every parallel stream within a file would run to the end of it and the whole file
 would come down once per stream.
 
-Practical SMB notes for the implementation: the session goes to port 445 unless the host setting
+Practical SMB notes for the implementation: the session goes to port 445 unless the remote's host
 says otherwise; the share is named the way DSM names it, on its own, with no server prefix and no
-path; an NTLM domain is optional and a DSM-local account needs none. One session is opened lazily
-and kept — mounting per operation would put a handshake in front of every directory of the walk —
+path; an NTLM domain is optional and a DSM-local account needs none. One session per remote is
+opened lazily and kept — mounting per operation would put a handshake in front of every directory of the walk —
 guarded by a mutex so two callers arriving at once do not open two connections, and re-dialed
 exactly once on a connection-level failure, so a tunnel blip does not fail a sync that has been
 running for days. Only transport failures are retried that way: an NTSTATUS is the server answering,
@@ -361,10 +361,10 @@ schema.
 | **Events** | Scan started/finished with duration, sync finished, DB replaced, DB skipped (locked), update applied, restart, error, deletion guard tripped. |
 | **Bandwidth** | Per-minute buckets, rolled up to hourly after ~7 days and daily after ~90 — otherwise the table grows without bound. A time series, plus the hour-of-day cumulative, best drawn as a 7×24 heatmap so the weekday/weekend shape is visible. |
 | **Config** | Everything in §6, with an audit trail. |
-| **Diagnostics** | WireGuard handshake age and endpoint, RTT, a throughput probe, remote reachability reported against the `\\host\share\path` it actually reached, a directory-listing explorer for the remote tree, free space, "explain plan" per pair, live log tail. |
+| **Diagnostics** | WireGuard handshake age and endpoint, RTT, a throughput probe, reachability of each remote reported against the `\\host\share\path` it actually reached, a directory-listing explorer for any remote's tree, free space, "explain plan" per pair, live log tail. |
 
 Config is one item in that nav and one route, but not one page: the settings groups are split over
-eight tabs — Connection, Schedule, Pairs, Transfer, jCC, Notifications, System, Audit — each holding
+nine tabs — Connection, Remotes, Schedule, Pairs, Transfer, jCC, Notifications, System, Audit — each holding
 its own draft and its own save bar, so saving on one tab can never rewrite a field on another. A
 route-to-group table is the single place membership is written down, and a group no tab claims lands
 on System rather than disappearing, which is what keeps a key added on the Go side from falling out
@@ -449,14 +449,16 @@ A failed notification is written to `events` and never fails a sync — it is te
 
 "Update in place without restarting docker" is not literally possible — the kernel holds the
 executable's inode. What is possible gives exactly the desired property, and in the usual setup the
-update binary lives on the same SMB share, so it needs nothing new on user 1's side:
+update binary lives on an SMB share the mirror already reads, so it needs nothing new on user 1's
+side:
 
 1. Stat the binary and compare its mtime against the build timestamp compiled in via `-ldflags`.
    Newer ⇒ update. No version file, no manifest — literally "is the file there newer than mine".
-   `update.url` is a share-relative path (`dist/jcc-mirror-amd64`) in the usual form, read through
-   the same client the mirror already uses; an absolute `http(s)` URL is fetched over the tunnel
-   instead, and there the same comparison is a `HEAD` and its `Last-Modified`. Empty switches
-   updating off.
+   `update.url` is a share-relative path (`dist/jcc-mirror-amd64`) in the usual form, read off the
+   remote `update.remote` names — the first remote when it is empty — through the same client the
+   mirror uses for it; an absolute `http(s)` URL is fetched over the tunnel instead, with that
+   remote's account, and there the same comparison is a `HEAD` and its `Last-Modified`. Empty
+   switches updating off.
 2. Download to `/data/bin/jcc-mirror.new` and check it is plausible before trusting it: the size
    matches what the stat said, and the first four bytes are the ELF magic. This is not signing — it
    is catching a truncated download or an HTML error page saved as a binary, which is a different
@@ -517,21 +519,27 @@ is saved. Nothing has to be known before the process starts.
 - **Tunnel**: our private key, the rootserver's public key, endpoint, our address inside the tunnel,
   allowed-ips, optional preshared key, optional DNS, MTU, keepalive — the nine the import writes.
   Changing any of them re-opens the tunnel in place.
-- **Pairs**: `{id, name, type: raw|jcc, remote_path, local_path, mode: mirror|additive,
-  includes[], excludes[], delete_guard, priority, enabled}`.
+- **Pairs**: `{id, name, type: raw|jcc, remote_id, remote_path, local_path, mode: mirror|additive,
+  includes[], excludes[], delete_guard, priority, enabled}`. `remote_id` is the remote the pair
+  reads from and `remote_path` is relative to that remote's root. A pair with no remote is a valid
+  record that nothing runs until it is given one.
 - **Schedule**: one 7×24 grid, one cell per weekday-hour, each carrying *both* "may transfer" and a
   bandwidth cap. The same grid answers "when to download" and "bandwidth limits", and gives
   "unlimited 02:00–08:00, 5 MB/s otherwise" for free. A separate, coarser schedule for scans, which
   cost real time. The timezone is a config value of its own, not `TZ`; render the grid in that
   zone and label it.
-- **Remote**: host (with an optional port, 445 otherwise), share name, path inside the share that is
-  the remote root, username, password, optional NTLM domain. Stored in the config table and masked
-  in the UI — it is a read-only account reached over a private tunnel, so plaintext at rest is
-  proportionate.
+- **Remotes**: one record per share, as many as there are shares to read — `{id, name, host (with
+  an optional port, 445 otherwise), share, path inside the share that is the remote's root, user,
+  password, optional NTLM domain}`. They are rows of their own, like the pairs, rather than
+  settings. The password is stored in plaintext and never handed out by the API, which says only
+  whether one is set — it is a read-only account reached over a private tunnel, so plaintext at rest
+  is proportionate. The first remote is the default wherever none is named: the diagnostics and
+  `update.remote`. A remote cannot be removed while a pair still reads from it.
 - **Transfer**: chunk count and size, retry and backoff, free-space reserve, walk concurrency.
 - **jCC**: DB directory, DB name, lock staleness threshold, backup retention.
 - **Update**: where the binary comes from — a share-relative path, which is the usual form, or an
-  absolute URL — auto or manual, check interval.
+  absolute URL — and the remote it is read from or fetched with (`update.remote`, the first when
+  empty), auto or manual, check interval.
 - **Notifications**: SCN `user_id`, `user_key`, `channel`, `sender_name`, and the per-event toggles
   from §4.1.
 - **Retention**: `events` and `changes` rows, default one year.
@@ -545,7 +553,8 @@ at the current cap — without executing. Worth an "approve each plan" mode for 
 
 ```
 config(key, value, updated_at)            -- with config_audit(key, old, new, ts)
-pairs(...)
+remotes(id, name, host, share, path, username, password, domain)  -- one per share
+pairs(..., remote_id, ...)                -- the remote it reads from; NULL is none yet
 files(pair_id, relpath, size, mtime, hash, state, verified_at)   -- local truth
 manifest(pair_id, relpath, size, mtime, is_dir, seen_at)         -- last remote walk
 scans(id, pair_id, started_at, finished_at, entries, state)      -- resumable walks

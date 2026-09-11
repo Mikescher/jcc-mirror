@@ -37,6 +37,11 @@ export const routes: Routes = [
           import('./views/config/connection').then((m) => m.ConfigConnectionPage),
       },
       {
+        path: 'remotes',
+        title: 'Remotes · Config · jcc-mirror',
+        loadComponent: () => import('./views/config/remotes').then((m) => m.ConfigRemotesPage),
+      },
+      {
         path: 'schedule',
         title: 'Schedule · Config · jcc-mirror',
         loadComponent: () => import('./views/config/schedule').then((m) => m.ConfigSchedulePage),

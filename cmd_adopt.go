@@ -24,16 +24,11 @@ func cmdAdopt(ctx context.Context, args []string) error {
 	}
 
 	logger := &logs.Logger{Verbose: cfg.verbose}
-	eng, st, closeFn, err := cfg.openEngine(ctx, logger)
+	eng, _, pair, closeFn, err := cfg.openEngine(ctx, logger, pickRef(*ref, first(fs.Args())))
 	if err != nil {
 		return err
 	}
 	defer closeFn()
-
-	pair, err := openPair(ctx, st, pickRef(*ref, first(fs.Args())))
-	if err != nil {
-		return err
-	}
 
 	res, adoptErr := eng.Adopt(ctx, pair)
 	if res.RemoteFiles > 0 {

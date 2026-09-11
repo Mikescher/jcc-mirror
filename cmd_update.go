@@ -76,7 +76,7 @@ func cmdUpdate(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	src, err := updateSourceOf(values)
+	src, err := updateSourceOf(ctx, st, values)
 	if err != nil {
 		return err
 	}
@@ -122,10 +122,11 @@ func cmdUpdate(ctx context.Context, args []string) error {
 	return nil
 }
 
-// updateSourceOf reads the binary URL the daemon would use. Only the absolute
-// form works from here: a binary on the publisher's share is reached over SMB
-// through the tunnel, and this command deliberately opens no tunnel of its own.
-func updateSourceOf(values store.Values) (update.Source, error) {
+// updateSourceOf reads the binary URL the daemon would use, with the account of
+// the remote update.remote names. Only the absolute form works from here: a
+// binary on the publisher's share is reached over SMB through the tunnel, and
+// this command deliberately opens no tunnel of its own.
+func updateSourceOf(ctx context.Context, st *store.Store, values store.Values) (update.Source, error) {
 	rawURL, sharePath, err := update.Locate(values.Get(store.KeyUpdateURL))
 	if err != nil {
 		return update.Source{}, err
@@ -133,9 +134,15 @@ func updateSourceOf(values store.Values) (update.Source, error) {
 	if sharePath != "" {
 		return update.Source{}, fmt.Errorf("%q is a path on the publisher's share, which is only reachable through the tunnel: install it from the dashboard", sharePath)
 	}
-	return update.Source{
-		URL:      rawURL,
-		Username: values.Get(store.KeyRemoteUser),
-		Password: values.Get(store.KeyRemotePassword),
-	}, nil
+
+	// No remote means no account, which is all a public URL needs.
+	src := update.Source{URL: rawURL}
+	r, err := st.ResolveRemote(ctx, values.Get(store.KeyUpdateRemote))
+	switch {
+	case err == nil:
+		src.Username, src.Password = r.User, r.Password
+	case !errors.Is(err, store.ErrNoRemote):
+		return update.Source{}, err
+	}
+	return src, nil
 }

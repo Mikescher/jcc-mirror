@@ -5,8 +5,10 @@
       @if (status(); as s) {
         <span class="note mono">{{ s.version }}</span>
         <span class="pill" [class]="tunnel().klass">{{ tunnel().label }}</span>
-        @if (s.remote.error) {
-          <span class="pill bad" [title]="s.remote.error">remote unreachable</span>
+        @if (!remotes().length) {
+          <a class="pill warn" routerLink="/config/remotes">no remote</a>
+        } @else if (unreachable()) {
+          <span class="pill bad" [title]="unreachable()">remote unreachable</span>
         }
         @if (!s.schedule.automatic) {
           <span class="pill warn">unattended off</span>

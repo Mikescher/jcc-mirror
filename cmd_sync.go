@@ -39,16 +39,11 @@ func cmdSync(ctx context.Context, args []string) error {
 	}
 
 	logger := &logs.Logger{Verbose: cfg.verbose}
-	eng, st, closeFn, err := cfg.openEngine(ctx, logger)
+	eng, _, pair, closeFn, err := cfg.openEngine(ctx, logger, pickRef(*ref, first(fs.Args())))
 	if err != nil {
 		return err
 	}
 	defer closeFn()
-
-	pair, err := openPair(ctx, st, pickRef(*ref, first(fs.Args())))
-	if err != nil {
-		return err
-	}
 
 	if *planOnly {
 		plan, err := eng.Plan(ctx, pair, planOnlySample)

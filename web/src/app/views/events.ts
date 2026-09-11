@@ -17,6 +17,7 @@ const allKinds: { kind: string; label: string }[] = [
   { kind: 'tunnel.down', label: 'Tunnel down' },
   { kind: 'remote.probe', label: 'Remote probed' },
   { kind: 'pair.changed', label: 'Pair changed' },
+  { kind: 'remote.changed', label: 'Remote changed' },
   { kind: 'scan.started', label: 'Scan started' },
   { kind: 'scan.finished', label: 'Scan finished' },
   { kind: 'sync.started', label: 'Sync started' },

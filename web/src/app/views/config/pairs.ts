@@ -1,12 +1,14 @@
 import { Component, inject, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { Api } from '../../api';
 import * as fmt from '../../format';
-import type { PairView } from '../../models';
+import type { PairView, RemoteView } from '../../models';
 
 /** The fields POST /api/pairs accepts, and what a new pair starts as. */
 const pairDefaults: Record<string, string> = {
   name: '',
   type: 'raw',
+  remoteId: '0',
   remotePath: '',
   localPath: '',
   mode: 'additive',
@@ -23,6 +25,7 @@ function pairFields(p: PairView): Record<string, string> {
   return {
     name: p.name,
     type: p.type,
+    remoteId: String(p.remoteId),
     remotePath: p.remotePath,
     localPath: p.localPath,
     mode: p.mode,
@@ -39,9 +42,9 @@ function pairFields(p: PairView): Record<string, string> {
  *  bar of its own. */
 @Component({
   selector: 'app-config-pairs',
-  imports: [],
+  imports: [RouterLink],
   templateUrl: './pairs.html',
-  styleUrls: ['./page.css', './pairs.css'],
+  styleUrls: ['./page.css', './record.css'],
 })
 export class ConfigPairsPage {
   private readonly api = inject(Api);
@@ -49,6 +52,7 @@ export class ConfigPairsPage {
   readonly unlocked = this.api.unlocked;
 
   readonly pairs = signal<PairView[]>([]);
+  readonly remotes = signal<RemoteView[]>([]);
   readonly error = signal('');
 
   /** Each pair's own draft of only what was edited. */
@@ -65,7 +69,16 @@ export class ConfigPairsPage {
 
   async load(): Promise<void> {
     try {
-      this.pairs.set((await this.api.pairs()) ?? []);
+      const [pairs, remotes] = await Promise.all([this.api.pairs(), this.api.remotes()]);
+      this.pairs.set(pairs ?? []);
+      this.remotes.set(remotes ?? []);
+
+      // The Add form reads from the first remote unless another one that still
+      // exists was chosen.
+      const ids = this.remotes().map((r) => String(r.id));
+      this.newPair.update((fields) =>
+        ids.includes(fields['remoteId']) ? fields : { ...fields, remoteId: ids[0] ?? '0' },
+      );
     } catch (err) {
       this.fail(err);
     }

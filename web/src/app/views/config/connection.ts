@@ -1,18 +1,17 @@
 import { Component, computed, inject, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { Api } from '../../api';
 import { Live } from '../../live';
-import * as fmt from '../../format';
 import { ConfigForm } from './form';
 import { ConfigGroupCard } from './group';
 import { ConfigSaveBar } from './save-bar';
 import { ConfigStore } from './store';
 
-/** The tunnel and the share behind it, plus the two things that answer whether
- *  they work: the wg-quick importer that fills the tunnel fields in one paste,
- *  and a single listing of the remote root. */
+/** The tunnel every remote is reached through, and the wg-quick importer that
+ *  fills its fields in one paste. */
 @Component({
   selector: 'app-config-connection',
-  imports: [ConfigGroupCard, ConfigSaveBar],
+  imports: [ConfigGroupCard, ConfigSaveBar, RouterLink],
   templateUrl: './connection.html',
   styleUrl: './page.css',
   providers: [ConfigForm],
@@ -21,7 +20,6 @@ export class ConfigConnectionPage {
   private readonly api = inject(Api);
   private readonly store = inject(ConfigStore);
   readonly live = inject(Live);
-  readonly fmt = fmt;
   readonly unlocked = this.api.unlocked;
 
   readonly groups = computed(() => this.store.groupsFor('connection'));
@@ -31,12 +29,6 @@ export class ConfigConnectionPage {
   readonly importError = signal('');
   readonly imported = signal<string[] | undefined>(undefined);
   readonly importIgnored = signal<string[]>([]);
-
-  readonly probing = signal(false);
-  readonly probe = signal<
-    { target: string; dirs: number; files: number; millis: number } | undefined
-  >(undefined);
-  readonly probeError = signal('');
 
   async importWireguard(): Promise<void> {
     const config = this.importText();
@@ -58,25 +50,6 @@ export class ConfigConnectionPage {
       this.importError.set(err instanceof Error ? err.message : String(err));
     } finally {
       this.importing.set(false);
-    }
-  }
-
-  async testRemote(): Promise<void> {
-    this.probing.set(true);
-    this.probeError.set('');
-    this.probe.set(undefined);
-    try {
-      const res = await this.api.probeRemote();
-      this.probe.set({
-        target: String(res['target'] ?? ''),
-        dirs: Number(res['dirs'] ?? 0),
-        files: Number(res['files'] ?? 0),
-        millis: Number(res['millis'] ?? 0),
-      });
-    } catch (err) {
-      this.probeError.set(err instanceof Error ? err.message : String(err));
-    } finally {
-      this.probing.set(false);
     }
   }
 }

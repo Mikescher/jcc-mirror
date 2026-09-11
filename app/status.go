@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"blackforestbytes.com/jcc-mirror/schedule"
@@ -28,7 +27,7 @@ type Status struct {
 	Database   string         `json:"database"`
 	PublicKey  string         `json:"publicKey,omitempty"`
 	Tunnel     TunnelStatus   `json:"tunnel"`
-	Remote     RemoteStatus   `json:"remote"`
+	Remotes    []RemoteStatus `json:"remotes"`
 	Schedule   ScheduleStatus `json:"schedule"`
 	// UpdateReady is the badge in the topbar. The rest of the update panel is a
 	// view of its own: this is the only part of it worth carrying on every frame
@@ -72,10 +71,14 @@ type Peer struct {
 	AllowedIPs   []string `json:"allowedIps,omitempty"`
 }
 
+// RemoteStatus is one stored remote as the status reports it. Target is taken
+// from the client rather than from the row, so what is reported is the target
+// the mirror would actually read, port defaults and all.
 type RemoteStatus struct {
-	Configured bool   `json:"configured"`
-	Target     string `json:"target,omitempty"`
-	Error      string `json:"error,omitempty"`
+	ID     int64  `json:"id"`
+	Name   string `json:"name"`
+	Target string `json:"target,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // Healthy reports whether /healthz should answer 200. A tunnel that is down is
@@ -101,18 +104,7 @@ func (a *App) Status(ctx context.Context) Status {
 		st.PublicKey = pub
 	}
 
-	// Taken from the client rather than from the settings, so what is reported is
-	// the target the mirror would actually read, port defaults and all.
-	if client, err := a.Remote(); err == nil {
-		st.Remote.Target, st.Remote.Configured = client.Target(), true
-	} else {
-		st.Remote.Error = err.Error()
-		values, cfgErr := a.store.Config(ctx)
-		st.Remote.Configured = cfgErr == nil &&
-			strings.TrimSpace(values.Get(store.KeyRemoteHost)) != "" &&
-			strings.TrimSpace(values.Get(store.KeyRemoteShare)) != ""
-	}
-
+	st.Remotes = a.remoteStatuses(ctx)
 	st.Schedule = a.ScheduleStatus()
 	st.UpdateReady = a.updateReady()
 
@@ -130,6 +122,28 @@ func (a *App) Status(ctx context.Context) Status {
 		st.Tunnel = tunnelStatus(tun)
 	}
 	return st
+}
+
+func (a *App) remoteStatuses(ctx context.Context) []RemoteStatus {
+	out := []RemoteStatus{}
+	remotes, err := a.store.Remotes(ctx)
+	if err != nil {
+		a.log.Errorf("status: %v", err)
+		return out
+	}
+
+	if len(remotes) == 0 && a.opts.RemoteDir != "" {
+		remotes = []store.Remote{{Name: localRemoteName}}
+	}
+	for _, r := range remotes {
+		rs := RemoteStatus{ID: r.ID, Name: r.Name}
+		var err error
+		if rs.Target, err = a.remoteState(r.ID); err != nil {
+			rs.Error = err.Error()
+		}
+		out = append(out, rs)
+	}
+	return out
 }
 
 // ScheduleStatus answers the grid at this moment. It is separate from Status so

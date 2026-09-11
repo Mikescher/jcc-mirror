@@ -32,13 +32,6 @@ const (
 	KeyWGMTU          = "wg.mtu"
 	KeyWGKeepalive    = "wg.keepalive"
 
-	KeyRemoteHost     = "remote.host"
-	KeyRemoteShare    = "remote.share"
-	KeyRemotePath     = "remote.path"
-	KeyRemoteUser     = "remote.user"
-	KeyRemotePassword = "remote.password"
-	KeyRemoteDomain   = "remote.domain"
-
 	KeySchedule     = "schedule.transfer"
 	KeyScanSchedule = "schedule.scan"
 	KeyAutomatic    = "schedule.automatic"
@@ -77,6 +70,7 @@ const (
 	KeyNotifyTunnelGrace   = "notify.tunnel_grace"
 
 	KeyUpdateURL      = "update.url"
+	KeyUpdateRemote   = "update.remote"
 	KeyUpdateAuto     = "update.auto"
 	KeyUpdateInterval = "update.interval"
 
@@ -124,7 +118,7 @@ type KeyDef struct {
 	Default  string
 	Secret   bool // masked in the UI and in the audit trail
 	Seeded   bool // created at first start too, but meant to be overwritten
-	Required bool // the tunnel or the remote does not come up without it
+	Required bool // the tunnel does not come up without it
 	Validate func(string) error
 }
 
@@ -183,38 +177,6 @@ var keyDefs = []KeyDef{
 		Help:     "Seconds between keepalives, 0 for none. Both ends of this topology sit behind NAT, so without one the tunnel only works in the direction it last sent.",
 		Default:  "25",
 		Validate: validateKeepalive,
-	},
-
-	{
-		Name: KeyRemoteHost, Group: "Remote", Label: "Host",
-		Help:     "The publisher's SMB server, as host or host:port. It is reached through the tunnel, so this is his address inside it, e.g. 10.13.13.2. Port 445 unless it says otherwise.",
-		Required: true,
-		Validate: validateHostPort,
-	},
-	{
-		Name: KeyRemoteShare, Group: "Remote", Label: "Share",
-		Help:     "The share to mount, named the way DSM names it - the name on its own, with no server prefix and no path.",
-		Required: true,
-		Validate: validateShareName,
-	},
-	{
-		Name: KeyRemotePath, Group: "Remote", Label: "Path in the share",
-		Help:     "The directory inside the share that is the remote root of the mirror. Empty is the share itself; every pair's publisher directory is relative to whichever this is.",
-		Validate: validateRelPath,
-	},
-	{
-		Name: KeyRemoteUser, Group: "Remote", Label: "Username",
-		Help:     "A read-only account on the publisher's DSM. SMB has no usable anonymous mode, so this is required even for a share that is open to everyone.",
-		Required: true,
-	},
-	{
-		Name: KeyRemotePassword, Group: "Remote", Label: "Password",
-		Help:   "Stored in plaintext: it is a read-only account reached over a private tunnel.",
-		Secret: true,
-	},
-	{
-		Name: KeyRemoteDomain, Group: "Remote", Label: "Domain",
-		Help: "Optional NTLM domain or workgroup. An account local to the NAS - which is what a DSM user is - needs none.",
 	},
 
 	{
@@ -404,8 +366,12 @@ var keyDefs = []KeyDef{
 
 	{
 		Name: KeyUpdateURL, Group: "Update", Label: "Binary URL",
-		Help:     "Where a newer jcc-mirror is fetched from. A path like \"dist/jcc-mirror-amd64\" is read off the publisher's share, relative to the remote root, which is the usual setup: the binary sits where the mirror already reads, so the publisher needs nothing new. An absolute http(s) URL is fetched over the tunnel instead. Empty switches updating off entirely.",
+		Help:     "Where a newer jcc-mirror is fetched from. A path like \"dist/jcc-mirror-amd64\" is read off the publisher's share, relative to the root of the remote below, which is the usual setup: the binary sits where the mirror already reads, so the publisher needs nothing new. An absolute http(s) URL is fetched over the tunnel instead. Empty switches updating off entirely.",
 		Validate: validateUpdateURL,
+	},
+	{
+		Name: KeyUpdateRemote, Group: "Update", Label: "Remote",
+		Help: "The remote, by name, that a share-relative binary URL is read from. Its account is also what an http(s) URL is fetched with. Empty is the first remote, which with only one configured is the only answer anyway.",
 	},
 	{
 		Name: KeyUpdateAuto, Group: "Update", Label: "Update automatically",
@@ -846,14 +812,14 @@ func validateHostPort(s string) error {
 		return errors.New("expected host or host:port")
 	}
 	if strings.ContainsAny(host, `/\`) {
-		return errors.New("a host on its own; the share and the path inside it are settings of their own")
+		return errors.New("a host on its own; the share and the path inside it are fields of their own")
 	}
 	return nil
 }
 
 // validateShareName takes the share as DSM names it. A separator in it would
-// make it a path, and the path inside the share is a setting of its own - one
-// that may be empty, which a share name may not.
+// make it a path, and the path inside the share is a field of its own - one that
+// may be empty, which a share name may not.
 func validateShareName(s string) error {
 	s = strings.TrimSpace(s)
 	if s == "" {

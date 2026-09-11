@@ -19,6 +19,7 @@ import (
 // manifest and is not something to run on every page load.
 type PairView struct {
 	store.Pair
+	RemoteName  string `json:"remoteName,omitempty"`
 	RemoteFiles int64
 	RemoteBytes int64
 	LocalFiles  int64
@@ -61,10 +62,18 @@ func (a *App) PairViews(ctx context.Context) ([]PairView, error) {
 	if err != nil {
 		return nil, err
 	}
+	remotes, err := a.store.Remotes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[int64]string, len(remotes))
+	for _, r := range remotes {
+		names[r.ID] = r.Name
+	}
 
 	out := make([]PairView, 0, len(pairs))
 	for _, p := range pairs {
-		v := PairView{Pair: p}
+		v := PairView{Pair: p, RemoteName: names[p.RemoteID]}
 		if v.RemoteFiles, v.RemoteBytes, err = a.store.ManifestStats(ctx, p.ID); err != nil {
 			return nil, err
 		}
@@ -207,6 +216,16 @@ func applyPairFields(p *store.Pair, fields map[string]string) error {
 			p.Name = value
 		case "type":
 			p.Type = value
+		case "remoteId":
+			if value == "" {
+				p.RemoteID = 0
+				continue
+			}
+			id, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				return fmt.Errorf("remoteId must be a remote's id, not %q", value)
+			}
+			p.RemoteID = id
 		case "remotePath":
 			p.RemotePath = value
 		case "localPath":
@@ -259,7 +278,8 @@ func (a *App) pairEvent(ctx context.Context, p store.Pair, what string) {
 		fmt.Sprintf("pair %q %s from the dashboard", p.Name, what),
 		map[string]any{
 			"action": what, "id": p.ID, "name": p.Name, "type": p.Type, "mode": p.Mode,
-			"remotePath": p.RemotePath, "localPath": p.LocalPath, "enabled": p.Enabled,
+			"remoteId": p.RemoteID, "remotePath": p.RemotePath, "localPath": p.LocalPath,
+			"enabled": p.Enabled,
 		})
 }
 

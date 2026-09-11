@@ -18,7 +18,7 @@ func cmdStatus(ctx context.Context, args []string) error {
 	fs, cfg := newFlagSet("status")
 	wait := fs.Duration("wait", 15*time.Second, "how long to wait for the first handshake")
 	watch := fs.Duration("watch", 0, "repeat at this interval instead of exiting once")
-	probe := fs.Bool("probe", true, "also list the remote root when -host and -share are given")
+	probe := fs.Bool("probe", true, "also list the root of the remote, when there is one: -from's, else the first stored, with -host and -share winning over either")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -48,6 +48,11 @@ func cmdStatus(ctx context.Context, args []string) error {
 	}
 
 	var client *smb.Client
+	if *probe {
+		if err := cfg.remoteFromStore(ctx); err != nil {
+			return err
+		}
+	}
 	if *probe && cfg.smbHost != "" && cfg.smbShare != "" {
 		client, err = cfg.openSMB(ctx, tun)
 		if err != nil {

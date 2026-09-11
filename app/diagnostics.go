@@ -29,7 +29,7 @@ const probeTimeout = 30 * time.Second
 const throughputCap = 256 << 20
 
 // DiagnosticsView is what the Diagnostics view is drawn from. The tunnel, the
-// peers and the remote are already in Status; what is added here is the state
+// peers and the remotes are already in Status; what is added here is the state
 // nothing else reports (DESIGN.md §4).
 type DiagnosticsView struct {
 	Status  Status              `json:"status"`
@@ -80,18 +80,18 @@ func (a *App) handleGetDiagnostics(w http.ResponseWriter, r *http.Request) {
 	// The non-NFC counter is the walk's own warning sign: a tree that came past
 	// macOS decomposes its umlauts, and every title with one then looks new on
 	// every scan (DESIGN.md §2.3).
-	if client, err := a.Remote(); err == nil {
-		view.NonNFC = client.NonNFCNames()
-	}
+	view.NonNFC = a.nonNFCNames()
 
 	view.Log, _ = a.log.Tail(intParam64(r, "afterLog", 0))
 	writeJSON(w, http.StatusOK, view)
 }
 
-// RemoteListing is one directory of the publisher's tree, as the explorer shows
-// it. Millis is on it because how long a single listing takes is what the scan
+// RemoteListing is one directory of one remote's tree, as the explorer shows it.
+// Millis is on it because how long a single listing takes is what the scan
 // schedule is set from.
 type RemoteListing struct {
+	Remote  int64          `json:"remote"`
+	Name    string         `json:"name"`
 	Path    string         `json:"path"`
 	Target  string         `json:"target"`
 	Millis  int64          `json:"millis"`
@@ -102,9 +102,9 @@ type RemoteListing struct {
 // cost the publisher a round trip, which is why it lists one directory rather
 // than walking.
 func (a *App) handleRemoteList(w http.ResponseWriter, r *http.Request) {
-	client, err := a.Remote()
+	rec, client, err := a.remoteFromRequest(r.Context(), r.URL.Query().Get("remote"))
 	if err != nil {
-		a.fail(w, r, http.StatusBadGateway, err)
+		a.fail(w, r, remoteErrorCode(err), err)
 		return
 	}
 
@@ -121,6 +121,7 @@ func (a *App) handleRemoteList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, RemoteListing{
+		Remote: rec.ID, Name: rec.Name,
 		Path: dir, Target: client.TargetFor(dir), Millis: took.Milliseconds(), Entries: entries,
 	})
 }
@@ -140,9 +141,13 @@ func (a *App) handlePing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target, err := a.pingTarget(r.Context(), fields["target"])
+	target, err := a.pingTarget(r.Context(), fields["target"], fields["remote"])
 	if err != nil {
-		a.fail(w, r, http.StatusBadRequest, err)
+		code := http.StatusBadRequest
+		if errors.Is(err, store.ErrNoRemote) {
+			code = http.StatusNotFound
+		}
+		a.fail(w, r, code, err)
 		return
 	}
 
@@ -163,8 +168,9 @@ func (a *App) handlePing(w http.ResponseWriter, r *http.Request) {
 }
 
 // pingTarget resolves what to ping: whatever was asked for, or - since the one
-// address worth checking is the publisher's - the configured remote host.
-func (a *App) pingTarget(ctx context.Context, want string) (netip.Addr, error) {
+// address worth checking is the publisher's - the host of the remote named, or
+// of the first remote when none is.
+func (a *App) pingTarget(ctx context.Context, want, remoteRef string) (netip.Addr, error) {
 	if want = strings.TrimSpace(want); want != "" {
 		addr, err := netip.ParseAddr(want)
 		if err != nil {
@@ -173,11 +179,11 @@ func (a *App) pingTarget(ctx context.Context, want string) (netip.Addr, error) {
 		return addr, nil
 	}
 
-	values, err := a.store.Config(ctx)
+	rec, err := a.resolveRemote(ctx, remoteRef)
 	if err != nil {
 		return netip.Addr{}, err
 	}
-	host := strings.TrimSpace(values.Get(store.KeyRemoteHost))
+	host := rec.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
@@ -225,9 +231,9 @@ func (a *App) handleThroughput(w http.ResponseWriter, r *http.Request) {
 		want = throughputCap
 	}
 
-	client, err := a.Remote()
+	rec, client, err := a.remoteFromRequest(r.Context(), fields["remote"])
 	if err != nil {
-		a.fail(w, r, http.StatusBadGateway, err)
+		a.fail(w, r, remoteErrorCode(err), err)
 		return
 	}
 
@@ -252,6 +258,6 @@ func (a *App) handleThroughput(w http.ResponseWriter, r *http.Request) {
 	res := ThroughputResult{Path: path, Bytes: read, Millis: took.Milliseconds()}
 	a.Event(r.Context(), store.LevelInfo, store.KindRemoteProbe,
 		fmt.Sprintf("throughput probe: %d bytes of %s in %s", read, path, took.Round(time.Millisecond)),
-		map[string]any{"path": path, "bytes": read, "millis": res.Millis})
+		map[string]any{"remote": rec.ID, "name": rec.Name, "path": path, "bytes": read, "millis": res.Millis})
 	writeJSON(w, http.StatusOK, res)
 }

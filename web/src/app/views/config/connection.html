@@ -59,37 +59,10 @@
         Derived from the private key above, so it is worth a glance: it has to match the peer entry
         the WireGuard server holds for this container.
       </p>
-    }
-
-    @if (group.name === 'Remote') {
-      <div class="row">
-        <button type="button" [disabled]="!unlocked() || probing()" (click)="testRemote()">
-          Test the remote
-        </button>
-        <span class="note">
-          One listing of the remote root through the tunnel. The answer also lands in the event log.
-        </span>
-      </div>
-
-      <dl class="facts">
-        <dt>target</dt>
-        <dd class="mono">{{ live.status()?.remote.target || 'not configured' }}</dd>
-        @if (live.status()?.remote.error; as remoteError) {
-          <dt>last error</dt>
-          <dd class="bad">{{ remoteError }}</dd>
-        }
-      </dl>
-
-      @if (probeError()) {
-        <div class="banner">{{ probeError() }}</div>
-      }
-      @if (probe(); as result) {
-        <p class="note">
-          {{ fmt.comma(result.dirs) }} directories and {{ fmt.comma(result.files) }} files in
-          <span class="mono">{{ result.target }}</span
-          >, in {{ result.millis }} ms.
-        </p>
-      }
+      <p class="note">
+        The publisher's shares behind the tunnel are set up, and tested, under
+        <a routerLink="/config/remotes">Remotes</a>.
+      </p>
     }
   </config-group>
 }

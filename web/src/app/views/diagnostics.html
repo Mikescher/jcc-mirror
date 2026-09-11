@@ -101,11 +101,30 @@
 
 <section class="panel">
   <div class="spread">
+    <h2>Remote under test</h2>
+    <select [disabled]="!remotes().length" (change)="chooseRemote(+$any($event.target).value)">
+      @for (r of remotes(); track r.id) {
+        <option [value]="r.id" [selected]="remote() ? remote() === r.id : $first">
+          {{ r.name }}
+        </option>
+      } @empty {
+        <option value="0">no remote is configured</option>
+      }
+    </select>
+  </div>
+  <p class="note">
+    The round trip's default target, the throughput read, the probe and the remote tree below all go
+    to this one.
+  </p>
+</section>
+
+<section class="panel">
+  <div class="spread">
     <h2>Round trip</h2>
     <div class="row">
       <input
         type="text"
-        placeholder="10.0.0.2 (empty: the publisher)"
+        placeholder="10.0.0.2 (empty: the remote's host)"
         [value]="pingTarget()"
         (input)="pingTarget.set($any($event.target).value)"
       />
@@ -132,10 +151,10 @@
   }
 
   <p class="note">
-    An empty target is the publisher's address, taken from the configured remote host. A reply
-    proves the rootserver forwards between spokes, which is the single most likely reason for the
-    whole thing to fail and is not a jcc-mirror bug: the server's peer entries have to cover each
-    client's address, and it has to have IP forwarding on.
+    An empty target is the chosen remote's host, which is the publisher's address. A reply proves
+    the rootserver forwards between spokes, which is the single most likely reason for the whole
+    thing to fail and is not a jcc-mirror bug: the server's peer entries have to cover each client's
+    address, and it has to have IP forwarding on.
   </p>
 </section>
 
@@ -188,9 +207,9 @@
   }
 
   <p class="note">
-    A bounded read of one remote file, timed end to end and then discarded. It is capped at 256 MiB,
-    and the bandwidth schedule applies to it like any other transfer — a probe inside a capped
-    window measures the cap, not the link.
+    A bounded read of one file on the chosen remote, timed end to end and then discarded. It is
+    capped at 256 MiB, and the bandwidth schedule applies to it like any other transfer — a probe
+    inside a capped window measures the cap, not the link.
   </p>
 </section>
 
@@ -202,26 +221,30 @@
     </button>
   </div>
 
-  @if (status()?.remote; as remote) {
-    <div class="cards">
+  <div class="cards">
+    @for (r of remotes(); track r.id) {
       <div class="card">
-        <div class="k">Target</div>
-        <div class="v mono path">{{ remote.target || 'not configured' }}</div>
+        <div class="k">{{ r.name }}</div>
+        <div class="v mono path">{{ r.target || 'not connected yet' }}</div>
+        @if (r.error) {
+          <div class="note bad">{{ r.error }}</div>
+        }
       </div>
-      @if (remote.error) {
-        <div class="card">
-          <div class="k">Error</div>
-          <div class="v bad">{{ remote.error }}</div>
-        </div>
-      }
-    </div>
-  }
+    } @empty {
+      <p class="note">No remote is configured. They are added under Config → Remotes.</p>
+    }
+  </div>
 
   @if (reachError()) {
     <div class="banner">{{ reachError() }}</div>
   }
   @if (reach(); as r) {
     <div class="cards">
+      <div class="card">
+        <div class="k">Probed</div>
+        <div class="v">{{ r.name }}</div>
+        <div class="note mono path">{{ r.target }}</div>
+      </div>
       <div class="card">
         <div class="k">Directories</div>
         <div class="v">{{ fmt.comma(r.dirs) }}</div>
@@ -238,8 +261,8 @@
   }
 
   <p class="note">
-    One listing of the remote root. The answer is written to the event log as well, so it is still
-    there after the page is reloaded.
+    One listing of the chosen remote's root. The answer is written to the event log as well, so it
+    is still there after the page is reloaded.
   </p>
 </section>
 
@@ -249,7 +272,7 @@
     <div class="row">
       <input
         type="text"
-        placeholder="path from the remote root"
+        placeholder="path from the remote's root"
         [value]="path()"
         (input)="path.set($any($event.target).value)"
       />
@@ -272,7 +295,7 @@
   }
 
   @if (listing(); as l) {
-    <p class="note mono path">{{ l.target }} · {{ l.millis }} ms</p>
+    <p class="note mono path">{{ l.name }} · {{ l.target }} · {{ l.millis }} ms</p>
     <div class="scroll">
       <table>
         <thead>
@@ -601,8 +624,9 @@
   }
 
   <p class="note">
-    The binary is fetched from the same share the mirror reads, so the publisher needs nothing new.
-    It is checked for the ELF magic and the size the server promised, then run once with
+    The binary is fetched from a share the mirror already reads — the remote the Remote setting of
+    the Update group names, or the first one — so the publisher needs nothing new. It is checked for
+    the ELF magic and the size the server promised, then run once with
     <span class="mono">--version</span> before anything is renamed — the failures worth catching
     here are a truncated download and a binary for the wrong architecture, not a malicious one: the
     transport is a private tunnel. The daemon then re-execs, keeping its PID and its container. If

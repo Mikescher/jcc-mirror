@@ -29,7 +29,7 @@ func cmdServe(ctx context.Context, args []string) error {
 	lan := fs.String("lan", staticLANListen, "dashboard address on the host network")
 	tunnelPort := fs.Int("tunnel-port", staticTunnelPort, "dashboard port inside the tunnel")
 	devUI := fs.String("dev-ui", "", "proxy the dashboard to a running `ng serve` instead of the build in the binary, e.g. http://localhost:4200")
-	remoteDir := fs.String("remote-dir", "", "serve this local directory as the publisher's share instead of opening an SMB session, for development and testing")
+	remoteDir := fs.String("remote-dir", "", "serve this local directory in place of every remote instead of opening SMB sessions, for development and testing")
 	verbose := fs.Bool("v", false, "verbose output, including the wireguard-go device log")
 	if err := fs.Parse(args); err != nil {
 		return err

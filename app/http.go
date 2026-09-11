@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strconv"
@@ -29,6 +30,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/changes", a.handleGetChanges)
 	mux.HandleFunc("GET /api/bandwidth", a.handleGetBandwidth)
 	mux.HandleFunc("GET /api/pairs", a.handleGetPairs)
+	mux.HandleFunc("GET /api/remotes", a.handleGetRemotes)
 	mux.HandleFunc("GET /api/jobs", a.handleGetJobs)
 	mux.HandleFunc("GET /api/scans", a.handleGetScans)
 	mux.HandleFunc("GET /api/trash", a.handleGetTrash)
@@ -45,6 +47,9 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("POST /api/diagnostics/throughput", a.handleThroughput)
 	mux.HandleFunc("POST /api/notify/test", a.handleTestNotification)
 
+	mux.HandleFunc("POST /api/remotes", a.handleCreateRemote)
+	mux.HandleFunc("POST /api/remotes/update", a.handleUpdateRemote)
+	mux.HandleFunc("POST /api/remotes/delete", a.handleDeleteRemote)
 	mux.HandleFunc("POST /api/pairs", a.handleCreatePair)
 	mux.HandleFunc("POST /api/pairs/update", a.handleUpdatePair)
 	mux.HandleFunc("POST /api/pairs/delete", a.handleDeletePair)
@@ -251,35 +256,48 @@ func (a *App) applyConfig(w http.ResponseWriter, r *http.Request, values map[str
 	return changed, true
 }
 
-// handleProbe lists the remote root once and records the answer as an event, so
-// the result lands in the same log as everything else rather than in a flash
-// message that is gone on the next page load.
+// handleProbe lists the root of one remote - the one the request names, or the
+// first - and records the answer as an event, so the result lands in the same
+// log as everything else rather than in a flash message that is gone on the
+// next page load.
 func (a *App) handleProbe(w http.ResponseWriter, r *http.Request) {
+	fields, err := readFields(w, r)
+	if err != nil {
+		a.fail(w, r, http.StatusBadRequest, err)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	result := a.probeRemote(ctx)
+	result, err := a.probeRemote(ctx, fields["remote"])
 	code := http.StatusOK
-	if result["error"] != nil {
-		code = http.StatusBadGateway
+	if err != nil {
+		code = remoteErrorCode(err)
 	}
 	writeJSON(w, code, result)
 }
 
-func (a *App) probeRemote(ctx context.Context) map[string]any {
-	client, err := a.Remote()
+func (a *App) probeRemote(ctx context.Context, ref string) (map[string]any, error) {
+	rec, client, err := a.remoteFromRequest(ctx, ref)
 	if err != nil {
-		a.Event(ctx, store.LevelError, store.KindRemoteProbe, "remote probe failed: "+err.Error(), nil)
-		return map[string]any{"error": err.Error()}
+		data := map[string]any{}
+		if rec.Name != "" {
+			data["remote"], data["name"] = rec.ID, rec.Name
+		}
+		a.Event(ctx, store.LevelError, store.KindRemoteProbe, "remote probe failed: "+err.Error(), data)
+		data["error"] = err.Error()
+		return data, err
 	}
 
 	start := time.Now()
 	entries, err := client.List(ctx, "")
 	took := time.Since(start)
 	if err != nil {
-		a.Event(ctx, store.LevelError, store.KindRemoteProbe, "remote probe failed: "+err.Error(),
-			map[string]any{"target": client.Target()})
-		return map[string]any{"error": err.Error(), "target": client.Target()}
+		data := map[string]any{"remote": rec.ID, "name": rec.Name, "target": client.Target()}
+		a.Event(ctx, store.LevelError, store.KindRemoteProbe, "remote probe failed: "+err.Error(), data)
+		data["error"] = err.Error()
+		return data, err
 	}
 
 	var dirs, files int
@@ -291,12 +309,12 @@ func (a *App) probeRemote(ctx context.Context) map[string]any {
 		}
 	}
 	data := map[string]any{
-		"target": client.Target(), "dirs": dirs, "files": files,
-		"millis": took.Milliseconds(),
+		"remote": rec.ID, "name": rec.Name, "target": client.Target(),
+		"dirs": dirs, "files": files, "millis": took.Milliseconds(),
 	}
 	a.Event(ctx, store.LevelInfo, store.KindRemoteProbe,
-		strconv.Itoa(dirs)+" directories and "+strconv.Itoa(files)+" files in the remote root", data)
-	return data
+		fmt.Sprintf("%d directories and %d files in the root of %q", dirs, files, rec.Name), data)
+	return data, nil
 }
 
 func (a *App) handleGetRuns(w http.ResponseWriter, r *http.Request) {

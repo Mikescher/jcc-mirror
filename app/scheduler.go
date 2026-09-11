@@ -227,15 +227,24 @@ func (a *App) tendRun(transfer, scan schedule.Window) (busy bool) {
 // time by design, and two pairs racing for the same link would only make both
 // slower.
 func (a *App) startDueRun(ctx context.Context, cfg scheduleSettings, now time.Time, transfer, scan schedule.Window) {
-	if _, err := a.Remote(); err != nil {
-		a.log.Debugf("schedule: nothing can run yet: %v", err)
-		return
-	}
-
-	pairs, err := a.store.Pairs(ctx) // already in priority order
+	all, err := a.store.Pairs(ctx) // already in priority order
 	if err != nil {
 		a.log.Errorf("schedule: %v", err)
 		return
+	}
+
+	// A pair whose remote cannot be reached is passed over rather than holding up
+	// the rest: the others may read from a remote that is fine.
+	pairs := make([]store.Pair, 0, len(all))
+	for _, p := range all {
+		if !p.Enabled {
+			continue
+		}
+		if _, err := a.RemoteFor(p); err != nil {
+			a.log.Debugf("schedule: %q cannot run yet: %v", p.Name, err)
+			continue
+		}
+		pairs = append(pairs, p)
 	}
 
 	// Scanning first, and not only because the windows may differ: a sync plans
