@@ -2,11 +2,59 @@ import { Component, computed, effect, inject, signal, untracked } from '@angular
 import { Api } from '../api';
 import { Live } from '../live';
 import type { DBBackup, PairView, Progress, Run } from '../models';
+import { DryRunList } from './dry-run-list';
 import * as fmt from '../format';
 
 /** The job states in the order they are worth reading: what is left, what is
  *  moving, what is being checked, what went wrong, what landed. */
 const queueStates = ['pending', 'running', 'verifying', 'failed', 'done'];
+
+/** What each pair button does, shown as its tooltip and in the legend below the
+ *  pairs. `jcc` marks the ones only a jcc pair has. */
+const actions: { kind: string; label: string; help: string; jcc?: boolean }[] = [
+  {
+    kind: 'plan',
+    label: 'Plan',
+    help: 'Compares the last walk with what is here and counts what a sync would do, with a sample of the files. Asks the publisher nothing and changes nothing.',
+  },
+  {
+    kind: 'dryrun',
+    label: 'Dry run',
+    help: 'Walks the publisher first, then lists every file a sync would download, replace or delete. Records the fresh walk and changes nothing else.',
+  },
+  {
+    kind: 'scan',
+    label: 'Scan',
+    help: "Walks the publisher's share, one listing per directory, and records what it has. Transfers nothing; a stopped walk resumes where it left off.",
+  },
+  {
+    kind: 'adopt',
+    label: 'Adopt',
+    help: 'For files that are already here, such as the USB bootstrap: matches them against the last walk by size alone and records them as present, so a sync does not fetch them again. Scan first.',
+  },
+  {
+    kind: 'sync',
+    label: 'Sync',
+    help: 'Queues and transfers what the last walk says is missing or changed. A jcc pair then copies its database through the lock gate, and a mirror pair ends with the deletion phase. It does not walk first.',
+  },
+  {
+    kind: 'delete',
+    label: 'Delete',
+    help: 'The deletion phase on its own: on a mirror pair, moves files the publisher no longer has into .jccmirror/trash, where they are kept for the retention period. Held for approval above the threshold and skipped while transfers are queued or failed. An additive pair never deletes.',
+  },
+  {
+    kind: 'db',
+    label: 'Database',
+    help: 'Copies ClipCornDB.db on its own, only while neither side holds its .~lock, and keeps the copy it replaces as a backup.',
+    jcc: true,
+  },
+  {
+    kind: 'force',
+    label: 'force past the lock',
+    help: 'Lets Database and Sync copy the database although a .~lock is out. Only right for a lock left behind by a crash.',
+    jcc: true,
+  },
+];
 
 /** Two frames of the stream closer together than this say more about the
  *  stream's cadence than about the link, so the instantaneous rate waits for a
@@ -16,11 +64,12 @@ const sampleFloor = 1;
 /** NowPage is what is happening and the buttons that make something happen. The
  *  buttons are here rather than in a shell on the Synology because a container's
  *  shell is not somewhere the operator can easily get to (DESIGN.md §4). */
-@Component({ selector: 'app-now', imports: [], templateUrl: './now.html', styleUrl: './now.css' })
+@Component({ selector: 'app-now', imports: [DryRunList], templateUrl: './now.html', styleUrl: './now.css' })
 export class NowPage {
   private readonly api = inject(Api);
   private readonly live = inject(Live);
   readonly fmt = fmt;
+  readonly actions = actions;
 
   readonly unlocked = this.api.unlocked;
   readonly loading = signal(false);
@@ -124,6 +173,10 @@ export class NowPage {
   }
 
   // ---- pairs --------------------------------------------------------------
+
+  help(kind: string): string {
+    return actions.find((a) => a.kind === kind)?.help ?? '';
+  }
 
   behind(p: PairView): number {
     const n = p.RemoteFiles - p.LocalFiles;

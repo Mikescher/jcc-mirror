@@ -1,0 +1,11 @@
+:host {
+  display: block;
+}
+
+:host > * + * {
+  margin-top: 0.6rem;
+}
+
+.path {
+  overflow-wrap: anywhere;
+}

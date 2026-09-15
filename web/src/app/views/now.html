@@ -54,6 +54,14 @@
         A walk has no percentage: nothing knows how many directories the publisher has until it has
         been asked for all of them. The counters above are what it has seen so far.
       </p>
+    } @else if (r.kind === 'dryrun') {
+      <p class="note">
+        @if (r.phase === 'diffing') {
+          The walk is finished; comparing it against what is here.
+        } @else {
+          Starting the walk.
+        }
+      </p>
     } @else if (progress(); as p) {
       <div class="line">
         <div class="spread">
@@ -303,6 +311,7 @@
           <button
             class="ghost small"
             type="button"
+            [title]="help('plan')"
             [disabled]="!unlocked() || busy()"
             (click)="start('plan', p)"
           >
@@ -311,6 +320,16 @@
           <button
             class="ghost small"
             type="button"
+            [title]="help('dryrun')"
+            [disabled]="!unlocked() || busy()"
+            (click)="start('dryrun', p)"
+          >
+            Dry run
+          </button>
+          <button
+            class="ghost small"
+            type="button"
+            [title]="help('scan')"
             [disabled]="!unlocked() || busy()"
             (click)="start('scan', p)"
           >
@@ -319,6 +338,7 @@
           <button
             class="ghost small"
             type="button"
+            [title]="help('adopt')"
             [disabled]="!unlocked() || busy()"
             (click)="start('adopt', p)"
           >
@@ -327,6 +347,7 @@
           <button
             class="small"
             type="button"
+            [title]="help('sync')"
             [disabled]="!unlocked() || busy()"
             (click)="start('sync', p)"
           >
@@ -335,6 +356,7 @@
           <button
             class="danger small"
             type="button"
+            [title]="help('delete')"
             [disabled]="!unlocked() || busy()"
             (click)="start('delete', p)"
           >
@@ -344,12 +366,13 @@
             <button
               class="ghost small"
               type="button"
+              [title]="help('db')"
               [disabled]="!unlocked() || busy()"
               (click)="start('db', p)"
             >
               Database
             </button>
-            <label class="check">
+            <label class="check" [title]="help('force')">
               <input
                 type="checkbox"
                 [checked]="forced(p.id)"
@@ -410,11 +433,24 @@
     }
   </div>
 
+  <h3>What the buttons do</h3>
+  <dl class="facts">
+    @for (a of actions; track a.kind) {
+      <dt>
+        {{ a.label }}
+        @if (a.jcc) {
+          <span class="pill">jcc</span>
+        }
+      </dt>
+      <dd class="note">{{ a.help }}</dd>
+    }
+  </dl>
+
   <p class="note">
     One operation runs at a time by design: the engine moves one file at a time and the scheduler
-    walks the pairs in priority order, so the buttons are disabled while anything is in flight. Plan
-    counts what a sync would do and changes nothing. Adopt matches what is already on disk against
-    the publisher by size, which is what the USB bootstrap needs before the first sync.
+    walks the pairs in priority order, so the buttons are disabled while anything is in flight. The
+    usual order for a new pair is Scan, then Adopt if its files were copied here by hand, then Plan
+    or Dry run, then Sync.
   </p>
 </section>
 
@@ -524,6 +560,15 @@
             @if (plan.truncated) {
               <p class="note">A sample. The full list is what a sync would queue.</p>
             }
+          }
+
+          @if (r.kind === 'dryrun') {
+            <app-dry-run-list
+              [pairId]="r.pairId"
+              [startedAt]="r.startedAt"
+              [plan]="plan"
+              [open]="$first"
+            />
           }
         }
       </div>

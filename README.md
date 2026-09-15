@@ -113,7 +113,7 @@ first remote.
 Two ways in, on the same state: the dashboard and the CLI.
 
 **From the dashboard.** The **Now** view lists the pairs with how far behind each
-one is and a Plan / Scan / Adopt / Sync / Delete / Database button beside each —
+one is and a Plan / Dry run / Scan / Adopt / Sync / Delete / Database button beside each —
 plus, when a deletion is over a threshold, the two buttons that answer it, and for
 a jcc pair the copies of its database with a rollback beside each one. A run
 happens in the background and the page follows it over the event stream, so a
@@ -158,6 +158,7 @@ a different question, and because the first weeks are meant to be run by hand:
 ```bash
 jcc-mirror scan  -data /data -pair media     # what does the publisher have?
 jcc-mirror plan  -data /data -pair media     # what would a sync do? changes nothing
+                                             # (-scan walks first: scan and plan in one)
 jcc-mirror sync  -data /data -pair media     # do it
 jcc-mirror jobs  -data /data -pair media -state failed
 ```

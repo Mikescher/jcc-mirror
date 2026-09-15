@@ -1,0 +1,93 @@
+<div class="spread">
+  <button class="ghost small" type="button" (click)="shown.set(!visible())">
+    {{ visible() ? 'Hide the list' : 'List all ' + fmt.count(total(), 'change') }}
+  </button>
+  @if (visible() && loading()) {
+    <span class="note">reading…</span>
+  }
+</div>
+
+@if (visible()) {
+  @if (error()) {
+    <div class="banner">{{ error() }}</div>
+  }
+
+  @if (superseded()) {
+    <p class="note">
+      A newer dry run of this pair has replaced this list. Its own card holds the current one.
+    </p>
+  } @else {
+    <div class="row">
+      @for (op of allOps; track op) {
+        <label class="check">
+          <input
+            type="checkbox"
+            [checked]="has(op)"
+            (change)="toggleOp(op, $any($event.target).checked)"
+          />
+          <span class="pill">{{ op }}</span>
+        </label>
+      }
+      <input
+        type="search"
+        placeholder="path contains…"
+        [value]="query()"
+        (change)="search($any($event.target).value)"
+      />
+    </div>
+
+    @if (page(); as pg) {
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Would</th>
+              <th>Path</th>
+              <th class="num">Size</th>
+              <th class="num">Here now</th>
+              <th>Modified</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (e of pg.entries; track e.op + e.path) {
+              <tr>
+                <td>
+                  <span class="pill" [class]="fate(e, pg.plan).cls">{{ fate(e, pg.plan).label }}</span>
+                </td>
+                <td class="mono path">{{ e.path }}</td>
+                <td class="num">{{ e.op === 'delete' ? '—' : fmt.bytes(e.size) }}</td>
+                <td class="num">{{ e.sizeBefore ? fmt.bytes(e.sizeBefore) : '—' }}</td>
+                <td>{{ e.op === 'delete' ? '—' : fmt.clock(e.mtime) }}</td>
+              </tr>
+            } @empty {
+              <tr>
+                <td colspan="5" class="note">Nothing for that filter.</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <div class="spread">
+        <span class="note">
+          @if (pg.total > 0) {
+            {{ fmt.comma(pg.offset + 1) }}–{{ fmt.comma(last(pg)) }} of {{ fmt.comma(pg.total) }}
+          }
+        </span>
+        <div class="row">
+          <button class="ghost small" type="button" [disabled]="pg.offset === 0" (click)="step(-1)">
+            Previous
+          </button>
+          <button
+            class="ghost small"
+            type="button"
+            [disabled]="last(pg) >= pg.total"
+            (click)="step(1)"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    }
+  }
+}

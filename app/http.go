@@ -35,6 +35,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/scans", a.handleGetScans)
 	mux.HandleFunc("GET /api/trash", a.handleGetTrash)
 	mux.HandleFunc("GET /api/runs", a.handleGetRuns)
+	mux.HandleFunc("GET /api/runs/dryrun", a.handleGetDryRun)
 	mux.HandleFunc("GET /api/diagnostics", a.handleGetDiagnostics)
 	mux.HandleFunc("GET /api/update", a.handleGetUpdate)
 	mux.HandleFunc("GET /api/remote/list", a.handleRemoteList)

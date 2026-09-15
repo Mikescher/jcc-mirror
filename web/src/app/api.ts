@@ -5,6 +5,7 @@ import type {
   ChangeRow,
   ConfigEntry,
   DiagnosticsView,
+  DryRunPage,
   EventRow,
   Job,
   Pair,
@@ -134,6 +135,16 @@ export class Api {
     if (filter.pair) url.searchParams.set('pair', String(filter.pair));
     for (const s of filter.state ?? []) url.searchParams.append('state', s);
     return this.request<Job[]>(url.pathname + url.search, { method: 'GET' });
+  }
+
+  dryRun(pair: number, filter: { op?: string[]; q?: string; offset?: number; limit?: number } = {}) {
+    const url = new URL('/api/runs/dryrun', location.origin);
+    url.searchParams.set('pair', String(pair));
+    if (filter.q) url.searchParams.set('q', filter.q);
+    if (filter.offset) url.searchParams.set('offset', String(filter.offset));
+    if (filter.limit) url.searchParams.set('limit', String(filter.limit));
+    for (const op of filter.op ?? []) url.searchParams.append('op', op);
+    return this.request<DryRunPage>(url.pathname + url.search, { method: 'GET' });
   }
 
   bandwidth = (span: string, hours?: number) =>

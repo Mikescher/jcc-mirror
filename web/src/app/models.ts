@@ -280,12 +280,14 @@ export interface DBResult {
   duration: number;
 }
 
-export type RunKind = 'plan' | 'scan' | 'adopt' | 'sync' | 'delete' | 'db';
+export type RunKind = 'plan' | 'scan' | 'adopt' | 'sync' | 'delete' | 'db' | 'dryrun';
 
 export interface Run {
   kind: RunKind;
   auto?: boolean;
   force?: boolean;
+  /** Only a dry run has phases: the walk, then the diff against it. */
+  phase?: 'walking' | 'diffing';
   pairId: number;
   pair: string;
   startedAt: string;
@@ -294,6 +296,18 @@ export interface Run {
   error?: string;
   plan?: Plan;
   database?: DBResult;
+}
+
+/** One page of a pair's latest dry run. `total` counts what the filter matched. */
+export interface DryRunPage {
+  pairId: number;
+  pair: string;
+  startedAt: string;
+  finishedAt: string;
+  plan: Plan;
+  total: number;
+  offset: number;
+  entries: PlanEntry[];
 }
 
 export interface Progress {

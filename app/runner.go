@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -23,6 +24,17 @@ const (
 	RunSync     = "sync"
 	RunDelete   = "delete"
 	RunDatabase = "db"
+	// RunDryRun walks the pair and then plans against that walk, keeping every
+	// entry rather than a sample. It queues nothing and touches nothing here but
+	// the manifest.
+	RunDryRun = "dryrun"
+)
+
+// The phases of a dry run, which the page needs because only the first of them
+// has counters to show.
+const (
+	PhaseWalking = "walking"
+	PhaseDiffing = "diffing"
 )
 
 // runHistory is how many finished runs the page keeps. They live in memory only:
@@ -40,6 +52,7 @@ type Run struct {
 	// Force is the override a person had to give: the lock gate's, for a lock
 	// that has gone stale and will not clear on its own (DESIGN.md §3).
 	Force      bool             `json:"force,omitempty"`
+	Phase      string           `json:"phase,omitempty"`
 	PairID     int64            `json:"pairId"`
 	PairName   string           `json:"pair"`
 	StartedAt  time.Time        `json:"startedAt"`
@@ -72,6 +85,10 @@ type runner struct {
 	cancel  context.CancelFunc
 	reason  string // why the current run was stopped, for the record it leaves
 	history []Run
+
+	// dryRuns holds the full list of the latest finished dry run per pair. It is
+	// kept out of Run because history rides on every frame of the live stream.
+	dryRuns map[int64]*dryRunList
 }
 
 // RunState is everything the dashboard shows about the mirror's activity.
@@ -111,7 +128,7 @@ func (a *App) StartRun(ctx context.Context, kind string, pairID int64, force boo
 // boundary is not an answer to that.
 func (a *App) startRun(ctx context.Context, kind string, pair store.Pair, auto, force bool) (Run, error) {
 	switch kind {
-	case RunPlan, RunScan, RunAdopt, RunSync, RunDelete, RunDatabase:
+	case RunPlan, RunScan, RunAdopt, RunSync, RunDelete, RunDatabase, RunDryRun:
 	default:
 		return Run{}, fmt.Errorf("unknown operation %q", kind)
 	}
@@ -183,7 +200,7 @@ func (a *App) runContext() context.Context {
 }
 
 func (a *App) execute(ctx context.Context, eng *engine.Engine, pair store.Pair, run *Run) {
-	out := runOperation(ctx, eng, pair, run.Kind, run.Force)
+	out := runOperation(ctx, eng, pair, run.Kind, run.Force, func(phase string) { a.setPhase(run, phase) })
 	a.finishRun(run, out)
 
 	// The push channel last, and outside the runner's lock: a notification reads
@@ -204,6 +221,13 @@ func (a *App) finishRun(run *Run, out outcome) {
 	stopped := errors.Is(err, context.Canceled)
 	run.FinishedAt = &finished
 	run.Summary, run.Plan, run.Database = out.summary, out.plan, out.database
+	run.Phase = ""
+	if run.Kind == RunDryRun && out.plan != nil {
+		a.keepDryRun(run, *out.plan)
+		listed := *out.plan
+		listed.Entries = nil
+		run.Plan = &listed
+	}
 
 	switch {
 	case err == nil:
@@ -246,10 +270,30 @@ type outcome struct {
 
 func failed(err error) outcome { return outcome{err: err} }
 
+func (a *App) setPhase(run *Run, phase string) {
+	a.runs.mu.Lock()
+	defer a.runs.mu.Unlock()
+	run.Phase = phase
+}
+
 // runOperation is the switch the buttons come down to. The engine writes the
 // durable record itself, so all that is wanted back is a line to read.
-func runOperation(ctx context.Context, eng *engine.Engine, pair store.Pair, kind string, force bool) outcome {
+func runOperation(ctx context.Context, eng *engine.Engine, pair store.Pair, kind string, force bool, phase func(string)) outcome {
 	switch kind {
+	case RunDryRun:
+		phase(PhaseWalking)
+		res, err := eng.Scan(ctx, pair, true)
+		if err != nil {
+			return failed(err)
+		}
+		phase(PhaseDiffing)
+		p, err := eng.Plan(ctx, pair, math.MaxInt)
+		if err != nil {
+			return failed(err)
+		}
+		return outcome{plan: &p, summary: fmt.Sprintf("walked %s files (%s); %s",
+			format.Comma(res.Scan.Files), format.Bytes(res.Scan.Bytes), planSummary(p))}
+
 	case RunPlan:
 		p, err := eng.Plan(ctx, pair, planSample)
 		if err != nil {
@@ -426,7 +470,7 @@ func (a *App) Runs(ctx context.Context) RunState {
 
 	// A walk reports itself through its scan row, which PutListing moves per
 	// directory - there is nothing in the engine's progress for it to read.
-	if st.Current != nil && st.Current.Kind == RunScan {
+	if st.Current != nil && (st.Current.Kind == RunScan || st.Current.Kind == RunDryRun) {
 		if sc, ok, err := a.store.RunningScan(ctx, st.Current.PairID); err == nil && ok {
 			st.Scan = &sc
 		}

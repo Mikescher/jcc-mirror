@@ -23,6 +23,7 @@ func cmdPlan(ctx context.Context, args []string) error {
 	ref := fs.String("pair", "", "the pair to diff, by name or id")
 	limit := fs.Int("limit", 25, "how many entries to list; the counts above them are always complete")
 	all := fs.Bool("all", false, "list every entry, however many there are")
+	walk := fs.Bool("scan", false, "walk the publisher first, so the plan is against its tree as it is now")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -41,6 +42,16 @@ func cmdPlan(ctx context.Context, args []string) error {
 		return err
 	}
 	defer closeFn()
+
+	if *walk {
+		res, err := eng.Scan(ctx, pair, true)
+		if res.Scan.ID != 0 {
+			printScan(pair, res)
+		}
+		if err != nil {
+			return err
+		}
+	}
 
 	plan, err := eng.Plan(ctx, pair, sample)
 	if err != nil {

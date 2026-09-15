@@ -546,6 +546,9 @@ is saved. Nothing has to be known before the process starts.
 
 **Dry run**: every plan can be computed and displayed — N adds, M deletes, X GB, estimated duration
 at the current cap — without executing. Worth an "approve each plan" mode for the first weeks.
+*Plan* diffs against the last walk and shows a sample; *Dry run* walks first, with the walk's live
+counters, and keeps the complete list — latest run per pair, in memory, paged by
+`GET /api/runs/dryrun` rather than carried on the stream. It writes the manifest and nothing else.
 
 ---
 
