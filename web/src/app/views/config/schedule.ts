@@ -66,6 +66,23 @@ export class ConfigSchedulePage {
   readonly now = computed(() => this.live.status()?.schedule ?? this.schedule()?.now);
   readonly nowHere = computed(() => zoneParts(this.now()?.now));
 
+  /** Every distinct cap in the transfer grid, slowest first, each with its own
+   *  shade of the accent: lighter than an unlimited cell, stronger than a closed
+   *  one, and darker the faster the cap. */
+  readonly caps = computed(() => {
+    const limits = new Set<number>();
+    for (const row of this.schedule()?.transfer.cells ?? []) {
+      for (const cell of row) if (cell.open && cell.limit) limits.add(cell.limit);
+    }
+    const sorted = [...limits].sort((a, b) => a - b);
+    return sorted.map((limit, i) => {
+      const pct = sorted.length === 1 ? 45 : Math.round(25 + (50 * i) / (sorted.length - 1));
+      return { limit, shade: `color-mix(in srgb, var(--accent) ${pct}%, transparent)` };
+    });
+  });
+
+  private readonly shades = computed(() => new Map(this.caps().map((c) => [c.limit, c.shade])));
+
   constructor() {
     // The daemon draws the grids from the stored rules, so they are re-fetched
     // rather than recomputed here - including after a save, which is what the
@@ -88,6 +105,11 @@ export class ConfigSchedulePage {
     const state = !cell.open ? 'cell-off' : cell.limit ? 'cell-cap' : 'cell-full';
     const at = this.nowHere();
     return at && at.weekday === day && at.hour === hour ? state + ' cell-now' : state;
+  }
+
+  /** The inline background of a capped cell; null leaves the class's colour. */
+  capShade(cell: Cell): string | null {
+    return cell.open && cell.limit ? (this.shades().get(cell.limit) ?? null) : null;
   }
 
   cellTitle(days: string[], day: number, hour: number, cell: Cell, gate = false): string {

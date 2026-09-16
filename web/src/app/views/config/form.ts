@@ -36,10 +36,12 @@ export class ConfigForm {
   }
 
   /** What a schedule grid's field shows: the draft if it was edited, otherwise
-   *  the canonical form the daemon printed the grid back as, which says the same
-   *  thing as the stored text and says it the same way every time. */
+   *  the rules as they were typed. Only an empty setting falls back to the form
+   *  the daemon printed the grid back as, one rule per line; a rule never
+   *  contains a semicolon, so splitting on them is safe. */
   rules(key: string, canonical: string): string {
-    return this.draft()[key] ?? canonical;
+    const stored = this.store.byKey().get(key)?.value;
+    return this.draft()[key] ?? (stored || canonical.split(/\s*;\s*/).join('\n'));
   }
 
   edit(key: string, value: string): void {

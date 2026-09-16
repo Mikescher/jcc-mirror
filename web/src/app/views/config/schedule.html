@@ -88,6 +88,7 @@
                 @for (cell of row; track $index; let hour = $index) {
                   <td
                     [class]="cellClass(cell, day, hour)"
+                    [style.background]="capShade(cell)"
                     [title]="cellTitle(s.transfer.days, day, hour, cell)"
                   ></td>
                 }
@@ -99,25 +100,27 @@
 
       <div class="legend">
         <span><i class="cell-full"></i>no limit</span>
-        <span><i class="cell-cap"></i>capped</span>
+        @for (c of caps(); track c.limit) {
+          <span><i [style.background]="c.shade"></i>{{ fmt.cap(c.limit) }}</span>
+        }
         <span><i class="cell-off"></i>closed</span>
         <span><i class="cell-now"></i>this hour</span>
       </div>
 
       <label class="field">
         <span class="name">Transfer rules</span>
-        <input
-          type="text"
+        <textarea
+          rows="8"
           autocomplete="off"
           spellcheck="false"
           [value]="form.rules(transferKey, s.transfer.rules)"
           [disabled]="!unlocked()"
           (input)="form.edit(transferKey, $any($event.target).value)"
-        />
+        ></textarea>
         <span class="help">
           <span class="mono">* * = 5MiB; * 2-8 = full</span> is 5 MiB/s everywhere and unlimited
-          from 02:00 to 08:00. Later rules win, so the first is the base and the rest are the
-          exceptions. Empty means always, at full speed. The caps apply to every transfer, scheduled
+          from 02:00 to 08:00. Rules are separated by semicolons or line breaks. Later rules win, so the
+          first is the base and the rest are the exceptions. Empty means always, at full speed. The caps apply to every transfer, scheduled
           or started by hand.
         </span>
       </label>
@@ -160,14 +163,14 @@
 
       <label class="field">
         <span class="name">Scan rules</span>
-        <input
-          type="text"
+        <textarea
+          rows="8"
           autocomplete="off"
           spellcheck="false"
           [value]="form.rules(scanKey, s.scan.rules)"
           [disabled]="!unlocked()"
           (input)="form.edit(scanKey, $any($event.target).value)"
-        />
+        ></textarea>
         <span class="help">
           <span class="mono">* 3-6 = on; * 6-3 = off</span> — this grid only opens and closes, so a
           rate is refused here rather than quietly ignored. A walk costs real time but no bandwidth

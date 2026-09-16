@@ -143,7 +143,7 @@ var keyDefs = []KeyDef{
 
 	{
 		Name: KeySchedule, Group: "Schedule", Label: "Transfer window",
-		Help:     `When bytes may move and how fast, as rules over a 7x24 grid: "* * = 5MiB; * 2-8 = full" is unlimited from 02:00 to 08:00 and 5 MiB/s the rest of the time. Later rules win. Empty means always, at full speed. The caps apply to every transfer, scheduled or started by hand.`,
+		Help:     `When bytes may move and how fast, as rules over a 7x24 grid: "* * = 5MiB; * 2-8 = full" is unlimited from 02:00 to 08:00 and 5 MiB/s the rest of the time. Rules are separated by semicolons or line breaks; later rules win. Empty means always, at full speed. The caps apply to every transfer, scheduled or started by hand.`,
 		Validate: validateSchedule,
 	},
 	{
