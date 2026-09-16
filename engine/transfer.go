@@ -218,10 +218,10 @@ func (e *Engine) runJob(ctx context.Context, pair store.Pair, job store.Job) (mo
 	defer e.endFile()
 
 	part := partPath(pair, job.Path)
-	if err := os.MkdirAll(filepath.Dir(part), 0o755); err != nil {
+	if err := makeDir(pair, filepath.Dir(part)); err != nil {
 		return false, fmt.Errorf("create the staging directory: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	if err := makeDir(pair, filepath.Dir(dst)); err != nil {
 		return false, fmt.Errorf("create %q: %w", filepath.Dir(dst), err)
 	}
 
@@ -296,6 +296,10 @@ func (e *Engine) runJob(ctx context.Context, pair store.Pair, job store.Job) (mo
 	}
 	if err := closeFile(); err != nil {
 		return false, fmt.Errorf("close the partial file: %w", err)
+	}
+
+	if err := settleFile(pair, part); err != nil {
+		return false, err
 	}
 
 	// Before the rename, not after: the local mtime has to be the publisher's from

@@ -232,6 +232,12 @@ func applyPairFields(p *store.Pair, fields map[string]string) error {
 			p.LocalPath = value
 		case "mode":
 			p.Mode = value
+		case "owner":
+			p.Owner = value
+		case "fileMode":
+			p.FileMode = value
+		case "dirMode":
+			p.DirMode = value
 		case "includes":
 			p.Includes = splitPatterns(value)
 		case "excludes":
@@ -279,7 +285,7 @@ func (a *App) pairEvent(ctx context.Context, p store.Pair, what string) {
 		map[string]any{
 			"action": what, "id": p.ID, "name": p.Name, "type": p.Type, "mode": p.Mode,
 			"remoteId": p.RemoteID, "remotePath": p.RemotePath, "localPath": p.LocalPath,
-			"enabled": p.Enabled,
+			"owner": p.Owner, "fileMode": p.FileMode, "dirMode": p.DirMode, "enabled": p.Enabled,
 		})
 }
 

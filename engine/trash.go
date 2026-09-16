@@ -186,7 +186,7 @@ func RestoreTrash(pair store.Pair, day, relpath string) (Restored, error) {
 		if _, err := os.Lstat(dst); err == nil {
 			return Restored{}, fmt.Errorf("%q is already back in place; nothing was moved", dst)
 		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		if err := makeDir(pair, filepath.Dir(dst)); err != nil {
 			return Restored{}, fmt.Errorf("create %q: %w", filepath.Dir(dst), err)
 		}
 		if err := os.Rename(src, dst); err != nil {

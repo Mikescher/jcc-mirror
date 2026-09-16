@@ -345,6 +345,10 @@ func (e *Engine) SyncDatabase(ctx context.Context, pair store.Pair, force bool) 
 		discard()
 		return res, fmt.Errorf("set the timestamp on %s: %w", st.Path, err)
 	}
+	if err := settleFile(pair, incoming); err != nil {
+		discard()
+		return res, err
+	}
 
 	// Step 7. A copy rather than a rename, so the database that is there stays
 	// there until the one syscall that replaces it (S5).
@@ -420,7 +424,7 @@ func (e *Engine) noteDeferred(ctx context.Context, pair store.Pair, held []LockS
 // chunking here on purpose: it is a few MB, and a database is only worth anything
 // end to end - half of yesterday's and half of today's is not a database.
 func (e *Engine) fetchDatabase(ctx context.Context, pair store.Pair, rel string, size int64, dst string) (int64, error) {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	if err := makeDir(pair, filepath.Dir(dst)); err != nil {
 		return 0, fmt.Errorf("create %q: %w", filepath.Dir(dst), err)
 	}
 
@@ -563,6 +567,9 @@ func (e *Engine) RollbackDatabase(ctx context.Context, pair store.Pair, backupID
 	}
 
 	incoming := incomingPath(pair, rel)
+	if err := makeDir(pair, filepath.Dir(incoming)); err != nil {
+		return res, fmt.Errorf("create %q: %w", filepath.Dir(incoming), err)
+	}
 	if _, _, err := copyFile(backup.Path, incoming); err != nil {
 		return res, err
 	}
@@ -574,6 +581,10 @@ func (e *Engine) RollbackDatabase(ctx context.Context, pair store.Pair, backupID
 	if err := os.Chtimes(incoming, backup.MTime, backup.MTime); err != nil {
 		discard()
 		return res, fmt.Errorf("set the timestamp on %s: %w", rel, err)
+	}
+	if err := settleFile(pair, incoming); err != nil {
+		discard()
+		return res, err
 	}
 
 	if res.Replaced, err = e.backupDatabase(ctx, pair, rel, store.BackupRollback); err != nil {

@@ -125,6 +125,9 @@ func printPairState(ctx context.Context, st *store.Store, p store.Pair) error {
 	if len(p.Excludes) > 0 {
 		fmt.Printf("  excludes       %s\n", strings.Join(p.Excludes, ", "))
 	}
+	if p.Owner != "" || p.FileMode != "" || p.DirMode != "" {
+		fmt.Printf("  new entries    owner %s, files %s, directories %s\n", orDash(p.Owner), orDash(p.FileMode), orDash(p.DirMode))
+	}
 	if p.DeleteGuard > 0 {
 		fmt.Printf("  delete guard   %s files before a deletion waits for approval\n", format.Comma(int64(p.DeleteGuard)))
 	}
@@ -285,6 +288,12 @@ func pairsSet(ctx context.Context, args []string) error {
 			p.Priority = edit.Priority
 		case "guard":
 			p.DeleteGuard = edit.DeleteGuard
+		case "owner":
+			p.Owner = edit.Owner
+		case "file-mode":
+			p.FileMode = edit.FileMode
+		case "dir-mode":
+			p.DirMode = edit.DirMode
 		case "enabled":
 			p.Enabled = *enabled
 		}
@@ -359,7 +368,7 @@ func pairsRemove(ctx context.Context, args []string) error {
 }
 
 // pairFields are the flags that describe a pair, in the order they are reported.
-var pairFields = []string{"name", "type", "from", "remote", "local", "mode", "include", "exclude", "priority", "guard", "enabled"}
+var pairFields = []string{"name", "type", "from", "remote", "local", "mode", "include", "exclude", "priority", "guard", "owner", "file-mode", "dir-mode", "enabled"}
 
 // pairFlags registers those fields on a flag set and returns the pair they fill,
 // all but -from, which is one of the flags every command shares. The defaults are
@@ -375,6 +384,9 @@ func pairFlags(fs *flag.FlagSet) (*store.Pair, *bool) {
 	fs.StringVar(&p.Mode, "mode", store.ModeAdditive, "\"additive\" or \"mirror\"; a mirror pair quarantines what the publisher drops, behind the guards")
 	fs.IntVar(&p.Priority, "priority", 100, "lower runs first")
 	fs.IntVar(&p.DeleteGuard, "guard", 100, "hold a deletion of more than this many files until it is approved; 0 removes the count limit, leaving the percentage threshold")
+	fs.StringVar(&p.Owner, "owner", "", "numeric uid:gid given to every file and directory the mirror creates, e.g. 1026:100; needs root; empty keeps the process's own")
+	fs.StringVar(&p.FileMode, "file-mode", "", "octal mode set on every file the mirror creates, e.g. 0000 for a Synology ACL share; empty is 0644 minus the umask")
+	fs.StringVar(&p.DirMode, "dir-mode", "", "octal mode set on every directory the mirror creates; empty is 0755 minus the umask")
 	enabled := fs.Bool("enabled", true, "whether the pair is mirrored at all")
 
 	fs.Var(&listFlag{dst: &p.Includes}, "include", "glob a path must match to be mirrored; repeat the flag, or separate several with commas")
@@ -395,7 +407,8 @@ func recordPairChange(ctx context.Context, st *store.Store, p store.Pair, what s
 		Message: fmt.Sprintf("pair %q %s from the command line", p.Name, what),
 		Data: map[string]any{
 			"action": what, "id": p.ID, "name": p.Name, "type": p.Type, "mode": p.Mode,
-			"remoteId": p.RemoteID, "remotePath": p.RemotePath, "localPath": p.LocalPath, "enabled": p.Enabled,
+			"remoteId": p.RemoteID, "remotePath": p.RemotePath, "localPath": p.LocalPath,
+			"owner": p.Owner, "fileMode": p.FileMode, "dirMode": p.DirMode, "enabled": p.Enabled,
 		},
 	})
 	if err != nil {

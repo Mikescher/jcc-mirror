@@ -18,7 +18,7 @@ services:
     # process starts, so there is no privilege-dropping entrypoint and no PUID/PGID.
     # Only set it to a uid the share's ACL actually grants write to - on a Synology
     # that is a DSM user, not an invented uid. Left unset the process runs as root,
-    # which every share accepts and which lets it chown what it writes.
+    # which every share accepts and which a pair's owner setting needs.
     #user: "1026:100"
 
     # The mirror and the diagnostics run in the same image and read the same

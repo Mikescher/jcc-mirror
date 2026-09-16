@@ -109,6 +109,11 @@ func TestPairNormalizeRefuses(t *testing.T) {
 		"bad type":            {Name: "x", LocalPath: "/data/x", Type: "raws"},
 		"bad mode":            {Name: "x", LocalPath: "/data/x", Mode: "read-only"},
 		"negative guard":      {Name: "x", LocalPath: "/data/x", DeleteGuard: -1},
+		"owner name":          {Name: "x", LocalPath: "/data/x", Owner: "admin:users"},
+		"owner without gid":   {Name: "x", LocalPath: "/data/x", Owner: "1026"},
+		"negative owner":      {Name: "x", LocalPath: "/data/x", Owner: "-1:100"},
+		"mode not octal":      {Name: "x", LocalPath: "/data/x", FileMode: "0888"},
+		"mode with setuid":    {Name: "x", LocalPath: "/data/x", DirMode: "4755"},
 	}
 	for name, p := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -339,5 +344,29 @@ func TestDeletePairCascades(t *testing.T) {
 	// transferred outlives the pair it was transferred for.
 	if n := countAll(t, s, "changes"); n != 1 {
 		t.Errorf("changes holds %d rows, want the history to survive", n)
+	}
+}
+
+func TestPairNormalizeOwnership(t *testing.T) {
+	p := Pair{Name: "x", LocalPath: "/data/x", Owner: " 1026 : 100 ", FileMode: "0o0", DirMode: "770"}
+	if err := p.Normalize(); err != nil {
+		t.Fatalf("Normalize: %v", err)
+	}
+	if p.Owner != "1026:100" || p.FileMode != "0000" || p.DirMode != "0770" {
+		t.Errorf("got owner %q, file mode %q, dir mode %q; want 1026:100, 0000, 0770", p.Owner, p.FileMode, p.DirMode)
+	}
+	if uid, gid, ok := p.OwnerIDs(); !ok || uid != 1026 || gid != 100 {
+		t.Errorf("OwnerIDs = %d, %d, %v", uid, gid, ok)
+	}
+	if m, ok := p.FileModeBits(); !ok || m != 0 {
+		t.Errorf("FileModeBits = %o, %v; want 0, true", m, ok)
+	}
+
+	var unset Pair
+	if _, _, ok := unset.OwnerIDs(); ok {
+		t.Error("an empty owner reports one")
+	}
+	if _, ok := unset.DirModeBits(); ok {
+		t.Error("an empty dir mode reports one")
 	}
 }

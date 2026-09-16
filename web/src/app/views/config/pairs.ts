@@ -18,6 +18,9 @@ const pairDefaults: Record<string, string> = {
   excludes: '',
   priority: '100',
   deleteGuard: '0',
+  owner: '',
+  fileMode: '',
+  dirMode: '',
   enabled: 'true',
 };
 
@@ -35,6 +38,9 @@ function pairFields(p: PairView): Record<string, string> {
     excludes: p.excludes.join(', '),
     priority: String(p.priority),
     deleteGuard: String(p.deleteGuard),
+    owner: p.owner,
+    fileMode: p.fileMode,
+    dirMode: p.dirMode,
     enabled: String(p.enabled),
   };
 }

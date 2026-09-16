@@ -19,8 +19,8 @@ COPY --from=build /out/jcc-mirror /usr/local/bin/jcc-mirror
 # the process, so no capability beyond the default set is needed.
 #
 # No USER either: a fixed uid cannot write a bind-mounted NAS share whose ACL does
-# not name it, and the image cannot know that uid. Root can, and can chown what it
-# writes to the share's owner. Pin the uid per host with compose's `user:` instead.
+# not name it, and the image cannot know that uid. Root can, and hands what it
+# writes to the owner a pair names. Pin the uid per host with compose's `user:` instead.
 WORKDIR /data
 
 # The entrypoint stays the bare binary so `docker compose run ... pairs -data /data`

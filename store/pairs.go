@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -49,6 +50,9 @@ type Pair struct {
 	Excludes    []string  `json:"excludes"`
 	DeleteGuard int       `json:"deleteGuard"` // deletions above this many files wait for approval; 0 is no count limit
 	Priority    int       `json:"priority"`    // lower runs first
+	Owner       string    `json:"owner"`       // "uid:gid" for what the engine creates here; "" keeps the process's own
+	FileMode    string    `json:"fileMode"`    // octal; "" is 0644 minus the umask
+	DirMode     string    `json:"dirMode"`     // octal; "" is 0755 minus the umask
 	Enabled     bool      `json:"enabled"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
@@ -104,7 +108,75 @@ func (p *Pair) Normalize() error {
 	if p.DeleteGuard < 0 {
 		return fmt.Errorf("delete guard %d cannot be negative", p.DeleteGuard)
 	}
+
+	p.Owner = strings.ReplaceAll(strings.TrimSpace(p.Owner), " ", "")
+	if p.Owner != "" {
+		uid, gid, err := parseOwner(p.Owner)
+		if err != nil {
+			return err
+		}
+		p.Owner = fmt.Sprintf("%d:%d", uid, gid)
+	}
+	var err error
+	if p.FileMode, err = cleanMode("file mode", p.FileMode); err != nil {
+		return err
+	}
+	if p.DirMode, err = cleanMode("directory mode", p.DirMode); err != nil {
+		return err
+	}
 	return nil
+}
+
+// OwnerIDs is the uid and gid the engine hands what it creates to, if any.
+func (p Pair) OwnerIDs() (uid, gid int, ok bool) {
+	uid, gid, err := parseOwner(p.Owner)
+	return uid, gid, err == nil
+}
+
+// FileModeBits and DirModeBits are the permissions the engine sets explicitly,
+// umask or not, if any.
+func (p Pair) FileModeBits() (fs.FileMode, bool) { return parseMode(p.FileMode) }
+func (p Pair) DirModeBits() (fs.FileMode, bool)  { return parseMode(p.DirMode) }
+
+// parseOwner reads numeric ids only: names would resolve against the
+// container's /etc/passwd, which knows nothing of the NAS's users.
+func parseOwner(s string) (uid, gid int, err error) {
+	u, g, ok := strings.Cut(s, ":")
+	if ok {
+		uid, err = strconv.Atoi(u)
+	}
+	if ok && err == nil {
+		gid, err = strconv.Atoi(g)
+	}
+	if !ok || err != nil || uid < 0 || gid < 0 {
+		return 0, 0, fmt.Errorf("owner %q: want numeric uid:gid, e.g. 1026:100", s)
+	}
+	return uid, gid, nil
+}
+
+func cleanMode(what, s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", nil
+	}
+	m, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimPrefix(s, "0o"), "0O"), 8, 32)
+	// Only the permission bits: fs.FileMode encodes setuid, setgid and sticky
+	// differently from the octal digits, and nothing here needs them.
+	if err != nil || m > 0o777 {
+		return "", fmt.Errorf("%s %q: want octal permissions from 0000 to 0777", what, s)
+	}
+	return fmt.Sprintf("%04o", m), nil
+}
+
+func parseMode(s string) (fs.FileMode, bool) {
+	if s == "" {
+		return 0, false
+	}
+	m, err := strconv.ParseUint(s, 8, 32)
+	if err != nil || m > 0o777 {
+		return 0, false
+	}
+	return fs.FileMode(m), true
 }
 
 func cleanPatterns(in []string) []string {
@@ -134,10 +206,10 @@ func (s *Store) CreatePair(ctx context.Context, p *Pair) error {
 	now := time.Now()
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO pairs (name, type, remote_id, remote_path, local_path, mode, includes, excludes,
-		                    delete_guard, priority, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		                    delete_guard, priority, owner, file_mode, dir_mode, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.Name, p.Type, remoteRef(p.RemoteID), p.RemotePath, p.LocalPath, p.Mode, inc, exc,
-		p.DeleteGuard, p.Priority, boolInt(p.Enabled), now.UnixMilli(), now.UnixMilli())
+		p.DeleteGuard, p.Priority, p.Owner, p.FileMode, p.DirMode, boolInt(p.Enabled), now.UnixMilli(), now.UnixMilli())
 	if err != nil {
 		return fmt.Errorf("create pair %q: %w", p.Name, err)
 	}
@@ -166,10 +238,10 @@ func (s *Store) UpdatePair(ctx context.Context, p *Pair) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE pairs SET name = ?, type = ?, remote_id = ?, remote_path = ?, local_path = ?, mode = ?,
 		                  includes = ?, excludes = ?, delete_guard = ?, priority = ?,
-		                  enabled = ?, updated_at = ?
+		                  owner = ?, file_mode = ?, dir_mode = ?, enabled = ?, updated_at = ?
 		 WHERE id = ?`,
 		p.Name, p.Type, remoteRef(p.RemoteID), p.RemotePath, p.LocalPath, p.Mode, inc, exc,
-		p.DeleteGuard, p.Priority, boolInt(p.Enabled), now.UnixMilli(), p.ID)
+		p.DeleteGuard, p.Priority, p.Owner, p.FileMode, p.DirMode, boolInt(p.Enabled), now.UnixMilli(), p.ID)
 	if err != nil {
 		return fmt.Errorf("update pair %d: %w", p.ID, err)
 	}
@@ -194,7 +266,7 @@ func (s *Store) DeletePair(ctx context.Context, id int64) error {
 }
 
 const pairColumns = `id, name, type, remote_id, remote_path, local_path, mode, includes, excludes,
-                     delete_guard, priority, enabled, created_at, updated_at`
+                     delete_guard, priority, owner, file_mode, dir_mode, enabled, created_at, updated_at`
 
 // Pairs returns every configured pair, in the order a sync run walks them.
 func (s *Store) Pairs(ctx context.Context) ([]Pair, error) {
@@ -260,7 +332,7 @@ func scanPair(row rowScanner) (Pair, error) {
 		created, updated int64
 	)
 	if err := row.Scan(&p.ID, &p.Name, &p.Type, &remoteID, &p.RemotePath, &p.LocalPath, &p.Mode,
-		&inc, &exc, &p.DeleteGuard, &p.Priority, &enabled, &created, &updated); err != nil {
+		&inc, &exc, &p.DeleteGuard, &p.Priority, &p.Owner, &p.FileMode, &p.DirMode, &enabled, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Pair{}, err
 		}

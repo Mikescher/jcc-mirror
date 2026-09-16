@@ -269,7 +269,7 @@ func (e *Engine) vanished(ctx context.Context, pair store.Pair, fn func(relpath 
 // thousand deletions.
 func (e *Engine) quarantine(ctx context.Context, pair store.Pair, expect int64) (deleted int, bytes int64, missing, failed int, err error) {
 	dir := trashDirFor(pair, time.Now())
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := makeDir(pair, dir); err != nil {
 		return 0, 0, 0, 0, fmt.Errorf("create the quarantine directory: %w", err)
 	}
 	e.log.Infof("delete: quarantining %s file(s) of %q into %s", format.Comma(expect), pair.Name, dir)
@@ -298,7 +298,7 @@ func (e *Engine) quarantine(ctx context.Context, pair store.Pair, expect int64) 
 				failed++
 				return nil
 			}
-			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			if err := makeDir(pair, filepath.Dir(dst)); err != nil {
 				e.log.Errorf("delete: %q: %v", relpath, err)
 				failed++
 				return nil

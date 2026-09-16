@@ -136,6 +136,11 @@ export interface Pair {
   excludes: string[];
   deleteGuard: number;
   priority: number;
+  /** Numeric uid:gid for what the mirror creates; '' keeps the process's own. */
+  owner: string;
+  /** Octal, e.g. '0000'; '' is 0644 / 0755 minus the umask. */
+  fileMode: string;
+  dirMode: string;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;

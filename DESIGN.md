@@ -529,7 +529,9 @@ is saved. Nothing has to be known before the process starts.
   allowed-ips, optional preshared key, optional DNS, MTU, keepalive — the nine the import writes.
   Changing any of them re-opens the tunnel in place.
 - **Pairs**: `{id, name, type: raw|jcc, remote_id, remote_path, local_path, mode: mirror|additive,
-  includes[], excludes[], delete_guard, priority, enabled}`. `remote_id` is the remote the pair
+  includes[], excludes[], delete_guard, priority, owner, file_mode, dir_mode, enabled}`. The last
+  three are applied to every file and directory the engine creates under `local_path`, before a
+  file is renamed into place; empty keeps what the process produces. `remote_id` is the remote the pair
   reads from and `remote_path` is relative to that remote's root. A pair with no remote is a valid
   record that nothing runs until it is given one.
 - **Schedule**: one 7×24 grid, one cell per weekday-hour, each carrying *both* "may transfer" and a

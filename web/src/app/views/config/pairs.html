@@ -215,6 +215,14 @@
               mirror (quarantines what the publisher drops)
             </option>
           </select>
+          <span class="help">
+            @if (pairField(p, 'mode') === 'mirror') {
+              Files the publisher no longer has are moved into .jccmirror/trash here, behind the
+              deletion guards, and emptied after the retention period.
+            } @else {
+              Nothing here is ever deleted: files the publisher no longer has are kept.
+            }
+          </span>
         </label>
         <label class="field">
           <span class="name">Delete guard</span>
@@ -264,6 +272,42 @@
             (input)="editPair(p.id, 'priority', $any($event.target).value)"
           />
           <span class="help">Lower runs first.</span>
+        </label>
+        <label class="field">
+          <span class="name">Owner</span>
+          <input
+            type="text"
+            autocomplete="off"
+            placeholder="1026:100"
+            [value]="pairField(p, 'owner')"
+            [disabled]="!unlocked()"
+            (input)="editPair(p.id, 'owner', $any($event.target).value)"
+          />
+          <span class="help">Numeric uid:gid given to every file and directory the mirror creates; needs the container to run as root. Empty keeps the process's own.</span>
+        </label>
+        <label class="field">
+          <span class="name">File mode</span>
+          <input
+            type="text"
+            autocomplete="off"
+            placeholder="0000"
+            [value]="pairField(p, 'fileMode')"
+            [disabled]="!unlocked()"
+            (input)="editPair(p.id, 'fileMode', $any($event.target).value)"
+          />
+          <span class="help">Octal, set on every file the mirror creates. A Synology share with ACLs wants 0000. Empty is 0644.</span>
+        </label>
+        <label class="field">
+          <span class="name">Directory mode</span>
+          <input
+            type="text"
+            autocomplete="off"
+            placeholder="0000"
+            [value]="pairField(p, 'dirMode')"
+            [disabled]="!unlocked()"
+            (input)="editPair(p.id, 'dirMode', $any($event.target).value)"
+          />
+          <span class="help">Octal, set on every directory the mirror creates. Empty is 0755.</span>
         </label>
       </div>
 
@@ -416,6 +460,14 @@
         <option value="additive" [selected]="newPair()['mode'] === 'additive'">additive</option>
         <option value="mirror" [selected]="newPair()['mode'] === 'mirror'">mirror</option>
       </select>
+      <span class="help">
+        @if (newPair()['mode'] === 'mirror') {
+          Files the publisher no longer has are moved into .jccmirror/trash here, behind the
+          deletion guards, and emptied after the retention period.
+        } @else {
+          Nothing here is ever deleted: files the publisher no longer has are kept.
+        }
+      </span>
     </label>
     <label class="field">
       <span class="name">Excludes</span>
@@ -428,6 +480,42 @@
         (input)="editNew('excludes', $any($event.target).value)"
       />
       <span class="help">Globs, comma separated. Optional.</span>
+    </label>
+    <label class="field">
+      <span class="name">Owner</span>
+      <input
+        type="text"
+        autocomplete="off"
+        placeholder="1026:100"
+        [value]="newPair()['owner']"
+        [disabled]="!unlocked()"
+        (input)="editNew('owner', $any($event.target).value)"
+      />
+      <span class="help">Numeric uid:gid given to every file and directory the mirror creates; needs the container to run as root. Empty keeps the process's own.</span>
+    </label>
+    <label class="field">
+      <span class="name">File mode</span>
+      <input
+        type="text"
+        autocomplete="off"
+        placeholder="0000"
+        [value]="newPair()['fileMode']"
+        [disabled]="!unlocked()"
+        (input)="editNew('fileMode', $any($event.target).value)"
+      />
+      <span class="help">Octal, set on every file the mirror creates. A Synology share with ACLs wants 0000. Empty is 0644.</span>
+    </label>
+    <label class="field">
+      <span class="name">Directory mode</span>
+      <input
+        type="text"
+        autocomplete="off"
+        placeholder="0000"
+        [value]="newPair()['dirMode']"
+        [disabled]="!unlocked()"
+        (input)="editNew('dirMode', $any($event.target).value)"
+      />
+      <span class="help">Octal, set on every directory the mirror creates. Empty is 0755.</span>
     </label>
   </div>
 

@@ -154,6 +154,12 @@ explicit `-pass ""` clears the password — and `remotes rm` refuses a remote wh
 a pair still reads from it. The mirror commands read through the pair's own
 remote; `-from` on any of them reads through another for that one run.
 
+What the mirror creates gets the process's uid:gid and 0644/0755 unless the pair
+says otherwise. On a Synology share with ACLs, DSM's own files are `0000`
+and owned by a DSM user; `-owner 1026:100 -file-mode 0000 -dir-mode 0000` makes
+new files and directories match. Existing ones are left alone, and changing the
+owner needs the container to run as root.
+
 Then the three steps, in order. They are separate commands because each answers
 a different question, and because the first weeks are meant to be run by hand:
 
