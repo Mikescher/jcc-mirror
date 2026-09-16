@@ -4,3 +4,4 @@ jcc-mirror-arm64
 *.ndjson
 *.part
 /deploy/data/
+/web/dist/

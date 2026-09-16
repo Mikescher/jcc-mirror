@@ -671,14 +671,15 @@ the NAS's CPU.
 make test        # unit tests plus end-to-end runs against a local directory
 make vet
 make build
-make web         # rebuild the dashboard into web/dist after changing web/src
+make web         # build the dashboard into web/dist (the other targets do this too)
 ./jcc-mirror serve -data ./data -lan 127.0.0.1:8080
 ```
 
-`web/dist` is checked in, which is what keeps `make build`, `make syno` and the
-Dockerfile free of a node toolchain: a Go build never needs one. `make web` is
-what regenerates it, and it has to be run before committing a change to the
-dashboard or the binary still carries the old one.
+`web/dist` is not checked in, but the binary embeds it, so a plain `go build`
+fails until it exists. Every make target that compiles Go builds it first, and
+rebuilds it whenever something under `web/` changed, so node and npm are needed
+for all of them. The Dockerfile copies the result from the host rather than
+running a node stage of its own.
 
 For working on the dashboard itself, point the daemon at a running `ng serve`
 instead of the embedded build. One port then answers both halves, so there is no
@@ -756,7 +757,7 @@ remote/localfs/  a local directory as a Remote, for tests, development and
 notify/        the SimpleCloudNotifier client; the coalescing above it is app/
 update/        the self-updater: the HTTP(S) source, the binary directory in
                the data volume, and the supervisor that undoes a bad update
-web/           the Angular dashboard: src/ is the source, dist/ is the checked-in
+web/           the Angular dashboard: src/ is the source, dist/ is the (ignored)
                build the binary embeds
 logs/ format/  the leveled logger - which also keeps the last few hundred lines
                for the dashboard's tail - and the number formatting everything

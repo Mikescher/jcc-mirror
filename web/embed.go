@@ -1,9 +1,8 @@
 // Package web is the built Angular dashboard, compiled into the binary so the
 // deployment stays one file and one volume (DESIGN.md §4).
 //
-// dist/ is checked in on purpose: `go build` then needs no node toolchain, which
-// is what keeps `make syno` and the Dockerfile as simple as they were. Rebuild it
-// with `make web` after changing anything under src/.
+// dist/ is not checked in and must be built (`make web`) before this package
+// compiles; every Go target in the Makefile does that first.
 package web
 
 import (

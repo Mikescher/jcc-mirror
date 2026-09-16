@@ -1,4 +1,4 @@
-# The image is built from the checked-in web/dist, never from web/src, so the node
+# The image is built from web/dist, which `make docker` builds on the host, never from web/src, so the node
 # toolchain and its half a gigabyte of dependencies have no business in the build
 # context.
 web/node_modules
