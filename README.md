@@ -114,7 +114,7 @@ first remote.
 
 Two ways in, on the same state: the dashboard and the CLI.
 
-**From the dashboard.** The **Now** view lists the pairs with how far behind each
+**From the dashboard.** The **Dashboard** view lists the pairs with how far behind each
 one is and a Plan / Dry run / Scan / Adopt / Sync / Delete / Database button beside each —
 plus, when a deletion is over a threshold, the two buttons that answer it, and for
 a jcc pair the copies of its database with a rollback beside each one. A run
@@ -245,7 +245,7 @@ mirror` quarantines what the publisher dropped. Four guards stand in front of it
 
 - **Two thresholds.** A deletion of more than the pair's `-guard` files, or of
   more than `delete.max_percent` of what the pair holds, is not carried out. It
-  becomes one request per pair, which the Now view surfaces with a button and
+  becomes one request per pair, which the Dashboard view surfaces with a button and
   `jcc-mirror delete -approve` answers from a shell. Over the line, *nothing*
   goes — not the first N and then a stop.
 - **An approval covers what was looked at.** It is bound to the walk it was
@@ -419,7 +419,7 @@ history view share a schema rather than agreeing by accident.
 
 | View | |
 |---|---|
-| **Now** | What is running: pair, file, both progress bars, instantaneous and average rate, ETA, queue depth, the active window and its cap. Under it, every pair with its buttons, a held deletion with the two that answer it, and the recent runs. |
+| **Dashboard** | What is running: pair, file, both progress bars, instantaneous and average rate, ETA, queue depth, the active window and its cap. Under it, every pair with its buttons, a held deletion with the two that answer it, and the recent runs. |
 | **Changes** | Per-file history — added, replaced, deleted, failed — filterable by pair and operation. It is the only place one file's fate is recorded. |
 | **Events** | Scans and syncs with their durations, the database replaced or skipped for a lock, deletion guards, tunnel edges, configuration changes, errors. Each row can be expanded into the JSON it carries. |
 | **Bandwidth** | The per-minute series drawn as inline SVG, plus the 7×24 heatmap that makes the weekday/weekend shape visible. Minutes are rolled up to hours after a week and to days after a quarter — a per-minute series kept forever is half a million rows a year. |

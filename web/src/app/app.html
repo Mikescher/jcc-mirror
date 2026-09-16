@@ -36,10 +36,11 @@
   </div>
 
   <nav class="wrap">
-    <a routerLink="/now" routerLinkActive="active">Now</a>
+    <a routerLink="/now" routerLinkActive="active">Dashboard</a>
     <a routerLink="/changes" routerLinkActive="active">Changes</a>
     <a routerLink="/events" routerLinkActive="active">Events</a>
     <a routerLink="/bandwidth" routerLinkActive="active">Bandwidth</a>
+    <a routerLink="/audit" routerLinkActive="active">Audit</a>
     <span class="sep" aria-hidden="true"></span>
     @for (page of pages; track page.path) {
       <a [routerLink]="['/', page.path]" routerLinkActive="active">{{ page.label }}</a>

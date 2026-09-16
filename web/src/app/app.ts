@@ -18,7 +18,7 @@ export class App {
   private readonly api = inject(Api);
   readonly live = inject(Live);
   readonly fmt = fmt;
-  readonly pages = configPages;
+  readonly pages = configPages.filter((p) => p.path !== 'audit');
 
   readonly unlocked = this.api.unlocked;
 

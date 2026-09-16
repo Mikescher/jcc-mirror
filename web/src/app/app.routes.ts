@@ -27,7 +27,7 @@ export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'now' },
   {
     path: 'now',
-    title: 'Now · jcc-mirror',
+    title: 'Dashboard · jcc-mirror',
     loadComponent: () => import('./views/now').then((m) => m.NowPage),
   },
   {

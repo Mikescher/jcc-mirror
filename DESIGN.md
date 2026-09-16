@@ -356,7 +356,7 @@ schema.
 
 | View | Contents |
 |---|---|
-| **Now** | Current pair and file, progress, instantaneous and average rate, ETA, queue depth, active window and limit. |
+| **Dashboard** | Current pair and file, progress, instantaneous and average rate, ETA, queue depth, active window and limit. |
 | **Changes** | Per-file history — added, replaced, deleted, failed — filterable by pair and time. |
 | **Events** | Scan started/finished with duration, sync finished, DB replaced, DB skipped (locked), update applied, restart, error, deletion guard tripped. |
 | **Bandwidth** | Per-minute buckets, rolled up to hourly after ~7 days and daily after ~90 — otherwise the table grows without bound. A time series, plus the hour-of-day cumulative, best drawn as a 7×24 heatmap so the weekday/weekend shape is visible. |
