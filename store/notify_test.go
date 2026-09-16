@@ -45,7 +45,7 @@ func TestNotifyTransitionOnlyReportsEdges(t *testing.T) {
 		t.Fatal("the condition clearing was not an edge")
 	}
 
-	// What is stored is the state that is true, because the Diagnostics view
+	// What is stored is the state that is true, because the Notifications page
 	// reads it back: a healthy tunnel described as down is worse than none.
 	states, err := s.NotifyStates(ctx)
 	if err != nil {
@@ -80,25 +80,5 @@ func TestNotifyTransitionIsPerPair(t *testing.T) {
 	}
 	if len(states) != 2 {
 		t.Fatalf("got %d tracked conditions, want 2", len(states))
-	}
-}
-
-func TestNotifyToggleCoversEveryKind(t *testing.T) {
-	kinds := []string{
-		NotifySyncFailed, NotifySyncOK, NotifyDeleteBlocked, NotifySpaceLow,
-		NotifyLockStale, NotifyTunnelDown, NotifyDBReplaced,
-	}
-	for _, kind := range kinds {
-		key, ok := NotifyToggle(kind)
-		if !ok {
-			t.Errorf("notification kind %q has no toggle", kind)
-			continue
-		}
-		if _, ok := Key(key); !ok {
-			t.Errorf("notification kind %q points at %q, which is not a setting", kind, key)
-		}
-	}
-	if _, ok := NotifyToggle("not.a.kind"); ok {
-		t.Error("an unknown kind was given a toggle")
 	}
 }

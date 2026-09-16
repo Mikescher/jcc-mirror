@@ -1,8 +1,10 @@
 import { Component, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { Api } from '../../api';
+import { Live } from '../../live';
 import * as fmt from '../../format';
-import type { PairView, RemoteView } from '../../models';
+import type { PairDiagnostics, PairView, RemoteView, Run } from '../../models';
+import { DiagnosticsStore } from './diagnostics';
 
 /** The fields POST /api/pairs accepts, and what a new pair starts as. */
 const pairDefaults: Record<string, string> = {
@@ -37,9 +39,9 @@ function pairFields(p: PairView): Record<string, string> {
   };
 }
 
-/** The pairs editor. A pair is its own record rather than a setting, so this
- *  page saves one pair at a time and has no draft of the settings and no save
- *  bar of its own. */
+/** The pairs editor, with each pair's free space and its explained plan. A pair
+ *  is its own record rather than a setting, so this page saves one pair at a
+ *  time and has no draft of the settings and no save bar of its own. */
 @Component({
   selector: 'app-config-pairs',
   imports: [RouterLink],
@@ -48,6 +50,8 @@ function pairFields(p: PairView): Record<string, string> {
 })
 export class ConfigPairsPage {
   private readonly api = inject(Api);
+  private readonly live = inject(Live);
+  private readonly diagnostics = inject(DiagnosticsStore);
   readonly fmt = fmt;
   readonly unlocked = this.api.unlocked;
 
@@ -63,11 +67,15 @@ export class ConfigPairsPage {
   /** The pair whose removal is waiting to be confirmed; 0 for none. */
   readonly removing = signal(0);
 
+  readonly explainErrors = signal<Record<number, string>>({});
+
   constructor() {
+    this.live.connect();
     void this.load();
   }
 
   async load(): Promise<void> {
+    void this.diagnostics.load();
     try {
       const [pairs, remotes] = await Promise.all([this.api.pairs(), this.api.remotes()]);
       this.pairs.set(pairs ?? []);
@@ -81,6 +89,34 @@ export class ConfigPairsPage {
       );
     } catch (err) {
       this.fail(err);
+    }
+  }
+
+  spaceOf(id: number): PairDiagnostics | undefined {
+    return this.diagnostics.pairs().find((d) => d.id === id);
+  }
+
+  used(d: PairDiagnostics): number {
+    return fmt.percent(d.space.total - d.space.free, d.space.total);
+  }
+
+  /** The newest plan of this pair the daemon has run. A plan started from here
+   *  arrives on the stream rather than as the answer to the button, because a
+   *  run answers as soon as it has started. */
+  planOf(id: number): Run | undefined {
+    const runs = this.live.runs();
+    const current = runs.current;
+    if (current?.kind === 'plan' && current.pairId === id) return current;
+    return (runs.history ?? []).find((r) => r.kind === 'plan' && r.pairId === id);
+  }
+
+  async explain(p: PairView): Promise<void> {
+    this.explainErrors.update((errs) => ({ ...errs, [p.id]: '' }));
+    try {
+      await this.api.startRun('plan', p.id);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      this.explainErrors.update((errs) => ({ ...errs, [p.id]: error }));
     }
   }
 

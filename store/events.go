@@ -28,6 +28,7 @@ const (
 	KindRemoteProbe   = "remote.probe"
 	KindPairChanged   = "pair.changed"
 	KindRemoteChanged = "remote.changed"
+	KindNotifyChanged = "notify.changed"
 	KindScanStarted   = "scan.started"
 	KindScanFinished  = "scan.finished"
 	KindSyncStarted   = "sync.started"

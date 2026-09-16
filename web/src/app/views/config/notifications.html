@@ -1,22 +1,261 @@
-@for (group of groups(); track group.name) {
-  <config-group [group]="group">
+@if (error()) {
+  <div class="banner">{{ error() }}</div>
+}
+
+@for (t of targets(); track t.id) {
+  <section class="panel record">
+    <div class="head">
+      <h3 class="title">
+        {{ t.name }}
+        @if (!t.enabled) {
+          <span class="pill warn">disabled</span>
+        }
+        @if (!t.userKeySet) {
+          <span class="pill bad">no user key</span>
+        }
+        @if (!t.events.length) {
+          <span class="pill dim">no topics</span>
+        }
+      </h3>
+    </div>
+
+    <dl class="facts">
+      <dt>user id</dt>
+      <dd class="mono">{{ t.userId }}</dd>
+      <dt>user key</dt>
+      <dd>{{ t.userKeySet ? 'stored' : 'not set' }}</dd>
+      <dt>channel</dt>
+      <dd class="mono">{{ t.channel || 'none' }}</dd>
+      <dt>sender</dt>
+      <dd class="mono">{{ t.sender || '—' }}</dd>
+      <dt>topics</dt>
+      <dd>{{ topicLabels(t) || 'none' }}</dd>
+    </dl>
+
     <div class="row">
-      <button type="button" [disabled]="!unlocked() || sending()" (click)="sendTest()">
+      <button type="button" [disabled]="!unlocked() || testing() === t.id" (click)="test(t)">
         Send a test
       </button>
       <span class="note">
-        Ignores the toggles above: pressing it is the request. Save first — it sends with what is
-        stored, not with what is typed.
+        Ignores the topics and the enabled switch: pressing it is the request. It sends with what is
+        stored, not with what is typed below.
       </span>
     </div>
 
-    @if (sendError()) {
-      <div class="banner">{{ sendError() }}</div>
+    @if (tests()[t.id]; as r) {
+      @if (r.error) {
+        <div class="banner">{{ r.error }}</div>
+      }
+      @if (r.sent) {
+        <p class="note">Sent. If nothing arrives, the user id or key is not the one SCN holds.</p>
+      }
     }
-    @if (sent()) {
-      <p class="note">Sent. If nothing arrives, the user id or key is not the one SCN holds.</p>
+
+    <details>
+      <summary>Edit this target</summary>
+
+      <div class="fields">
+        @for (f of inputs; track f.key) {
+          <label class="field">
+            <span class="name">{{ f.label }}</span>
+            @if (f.key === 'userKey') {
+              <input
+                type="password"
+                autocomplete="new-password"
+                [placeholder]="t.userKeySet ? 'stored — leave blank to keep it' : 'not set'"
+                [value]="field(t, 'userKey')"
+                [disabled]="!unlocked()"
+                (input)="edit(t, 'userKey', $any($event.target).value)"
+              />
+            } @else {
+              <input
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                [placeholder]="f.placeholder ?? ''"
+                [value]="field(t, f.key)"
+                [disabled]="!unlocked()"
+                (input)="edit(t, f.key, $any($event.target).value)"
+              />
+            }
+            @if (f.help) {
+              <span class="help">{{ f.help }}</span>
+            }
+          </label>
+        }
+      </div>
+
+      <div class="fields">
+        @for (topic of topics(); track topic.key) {
+          <label class="field">
+            <span class="topic">
+              <input
+                type="checkbox"
+                [checked]="hasTopic(t, topic.key)"
+                [disabled]="!unlocked()"
+                (change)="editTopic(t, topic.key, $any($event.target).checked)"
+              />
+              <span class="name">{{ topic.label }}</span>
+            </span>
+            <span class="help">{{ topic.help }}</span>
+          </label>
+        }
+      </div>
+
+      <div class="row">
+        <label class="check">
+          <input
+            type="checkbox"
+            [checked]="field(t, 'enabled') === 'true'"
+            [disabled]="!unlocked()"
+            (change)="edit(t, 'enabled', $any($event.target).checked ? 'true' : 'false')"
+          />
+          <span>Enabled</span>
+        </label>
+        <button
+          type="button"
+          [disabled]="!unlocked() || saving() === t.id || !dirty(t.id)"
+          (click)="save(t)"
+        >
+          Save
+        </button>
+        <button class="ghost" type="button" [disabled]="!dirty(t.id)" (click)="revert(t.id)">
+          Revert
+        </button>
+      </div>
+
+      @if (removing() === t.id) {
+        <div class="hold">
+          <strong>Remove {{ t.name }}?</strong>
+          <div class="note">This forgets the account and its stored key. Nothing else changes.</div>
+          <div class="row">
+            <button class="danger small" type="button" [disabled]="!unlocked()" (click)="remove(t)">
+              Yes, remove it
+            </button>
+            <button class="ghost small" type="button" (click)="removing.set(0)">Cancel</button>
+          </div>
+        </div>
+      } @else {
+        <div class="row">
+          <button
+            class="danger small"
+            type="button"
+            [disabled]="!unlocked()"
+            (click)="removing.set(t.id)"
+          >
+            Remove this target
+          </button>
+        </div>
+      }
+    </details>
+  </section>
+} @empty {
+  <section class="panel">
+    <p class="note">No targets yet, so no notifications are sent. Add an SCN account below.</p>
+  </section>
+}
+
+<section class="panel">
+  <h3>Add a target</h3>
+  <p class="note">
+    One SimpleCloudNotifier account, and the topics it should hear about. Every enabled target gets
+    its own copy of each message it has a topic for.
+  </p>
+
+  <div class="fields">
+    @for (f of inputs; track f.key) {
+      <label class="field">
+        <span class="name">{{ f.label }}</span>
+        <input
+          [type]="f.key === 'userKey' ? 'password' : 'text'"
+          [autocomplete]="f.key === 'userKey' ? 'new-password' : 'off'"
+          spellcheck="false"
+          [placeholder]="f.placeholder ?? ''"
+          [value]="newTarget()[f.key] ?? ''"
+          [disabled]="!unlocked()"
+          (input)="editNew(f.key, $any($event.target).value)"
+        />
+        @if (f.help) {
+          <span class="help">{{ f.help }}</span>
+        }
+      </label>
     }
-  </config-group>
+  </div>
+
+  <div class="fields">
+    @for (topic of topics(); track topic.key) {
+      <label class="field">
+        <span class="topic">
+          <input
+            type="checkbox"
+            [checked]="newHasTopic(topic.key)"
+            [disabled]="!unlocked()"
+            (change)="editNewTopic(topic.key, $any($event.target).checked)"
+          />
+          <span class="name">{{ topic.label }}</span>
+        </span>
+        <span class="help">{{ topic.help }}</span>
+      </label>
+    }
+  </div>
+
+  <div class="row">
+    <button type="button" [disabled]="!unlocked() || adding()" (click)="create()">Add</button>
+    @if (!unlocked()) {
+      <span class="note">Press Unlock to add one.</span>
+    }
+  </div>
+</section>
+
+@for (group of groups(); track group.name) {
+  <config-group [group]="group" />
 }
 
 <config-save-bar />
+
+<section class="panel">
+  <h3>Conditions</h3>
+
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>Condition</th>
+          <th>Pair</th>
+          <th>State</th>
+          <th>Since</th>
+          <th>Last pushed</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (n of diagnostics.notify(); track n.kind + n.pairId) {
+          <tr>
+            <td>{{ n.kind }}</td>
+            <td>{{ n.pairId ? pairName(n.pairId) : '—' }}</td>
+            <td>
+              @if (n.active) {
+                <span class="pill warn">active</span>
+              } @else {
+                <span class="pill ok">clear</span>
+              }
+            </td>
+            <td>{{ fmt.clock(n.since) }}</td>
+            <td>{{ n.notifiedAt ? fmt.clock(n.notifiedAt) : 'never' }}</td>
+            <td>{{ n.detail || '—' }}</td>
+          </tr>
+        } @empty {
+          <tr class="quiet">
+            <td colspan="6">Nothing has been raised yet.</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+
+  <p class="note">
+    A condition pushes on the edge — once when it starts being true, once when it clears — because
+    the daily quota is finite. A row that is active with no last-pushed time is one the push channel
+    could not deliver, which is written to the events table and never fails a sync.
+  </p>
+</section>

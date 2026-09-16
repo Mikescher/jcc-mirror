@@ -72,7 +72,7 @@ func remotesList(ctx context.Context, args []string) error {
 		return err
 	}
 
-	fmt.Printf("\n=> %q is the first: the diagnostics read it when no -from says otherwise, and\n   so does the updater while update.remote is empty\n", remotes[0].Name)
+	fmt.Printf("\n=> %q is the first: the diagnostics read it when no -from says otherwise\n", remotes[0].Name)
 	return nil
 }
 

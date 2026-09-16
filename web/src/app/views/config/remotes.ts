@@ -4,6 +4,7 @@ import { Api } from '../../api';
 import { Live } from '../../live';
 import * as fmt from '../../format';
 import type { RemoteProbe, RemoteView } from '../../models';
+import { ConfigRemoteTools } from './remote-tools';
 
 interface RemoteInput {
   key: string;
@@ -18,7 +19,7 @@ const remoteInputs: readonly RemoteInput[] = [
     key: 'name',
     label: 'Name',
     placeholder: 'nas',
-    help: "What the pairs, the event log and the updater's Remote setting call it.",
+    help: 'What the pairs and the event log call it.',
   },
   {
     key: 'host',
@@ -81,11 +82,11 @@ function remoteFields(r: RemoteView): Record<string, string> {
   };
 }
 
-/** The remotes editor. Like a pair, a remote is a record of its own, saved one
- *  at a time, so this page has no save bar. */
+/** The remotes editor, and the tools that probe them. Like a pair, a remote is a
+ *  record of its own, saved one at a time, so this page has no save bar. */
 @Component({
   selector: 'app-config-remotes',
-  imports: [RouterLink],
+  imports: [RouterLink, ConfigRemoteTools],
   templateUrl: './remotes.html',
   styleUrls: ['./page.css', './record.css'],
 })

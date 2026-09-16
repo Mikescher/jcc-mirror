@@ -28,7 +28,7 @@ All settled. Nothing here is still open for debate; §9 is the build order.
 | Content awareness | Zero. jcc-mirror moves bytes and does not know what is in them. |
 | Topology | Hub-and-spoke: a rootserver runs the WireGuard server, both NASes are clients. Endpoint is a stable IP, so no DNS re-resolution is needed. |
 | Notifications | SCN (`simplecloudnotifier.de`), configured in the dashboard. See §4.1. |
-| Update trust | No signing. Fetch from one of the shares, or from an absolute URL, compare timestamps, smoke-test, keep the previous binary. |
+| Update trust | No signing. Fetch from an `http(s)` URL, compare timestamps, smoke-test, keep the previous binary. |
 | Module path | `blackforestbytes.com/jcc-mirror` |
 
 **Safety rules carried into the build.** Uncontested, listed once so they do not get lost in the
@@ -99,7 +99,7 @@ One binary, one deployment, on user 2's Synology. The publisher is a `\\host\sha
  │  /media      │◄── read at offset (resumable) ──┤  scanner → manifest table     │
  │  /ClipCornDB │                                 │  differ → jobs table          │
  │  /jClipCorn  │                                 │  transfer engine + limiter    │
- │  /dist       │                                 │  scheduler · guards · events  │
+ │              │                                 │  scheduler · guards · events  │
  │              │                                 │  sqlite state                 │
  │ stock DSM    │                                 │  dashboard (angular, embed)   │
  │ package;     │                                 └──────────────────────────────┘
@@ -360,16 +360,22 @@ schema.
 | **Changes** | Per-file history — added, replaced, deleted, failed — filterable by pair and time. |
 | **Events** | Scan started/finished with duration, sync finished, DB replaced, DB skipped (locked), update applied, restart, error, deletion guard tripped. |
 | **Bandwidth** | Per-minute buckets, rolled up to hourly after ~7 days and daily after ~90 — otherwise the table grows without bound. A time series, plus the hour-of-day cumulative, best drawn as a 7×24 heatmap so the weekday/weekend shape is visible. |
-| **Config** | Everything in §6, with an audit trail. |
-| **Diagnostics** | WireGuard handshake age and endpoint, RTT, a throughput probe, reachability of each remote reported against the `\\host\share\path` it actually reached, a directory-listing explorer for any remote's tree, free space, "explain plan" per pair, live log tail. |
+| **Settings pages** | Everything in §6, with an audit trail, and next to each group of settings the diagnostics that belong to it (below). |
 
-Config is one item in that nav and one route, but not one page: the settings groups are split over
-nine tabs — Connection, Remotes, Schedule, Pairs, Transfer, jCC, Notifications, System, Audit — each holding
-its own draft and its own save bar, so saving on one tab can never rewrite a field on another. A
-route-to-group table is the single place membership is written down, and a group no tab claims lands
+The settings are not one view but ten pages in the same tab bar as the four above — Connection,
+Remotes, Schedule, Pairs, Transfer, jCC, Notifications, Update, System, Audit — each holding its own
+draft and its own save bar, so saving on one page can never rewrite a field on another. There is no
+separate diagnostics view; each check lives on the page whose settings it tests: the tunnel's
+handshake age, endpoint, addresses and peers on **Connection**; RTT, a throughput probe and a
+directory-listing explorer on **Remotes**, beside each remote's reachability reported against the
+`\\host\share\path` it actually reached; free space and "explain plan" per pair on **Pairs**; the
+NFC-normalized name count on **Transfer**; the notification conditions on **Notifications**; the
+self-update panel on **Update**; the live log tail and the data directory on **System**. A
+page-to-group table is the single place membership is written down, and a group no page claims lands
 on System rather than disappearing, which is what keeps a key added on the Go side from falling out
-of the dashboard unnoticed. Pairs and Audit have no save bar: a pair is a record saved one at a
-time, and the audit trail is read-only.
+of the dashboard unnoticed. Remotes, Pairs and Audit have no save bar: a remote and a pair are records
+saved one at a time, and the audit trail is read-only; the notification targets on Notifications are
+records of the same kind.
 
 **Actions**: trigger scan, trigger sync, pause/resume, approve a guarded deletion, force a DB
 replace, roll back a DB backup, check for update.
@@ -424,13 +430,16 @@ never emit one per file. Everything is coalesced to at most one message per *syn
 clears.
 
 **`msg_id` is an idempotency key**, so use it rather than tracking sent-state locally: a deterministic
-hash of `(event kind, pair, day)` makes a retry after a network blip free and makes a repeated daily
+hash of `(event kind, pair, day, target)` makes a retry after a network blip free and makes a repeated daily
 alert collapse on the server side. Belt and braces against the quota.
 
-Configurable in the dashboard: `user_id`, `user_key`, `channel`, `sender_name`, and a per-event
-toggle over:
+Configurable in the dashboard: any number of **targets**, each an SCN account with its own
+`user_id`, `user_key`, `channel`, `sender_name`, an enabled switch, and its own choice of topics
+from the list below. A notification goes to every enabled target that chose its topic; the edge
+state that decides whether there is anything to send is global, not per target. The test button
+sends to one target and ignores its topics and its switch.
 
-| Event | Default | Priority |
+| Topic | Default for a new target | Priority |
 |---|---|---|
 | Sync run failed, or finished with failures | on | 1 |
 | Deletion guard tripped, awaiting approval | on | 2 |
@@ -448,19 +457,19 @@ A failed notification is written to `events` and never fails a sync — it is te
 ## 5. Self-update
 
 "Update in place without restarting docker" is not literally possible — the kernel holds the
-executable's inode. What is possible gives exactly the desired property, and in the usual setup the
-update binary lives on an SMB share the mirror already reads, so it needs nothing new on user 1's
-side:
+executable's inode. What is possible gives exactly the desired property. The binary is published
+to an ordinary web server (`make release` uploads it to a Nextcloud public share), and the mirror
+fetches it directly over the host's network — not through the tunnel, and without any remote:
 
-1. Stat the binary and compare its mtime against the build timestamp compiled in via `-ldflags`.
-   Newer ⇒ update. No version file, no manifest — literally "is the file there newer than mine".
-   `update.url` is a share-relative path (`dist/jcc-mirror-amd64`) in the usual form, read off the
-   remote `update.remote` names — the first remote when it is empty — through the same client the
-   mirror uses for it; an absolute `http(s)` URL is fetched over the tunnel instead, with that
-   remote's account, and there the same comparison is a `HEAD` and its `Last-Modified`. Empty
-   switches updating off.
+1. `HEAD` the binary and compare its `Last-Modified` against the build timestamp compiled in via
+   `-ldflags` (or, once an update is installed, against the `Last-Modified` of that one). Newer ⇒
+   update. No version file, no manifest — literally "is the file there newer than mine".
+   `update.url` must be an `http://` or `https://` URL; a server that answers without a
+   `Last-Modified` is an error, not "nothing newer". Credentials, if the server wants any, go in the
+   URL's userinfo and are sent as Basic auth; everywhere the URL is shown or recorded — the panel,
+   events, logs, the state file — the password is masked. Empty switches updating off.
 2. Download to `/data/bin/jcc-mirror.new` and check it is plausible before trusting it: the size
-   matches what the stat said, and the first four bytes are the ELF magic. This is not signing — it
+   matches the `Content-Length` of the `HEAD`, and the first four bytes are the ELF magic. This is not signing — it
    is catching a truncated download or an HTML error page saved as a binary, which is a different
    and much more likely failure than a malicious one.
 3. Smoke-test: run `jcc-mirror.new --version` as a subprocess and require a sane exit.
@@ -470,8 +479,8 @@ side:
 
 Safety net: the container entrypoint is a three-line supervisor that restores `jcc-mirror.prev` if
 the new binary exits non-zero within 60 s of a self-update. Steps 2, 3 and the supervisor are the
-whole trust story, and they are aimed at corruption rather than tampering — the transport is a
-private tunnel to a machine you control. Auto-update is a toggle; when off, the dashboard shows
+whole trust story, and they are aimed at corruption rather than tampering — the binary comes from
+a server you control, over TLS when the URL is `https`. Auto-update is a toggle; when off, the dashboard shows
 "update available" with a button.
 
 ---
@@ -533,15 +542,16 @@ is saved. Nothing has to be known before the process starts.
   password, optional NTLM domain}`. They are rows of their own, like the pairs, rather than
   settings. The password is stored in plaintext and never handed out by the API, which says only
   whether one is set — it is a read-only account reached over a private tunnel, so plaintext at rest
-  is proportionate. The first remote is the default wherever none is named: the diagnostics and
-  `update.remote`. A remote cannot be removed while a pair still reads from it.
+  is proportionate. The first remote is the default wherever none is named, which is the
+  diagnostics. A remote cannot be removed while a pair still reads from it.
 - **Transfer**: chunk count and size, retry and backoff, free-space reserve, walk concurrency.
 - **jCC**: DB directory, DB name, lock staleness threshold, backup retention.
-- **Update**: where the binary comes from — a share-relative path, which is the usual form, or an
-  absolute URL — and the remote it is read from or fetched with (`update.remote`, the first when
-  empty), auto or manual, check interval.
-- **Notifications**: SCN `user_id`, `user_key`, `channel`, `sender_name`, and the per-event toggles
-  from §4.1.
+- **Update**: the `http(s)` URL the binary is fetched from (empty is off), auto or manual, check
+  interval.
+- **Notifications**: the targets of §4.1 — `{id, name, user_id, user_key, channel, sender_name,
+  enabled, topics}` — rows of their own like the remotes, with the user key stored in plaintext and
+  never handed out by the API. The tunnel-down grace period is the one notification setting left in
+  the config table.
 - **Retention**: `events` and `changes` rows, default one year.
 
 **Dry run**: every plan can be computed and displayed — N adds, M deletes, X GB, estimated duration
@@ -557,6 +567,7 @@ counters, and keeps the complete list — latest run per pair, in memory, paged 
 ```
 config(key, value, updated_at)            -- with config_audit(key, old, new, ts)
 remotes(id, name, host, share, path, username, password, domain)  -- one per share
+notify_targets(id, name, user_id, user_key, channel, sender, enabled, events)  -- one per SCN account
 pairs(..., remote_id, ...)                -- the remote it reads from; NULL is none yet
 files(pair_id, relpath, size, mtime, hash, state, verified_at)   -- local truth
 manifest(pair_id, relpath, size, mtime, is_dir, seen_at)         -- last remote walk
@@ -618,7 +629,7 @@ Setup elsewhere, once:
 | M3 | Scheduler + limiter: 7×24 grid, caps, window boundaries mid-transfer, free-space preflight. | |
 | M4 | Deletion + guards: mirror mode, threshold, quarantine, retention, non-empty assertion. | Deliberately after M2/M3 — run additive-only until the diff is trusted. |
 | M5 | jCC pair: hard exclusions, lock gate with the re-check, staged rename, numbered backups + rollback. | Small once M2 is solid. |
-| M6 | Dashboard: Angular + embed, SSE, six views, the config tabs, bandwidth rollups, actions, SCN notifications. | Notifications ship with the dashboard rather than later — until then a stopped sync is invisible. |
+| M6 | Dashboard: Angular + embed, SSE, the live views and the settings pages, bandwidth rollups, actions, SCN notifications. | Notifications ship with the dashboard rather than later — until then a stopped sync is invisible. |
 | M7 | Self-update: mtime check, sanity checks, re-exec, supervisor fallback. | Last — a broken updater is the one bug that is hard to recover from remotely. |
 
 ---
@@ -628,8 +639,7 @@ Setup elsewhere, once:
 Not architectural — numbers and paths needed while building, not decisions that change the design.
 
 1. **Which directories are pairs**, and what are the paths on each side? Media, `ClipCornDB/`, the
-   jClipCorn program directory, and `dist/` inside the exported share for the update binary —
-   anything else?
+   jClipCorn program directory — anything else?
 2. **Does the whole ~30 TB fit** on user 2's NAS? If not, path-glob excludes are the only lever.
 3. **Does the rootserver have a monthly traffic allowance?** Everything hairpins through it, so its
    limit — not either NAS's line — is what the bandwidth schedule has to respect.

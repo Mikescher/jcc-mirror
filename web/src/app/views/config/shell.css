@@ -11,33 +11,3 @@
   margin: 0;
   max-width: 62rem;
 }
-
-.tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  margin-top: 0.35rem;
-  padding: 0;
-}
-
-.tabs a {
-  color: var(--muted);
-  text-decoration: none;
-  font-size: 0.85rem;
-  font-weight: 600;
-  padding: 0.3rem 0.7rem;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  white-space: nowrap;
-}
-
-.tabs a:hover {
-  color: var(--fg);
-  border-color: var(--muted);
-}
-
-.tabs a.active {
-  color: var(--accent-fg);
-  background: var(--accent);
-  border-color: var(--accent);
-}

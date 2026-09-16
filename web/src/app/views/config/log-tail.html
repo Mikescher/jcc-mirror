@@ -1,0 +1,23 @@
+<section class="panel">
+  <div class="spread">
+    <h3>Log</h3>
+    <label class="check">
+      <input
+        type="checkbox"
+        [checked]="follow()"
+        (change)="follow.set($any($event.target).checked)"
+      />
+      <span>Follow</span>
+    </label>
+  </div>
+
+  <div class="mono log" #tail>
+    @for (l of lines(); track l.seq) {
+      <div [class]="level(l)">{{ fmt.timeOnly(l.ts) }} {{ l.level }} {{ l.text }}</div>
+    } @empty {
+      <div class="dim">Nothing has been logged since the daemon started.</div>
+    }
+  </div>
+
+  <ng-content />
+</section>

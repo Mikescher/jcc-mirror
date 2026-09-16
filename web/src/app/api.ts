@@ -7,6 +7,8 @@ import type {
   DiagnosticsView,
   DryRunPage,
   EventRow,
+  NotifyTarget,
+  NotifyTopic,
   Job,
   Pair,
   PairView,
@@ -111,6 +113,8 @@ export class Api {
   remoteList = (path: string, remote?: number) =>
     this.get<RemoteListing>('/api/remote/list', { path, remote });
   update = () => this.get<UpdateStatus>('/api/update');
+  notifyTopics = () => this.get<NotifyTopic[]>('/api/notify/topics');
+  notifyTargets = () => this.get<NotifyTarget[]>('/api/notify/targets');
 
   events(filter: { limit?: number; kind?: string[]; level?: string[]; pair?: number } = {}) {
     const url = new URL('/api/events', location.origin);
@@ -137,7 +141,10 @@ export class Api {
     return this.request<Job[]>(url.pathname + url.search, { method: 'GET' });
   }
 
-  dryRun(pair: number, filter: { op?: string[]; q?: string; offset?: number; limit?: number } = {}) {
+  dryRun(
+    pair: number,
+    filter: { op?: string[]; q?: string; offset?: number; limit?: number } = {},
+  ) {
     const url = new URL('/api/runs/dryrun', location.origin);
     url.searchParams.set('pair', String(pair));
     if (filter.q) url.searchParams.set('q', filter.q);
@@ -166,9 +173,18 @@ export class Api {
 
   probeRemote = (remote?: number) => this.post<RemoteProbe>('/api/remote/probe', { remote });
 
-  /** Ignores the per-event toggles: pressing it is the request. Without it a
-   *  mistyped user key means notifications silently never arrive. */
-  testNotification = () => this.post<{ sent: boolean }>('/api/notify/test');
+  /** Sends to that one target, ignoring its topics and whether it is enabled:
+   *  pressing it is the request. Without it a mistyped user key means
+   *  notifications silently never arrive. */
+  testNotification = (id: number) => this.post<{ sent: boolean }>('/api/notify/test', { id });
+  createNotifyTarget = (fields: Record<string, unknown>) =>
+    this.post<NotifyTarget>('/api/notify/targets', fields);
+  /** Sends only what changed. A blank or absent user key keeps the stored one;
+   *  `events` replaces the whole set. */
+  updateNotifyTarget = (fields: Record<string, unknown>) =>
+    this.post<NotifyTarget>('/api/notify/targets/update', fields);
+  deleteNotifyTarget = (id: number) =>
+    this.post<NotifyTarget>('/api/notify/targets/delete', { id });
   /** An empty target pings the chosen remote's host. */
   ping = (target?: string, remote?: number) =>
     this.post<{ target: string; millis: number }>('/api/diagnostics/ping', { target, remote });

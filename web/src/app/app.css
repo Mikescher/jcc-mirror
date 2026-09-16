@@ -21,6 +21,14 @@ nav {
   padding-bottom: 0 !important;
 }
 
+/* Between the live views and the settings pages. */
+nav .sep {
+  align-self: stretch;
+  width: 1px;
+  margin: 0.35rem 0;
+  background: var(--line);
+}
+
 nav a {
   color: var(--muted);
   text-decoration: none;

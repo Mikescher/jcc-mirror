@@ -21,8 +21,8 @@ import (
 // this is the window the supervisor's safety net covers (DESIGN.md §5).
 const confirmAfter = 60 * time.Second
 
-// checkTimeout bounds a HEAD of the share, and applyTimeout the download, the
-// smoke test and the rename together. An update is never urgent, but it must not
+// checkTimeout bounds a HEAD of the binary URL, and applyTimeout the download,
+// the smoke test and the rename together. An update is never urgent, but it must not
 // be able to sit on a connection for an afternoon either.
 const (
 	checkTimeout = 30 * time.Second
@@ -30,8 +30,8 @@ const (
 )
 
 // firstCheckDelay keeps the update check out of the first seconds of a boot,
-// where the tunnel is still handshaking and every request to the publisher fails
-// for a reason that has nothing to do with updates.
+// where the network may not be up yet and a failure has nothing to do with
+// updates.
 const firstCheckDelay = 2 * time.Minute
 
 // updates is what the last check found. It is in memory because it is a cache of
@@ -48,7 +48,7 @@ type updates struct {
 	busy      bool
 }
 
-// UpdateStatus is the Update panel: what is running, what the share has, and
+// UpdateStatus is the Update panel: what is running, what the server has, and
 // which of the two buttons makes sense right now.
 type UpdateStatus struct {
 	Version    string     `json:"version"`
@@ -77,18 +77,18 @@ type UpdateStatus struct {
 	CanRollBack bool          `json:"canRollBack"`
 }
 
-// The two refusals that are not failures: the share has nothing newer, or what
+// The two refusals that are not failures: the server has nothing newer, or what
 // it has is the binary a previous attempt had to undo. They are sentinels so the
 // endpoint can answer 409 rather than 502 - a person pressing a button on a
 // mirror that is already current has not hit an upstream fault.
 var (
-	errUpToDate = errors.New("the binary on the share is not newer than this one")
+	errUpToDate = errors.New("the binary at the update URL is not newer than this one")
 	errBlocked  = errors.New("that binary was rolled back once already")
 )
 
 func (a *App) buildTime() time.Time { return update.ParseBuildStamp(a.opts.BuildStamp) }
 
-// UpdateStatus collects the panel without talking to the publisher: it is read on
+// UpdateStatus collects the panel without talking to the server: it is read on
 // every page load, and a check is a request someone has to ask for.
 func (a *App) UpdateStatus(ctx context.Context) UpdateStatus {
 	st := UpdateStatus{Version: a.opts.Version, BuildStamp: a.opts.BuildStamp}
@@ -105,9 +105,7 @@ func (a *App) UpdateStatus(ctx context.Context) UpdateStatus {
 		st.Configured = strings.TrimSpace(values.Get(store.KeyUpdateURL)) != ""
 		st.Auto = values.Bool(store.KeyUpdateAuto)
 		st.Every = values.Duration(store.KeyUpdateInterval).String()
-		// Resolved without the remote client, so the panel still says where it
-		// would fetch from while the tunnel is down.
-		if where, err := a.updateLocation(ctx, values); err == nil {
+		if where, err := a.updateLocation(values); err == nil {
 			st.Source = where
 		}
 	}
@@ -140,71 +138,26 @@ func (a *App) updateReady() bool {
 }
 
 // updateLocation is where the binary would come from, in the form the panel
-// shows it: a web address, or a path on a remote's share prefixed with the
-// remote's name.
-func (a *App) updateLocation(ctx context.Context, values store.Values) (string, error) {
-	url, path, err := update.Locate(values.Get(store.KeyUpdateURL))
+// shows it.
+func (a *App) updateLocation(values store.Values) (string, error) {
+	src, err := a.updateSource(values)
 	if err != nil {
 		return "", err
 	}
-	if path == "" {
-		return url, nil
-	}
-	if rec, err := a.store.ResolveRemote(ctx, values.Get(store.KeyUpdateRemote)); err == nil {
-		return rec.Name + ": " + path, nil
-	}
-	return path, nil
+	return src.Location(), nil
 }
 
-// updateSource is that URL plus what it takes to fetch it: the account of the
-// remote update.remote names and the tunnel's transport, so the download rides
-// the same encrypted path as everything else and the publisher needs nothing new
-// (DESIGN.md §5).
-func (a *App) updateSource(ctx context.Context, values store.Values) (update.Source, error) {
-	rawURL, sharePath, err := update.Locate(values.Get(store.KeyUpdateURL))
+// updateSource is the configured URL, fetched directly over the host's network
+// rather than the tunnel (DESIGN.md §5).
+func (a *App) updateSource(values store.Values) (update.Source, error) {
+	rawURL, err := update.Locate(values.Get(store.KeyUpdateURL))
 	if err != nil {
 		return update.Source{}, err
 	}
-	src := update.Source{URL: rawURL, Path: sharePath}
-
-	ref := strings.TrimSpace(values.Get(store.KeyUpdateRemote))
-	rec, err := a.store.ResolveRemote(ctx, ref)
-	switch {
-	case err == nil:
-		src.Username, src.Password = rec.User, rec.Password
-	case !errors.Is(err, store.ErrNoRemote):
-		return update.Source{}, err
-	case ref != "":
-		// A remote that was named and is gone is a mistake to report, not a reason
-		// to fetch without its account.
-		return update.Source{}, fmt.Errorf("%s: %w", store.KeyUpdateRemote, err)
-	case sharePath != "" && a.opts.RemoteDir == "":
-		return update.Source{}, fmt.Errorf("a share-relative update URL needs a remote to read it from: %w", err)
-	}
-
-	a.mu.Lock()
-	switch {
-	case sharePath != "":
-		src.Share, err = a.remoteLocked(rec.ID)
-	default:
-		// Applied to a web address too: one that only exists through a tunnel that
-		// is down is a slow timeout rather than a clear answer.
-		err = a.tunnelGateLocked()
-	}
-	tr := a.httpTr
-	a.mu.Unlock()
-	if err != nil {
-		return update.Source{}, err
-	}
-	if tr != nil {
-		// No Client.Timeout: the context bounds the whole operation, and a timeout
-		// here would cut a download that is merely slow.
-		src.HTTP = &http.Client{Transport: tr}
-	}
-	return src, nil
+	return update.Source{URL: rawURL}, nil
 }
 
-// CheckUpdate asks the share what it has. It is one HEAD request, and the answer
+// CheckUpdate asks the server what it has. It is one HEAD request, and the answer
 // is remembered rather than acted on: whether to install it is the auto setting's
 // business, or a button's.
 func (a *App) CheckUpdate(ctx context.Context) (update.Release, bool, error) {
@@ -212,7 +165,7 @@ func (a *App) CheckUpdate(ctx context.Context) (update.Release, bool, error) {
 	if err != nil {
 		return update.Release{}, false, err
 	}
-	src, err := a.updateSource(ctx, values)
+	src, err := a.updateSource(values)
 	if err != nil {
 		a.noteCheck(nil, false, "", err)
 		return update.Release{}, false, err
@@ -243,7 +196,7 @@ func (a *App) CheckUpdate(ctx context.Context) (update.Release, bool, error) {
 	if a.noteCheck(&rel, newer, blocked, nil) && newer && blocked == "" {
 		a.log.Infof("update: %s has a binary from %s, newer than this one", rel.URL, rel.ModTime.Format(time.RFC3339))
 		a.Event(ctx, store.LevelInfo, store.KindUpdateFound,
-			"a newer binary is on the share, from "+rel.ModTime.Format(time.RFC3339),
+			"a newer binary is at the update URL, from "+rel.ModTime.Format(time.RFC3339),
 			map[string]any{"url": rel.URL, "size": rel.Size, "auto": values.Bool(store.KeyUpdateAuto)})
 	}
 	return rel, newer && blocked == "", nil
@@ -275,7 +228,7 @@ func (a *App) ApplyUpdate(ctx context.Context, force bool) (update.State, error)
 	if err != nil {
 		return update.State{}, err
 	}
-	src, err := a.updateSource(ctx, values)
+	src, err := a.updateSource(values)
 	if err != nil {
 		return update.State{}, err
 	}
@@ -294,7 +247,7 @@ func (a *App) ApplyUpdate(ctx context.Context, force bool) (update.State, error)
 	}()
 
 	// Re-checked rather than taken from the panel: the panel may be hours old, and
-	// what is about to be installed should be what is on the share now.
+	// what is about to be installed should be what the server has now.
 	rel, newer, err := a.CheckUpdate(ctx)
 	if err != nil {
 		return update.State{}, err
@@ -427,7 +380,7 @@ func (a *App) confirmUpdate(ctx context.Context, state update.State) {
 	}
 }
 
-// updateLoop asks the share for a newer binary on the configured interval, and
+// updateLoop asks the server for a newer binary on the configured interval, and
 // installs it when it was told to. The interval is re-read every round, so a
 // change in the dashboard takes effect without a restart.
 func (a *App) updateLoop(ctx context.Context) {

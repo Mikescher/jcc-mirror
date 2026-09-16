@@ -127,7 +127,7 @@
               <strong>{{ r.pairs.join(', ') }}</strong>
               {{ r.pairs.length === 1 ? 'still reads' : 'still read' }} from it. A remote is only
               removed once no pair does: move {{ r.pairs.length === 1 ? 'it' : 'them' }} to another
-              remote under <a routerLink="/config/pairs">Pairs</a> first.
+              remote under <a routerLink="/pairs">Pairs</a> first.
             </div>
           } @else {
             <div class="note">
@@ -205,3 +205,5 @@
     }
   </div>
 </section>
+
+<config-remote-tools />

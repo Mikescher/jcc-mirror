@@ -1,13 +1,13 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,27 +15,32 @@ import (
 	"blackforestbytes.com/jcc-mirror/update"
 )
 
-// publishBinary puts a release on the publisher's share. It is a copy of the
-// test binary, so it is a real ELF and answers `--version` the way the smoke
-// test needs - which is what lets this exercise the updater rather than a stub.
-func publishBinary(t *testing.T, m *mirror, rel string) {
+// publishBinary serves a release over HTTP and points update.url at it. A nil
+// body serves a copy of the test binary, which is a real ELF and answers
+// `--version` the way the smoke test needs - which is what lets this exercise
+// the updater rather than a stub.
+func publishBinary(t *testing.T, m *mirror, body []byte) {
 	t.Helper()
 
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("find the test binary: %v", err)
-	}
-	body, err := os.ReadFile(exe)
-	if err != nil {
-		t.Fatalf("read the test binary: %v", err)
+	if body == nil {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatalf("find the test binary: %v", err)
+		}
+		if body, err = os.ReadFile(exe); err != nil {
+			t.Fatalf("read the test binary: %v", err)
+		}
 	}
 
-	full := filepath.Join(m.src, filepath.FromSlash(rel))
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(full, body, 0o755); err != nil {
-		t.Fatal(err)
+	mod := time.Now().Add(-time.Minute)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "jcc-mirror", mod, bytes.NewReader(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	if rec := postForm(t, m.h, "/api/config",
+		url.Values{store.KeyUpdateURL: {srv.URL + "/dist/jcc-mirror-amd64"}}); rec.Code != http.StatusOK {
+		t.Fatalf("configure the update URL: %d %s", rec.Code, rec.Body)
 	}
 }
 
@@ -75,12 +80,7 @@ func TestUpdateIsOffUntilItIsConfigured(t *testing.T) {
 // main loop waits on.
 func TestUpdateInstallsAndAsksForTheRestart(t *testing.T) {
 	m := newMirror(t)
-	publishBinary(t, m, "dist/jcc-mirror-amd64")
-
-	if rec := postForm(t, m.h, "/api/config",
-		url.Values{store.KeyUpdateURL: {"dist/jcc-mirror-amd64"}}); rec.Code != http.StatusOK {
-		t.Fatalf("configure the update URL: %d %s", rec.Code, rec.Body)
-	}
+	publishBinary(t, m, nil)
 
 	if rec := postForm(t, m.h, "/api/update/check", nil); rec.Code != http.StatusOK {
 		t.Fatalf("check: %d %s", rec.Code, rec.Body)
@@ -132,12 +132,7 @@ func TestUpdateInstallsAndAsksForTheRestart(t *testing.T) {
 // error page saved where the binary should be is the shape it usually takes.
 func TestUpdateRefusesWhatIsNotABinary(t *testing.T) {
 	m := newMirror(t)
-	m.write(t, "dist/jcc-mirror-amd64", 4096) // random bytes, no ELF magic
-
-	if rec := postForm(t, m.h, "/api/config",
-		url.Values{store.KeyUpdateURL: {"dist/jcc-mirror-amd64"}}); rec.Code != http.StatusOK {
-		t.Fatalf("configure: %d %s", rec.Code, rec.Body)
-	}
+	publishBinary(t, m, []byte("<html>502 Bad Gateway</html>"))
 
 	rec := postForm(t, m.h, "/api/update/apply", nil)
 	if rec.Code != http.StatusBadGateway {
@@ -159,11 +154,7 @@ func TestUpdateRefusesWhatIsNotABinary(t *testing.T) {
 // again on the next check.
 func TestRolledBackUpdateIsNotFetchedAgain(t *testing.T) {
 	m := newMirror(t)
-	publishBinary(t, m, "dist/jcc-mirror-amd64")
-	if rec := postForm(t, m.h, "/api/config",
-		url.Values{store.KeyUpdateURL: {"dist/jcc-mirror-amd64"}}); rec.Code != http.StatusOK {
-		t.Fatalf("configure: %d %s", rec.Code, rec.Body)
-	}
+	publishBinary(t, m, nil)
 
 	if _, err := m.app.ApplyUpdate(context.Background(), false); err != nil {
 		t.Fatalf("apply: %v", err)

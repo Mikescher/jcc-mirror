@@ -52,7 +52,83 @@
         <dt>excludes</dt>
         <dd class="mono">{{ p.excludes.join(', ') }}</dd>
       }
+      @if (spaceOf(p.id); as d) {
+        <dt>free space</dt>
+        <dd>
+          @if (d.spaceError) {
+            <span class="bad">{{ d.spaceError }}</span>
+          } @else {
+            {{ fmt.bytes(d.space.free) }} free of {{ fmt.bytes(d.space.total) }} · {{ used(d) }}%
+            used
+            <div class="bar"><span [style.width.%]="used(d)"></span></div>
+          }
+        </dd>
+      }
     </dl>
+
+    <div class="row">
+      <button class="small" type="button" [disabled]="!unlocked()" (click)="explain(p)">
+        Explain plan
+      </button>
+      <span class="note">
+        What a sync would do now, counted — it changes nothing and moves nothing. Free space is the
+        volume's, not the directory's: a plan is refused when it would drop below the reserve.
+      </span>
+    </div>
+
+    @if (explainErrors()[p.id]) {
+      <div class="banner">{{ explainErrors()[p.id] }}</div>
+    }
+
+    @if (planOf(p.id); as run) {
+      @if (run.error) {
+        <div class="banner">{{ run.error }}</div>
+      }
+
+      @if (run.plan; as plan) {
+        <div class="cards">
+          <div class="card">
+            <div class="k">Add</div>
+            <div class="v">{{ fmt.comma(plan.add) }}</div>
+            <div class="note">{{ fmt.bytes(plan.addBytes) }}</div>
+          </div>
+          <div class="card">
+            <div class="k">Replace</div>
+            <div class="v">{{ fmt.comma(plan.replace) }}</div>
+            <div class="note">{{ fmt.bytes(plan.replaceBytes) }}</div>
+          </div>
+          <div class="card">
+            <div class="k">Vanished</div>
+            <div class="v">{{ fmt.comma(plan.vanished) }}</div>
+            <div class="note">{{ fmt.bytes(plan.vanishedBytes) }} · {{ plan.mode }}</div>
+          </div>
+          <div class="card">
+            <div class="k">Excluded</div>
+            <div class="v">{{ fmt.comma(plan.excluded) }}</div>
+            <div class="note">dropped, not acted on</div>
+          </div>
+          <div class="card">
+            <div class="k">Free</div>
+            <div class="v">{{ fmt.bytes(plan.free) }}</div>
+            <div class="note">reserve {{ fmt.bytes(plan.reserve) }}</div>
+          </div>
+        </div>
+
+        @if (plan.shortfall > 0) {
+          <div class="banner">
+            It does not fit: {{ fmt.bytes(plan.shortfall) }} short of the reserve.
+          </div>
+        }
+        @if (plan.guard) {
+          <div class="hold">{{ plan.guard }}</div>
+        }
+        <p class="note">
+          Planned {{ fmt.clock(run.startedAt) }} from the walk of {{ fmt.clock(plan.scannedAt) }}.
+        </p>
+      } @else if (!run.error) {
+        <p class="note">The plan is still running.</p>
+      }
+    }
 
     <details>
       <summary>Edit this pair</summary>
@@ -99,7 +175,7 @@
           </select>
           <span class="help">
             The share it reads from. Remotes are set up under
-            <a routerLink="/config/remotes">Remotes</a>.
+            <a routerLink="/remotes">Remotes</a>.
           </span>
         </label>
         <label class="field">
@@ -268,8 +344,8 @@
   </p>
   @if (!remotes().length) {
     <div class="hold">
-      There are no remotes yet. Add one under <a routerLink="/config/remotes">Remotes</a> first: a
-      pair without one is stored, but nothing runs for it.
+      There are no remotes yet. Add one under <a routerLink="/remotes">Remotes</a> first: a pair
+      without one is stored, but nothing runs for it.
     </div>
   }
 

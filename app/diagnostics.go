@@ -28,9 +28,9 @@ const probeTimeout = 30 * time.Second
 // larger sample would only take longer to say the same thing.
 const throughputCap = 256 << 20
 
-// DiagnosticsView is what the Diagnostics view is drawn from. The tunnel, the
-// peers and the remotes are already in Status; what is added here is the state
-// nothing else reports (DESIGN.md §4).
+// DiagnosticsView is what the settings pages' diagnostics panels are drawn
+// from. The tunnel, the peers and the remotes are already in Status; what is
+// added here is the state nothing else reports (DESIGN.md §4).
 type DiagnosticsView struct {
 	Status  Status              `json:"status"`
 	Pairs   []PairDiagnostics   `json:"pairs"`

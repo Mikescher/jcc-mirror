@@ -1,0 +1,15 @@
+/* The tail is a window, not a page that grows: a box that grows pushes what is
+   under it off the screen and the log never stops. */
+.log {
+  max-height: 28rem;
+  overflow-y: auto;
+  padding: 0.5rem 0.7rem;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.log > div {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

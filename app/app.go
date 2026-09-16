@@ -124,12 +124,8 @@ type App struct {
 	remotes    map[int64]*remoteClient
 	remotesTun *wg.Tunnel
 	// local is Options.RemoteDir's directory, which stands in for every remote.
-	local    Remote
-	localErr error
-	// httpTr is the metered transport through the tunnel. No remote uses it - it
-	// is what the self-updater downloads over when the binary is served by HTTP
-	// rather than sitting on a share.
-	httpTr    *http.Transport
+	local     Remote
+	localErr  error
 	wantTun   bool // the tunnel is configured, whether or not it is currently open
 	up        bool // last reported tunnel state, so events fire on the edge only
 	downSince time.Time
@@ -220,10 +216,6 @@ func (a *App) Close(ctx context.Context) {
 		a.closeRemoteLocked(id)
 	}
 	a.closeTunnelLocked()
-	if a.httpTr != nil {
-		a.httpTr.CloseIdleConnections()
-		a.httpTr = nil
-	}
 }
 
 // awaitBackground waits for the run and the notifications it produced to finish
@@ -283,13 +275,6 @@ func (a *App) Reload(ctx context.Context) {
 	default:
 		a.openTunnelLocked(ctx, cfg)
 	}
-
-	// The updater's own transport, which is HTTP and has nothing to do with the
-	// remotes: it exists whenever the tunnel does.
-	if a.httpTr != nil {
-		a.httpTr.CloseIdleConnections()
-	}
-	a.httpTr = a.meteredTransportLocked()
 
 	a.reconcileRemotesLocked(remotes)
 }

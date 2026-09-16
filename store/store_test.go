@@ -27,7 +27,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first open: %v", err)
 	}
-	if _, err := s.ConfigSet(ctx, map[string]string{KeyNotifyChannel: "ro"}, "test"); err != nil {
+	if _, err := s.ConfigSet(ctx, map[string]string{KeyJCCDBDir: "ro"}, "test"); err != nil {
 		t.Fatalf("ConfigSet: %v", err)
 	}
 	s.Close()
@@ -38,7 +38,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 	defer s.Close()
 
-	got, err := s.ConfigGet(ctx, KeyNotifyChannel)
+	got, err := s.ConfigGet(ctx, KeyJCCDBDir)
 	if err != nil {
 		t.Fatalf("ConfigGet: %v", err)
 	}
@@ -121,5 +121,44 @@ func TestSMBMigrationLeavesATrail(t *testing.T) {
 	}
 	if len(events) != 1 || !strings.Contains(events[0].Message, stale) {
 		t.Fatalf("the old URL was dropped without a trail: %+v", events)
+	}
+}
+
+// TestUpdateHTTPMigration: update.remote goes, and so does an update.url that is
+// a path on the share, while an http(s) one stays.
+func TestUpdateHTTPMigration(t *testing.T) {
+	ctx := context.Background()
+
+	body, err := migrationFS.ReadFile("migrations/0010_update_http.sql")
+	if err != nil {
+		t.Fatalf("read the migration: %v", err)
+	}
+
+	for url, keep := range map[string]bool{
+		"dist/jcc-mirror-amd64":        false,
+		"  HTTPS://cloud.example/bin":  true,
+		"http://10.13.13.2/jcc-mirror": true,
+	} {
+		s := newStore(t)
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO config (key, value, updated_at) VALUES ('update.remote', 'publisher', 0), ('update.url', ?, 0)`, url); err != nil {
+			t.Fatalf("plant the rows: %v", err)
+		}
+		if _, err := s.db.ExecContext(ctx, string(body)); err != nil {
+			t.Fatalf("apply the migration: %v", err)
+		}
+
+		var remotes, urls int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT count(*) FILTER (WHERE key = 'update.remote'), count(*) FILTER (WHERE key = 'update.url') FROM config`).
+			Scan(&remotes, &urls); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if remotes != 0 {
+			t.Errorf("%q: update.remote survived", url)
+		}
+		if (urls == 1) != keep {
+			t.Errorf("%q: %d update.url rows left, want kept = %v", url, urls, keep)
+		}
 	}
 }

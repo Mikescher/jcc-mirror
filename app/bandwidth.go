@@ -82,32 +82,6 @@ func (a *App) meteredDialLocked() smb.DialFunc {
 	}
 }
 
-// meteredTransportLocked is the HTTP that is left: the self-updater's download
-// when the binary is served by a web server rather than sitting on the share. It
-// goes through the tunnel when there is one, and is counted like everything else.
-func (a *App) meteredTransportLocked() *http.Transport {
-	var tr *http.Transport
-	if a.tunnel != nil {
-		tr = a.tunnel.Transport()
-	} else {
-		tr = http.DefaultTransport.(*http.Transport).Clone()
-	}
-
-	dial := tr.DialContext
-	if dial == nil {
-		d := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-		dial = d.DialContext
-	}
-	tr.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		conn, err := dial(ctx, network, address)
-		if err != nil {
-			return nil, err
-		}
-		return &meteredConn{Conn: conn, m: &a.meter}, nil
-	}
-	return tr
-}
-
 // maintenanceLoop keeps the tables from growing without bound: the bandwidth
 // series is rolled up, and the event and change logs are pruned to their
 // retention (DESIGN.md §6).

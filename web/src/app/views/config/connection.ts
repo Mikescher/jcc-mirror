@@ -2,24 +2,26 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { Api } from '../../api';
 import { Live } from '../../live';
+import * as fmt from '../../format';
 import { ConfigForm } from './form';
 import { ConfigGroupCard } from './group';
 import { ConfigSaveBar } from './save-bar';
 import { ConfigStore } from './store';
 
-/** The tunnel every remote is reached through, and the wg-quick importer that
- *  fills its fields in one paste. */
+/** The tunnel every remote is reached through: how it is doing, its settings,
+ *  and the wg-quick importer that fills them in one paste. */
 @Component({
   selector: 'app-config-connection',
   imports: [ConfigGroupCard, ConfigSaveBar, RouterLink],
   templateUrl: './connection.html',
-  styleUrl: './page.css',
+  styleUrls: ['./page.css', './tools.css'],
   providers: [ConfigForm],
 })
 export class ConfigConnectionPage {
   private readonly api = inject(Api);
   private readonly store = inject(ConfigStore);
   readonly live = inject(Live);
+  readonly fmt = fmt;
   readonly unlocked = this.api.unlocked;
 
   readonly groups = computed(() => this.store.groupsFor('connection'));

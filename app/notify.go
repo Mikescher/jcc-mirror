@@ -32,69 +32,72 @@ var notifyPriority = map[string]int{
 	store.NotifyDBReplaced:    0,
 }
 
-// Notify sends one push through SCN, if that kind is switched on and the account
-// is configured. Everything about it is best-effort: a failure is recorded as an
-// event and swallowed, because a notification is telemetry and never a step of
-// the operation that produced it (DESIGN.md §4.1).
+// Notify sends one push through SCN to every enabled target that wants that
+// kind. Everything about it is best-effort: a failure is recorded as an event
+// and swallowed, because a notification is telemetry and never a step of the
+// operation that produced it (DESIGN.md §4.1).
 //
 // Coalescing is the caller's job, not this function's: nothing here may be
 // called per file.
 func (a *App) Notify(ctx context.Context, kind string, pairID int64, title, content string) {
-	values, err := a.store.Config(ctx)
+	if _, ok := store.NotifyTopicFor(kind); !ok {
+		return
+	}
+
+	targets, err := a.store.NotifyTargets(ctx)
 	if err != nil {
 		a.log.Errorf("notify: %v", err)
 		return
 	}
 
-	toggle, ok := store.NotifyToggle(kind)
-	if !ok || !values.Bool(toggle) {
-		return
-	}
+	day := time.Now().Format(time.DateOnly)
+	for _, target := range targets {
+		if !target.Enabled || !target.Wants(kind) {
+			continue
+		}
 
-	cfg := notify.Config{
-		UserID:  values.Get(store.KeyNotifyUserID),
-		UserKey: values.Get(store.KeyNotifyUserKey),
-		Channel: values.Get(store.KeyNotifyChannel),
-		Sender:  values.Get(store.KeyNotifySender),
-	}
-	if !cfg.Enabled() {
-		return
-	}
+		msg := notify.Message{
+			Title:    title,
+			Content:  content,
+			Priority: notifyPriority[kind],
+			// The idempotency key of DESIGN.md §4.1: with the day in it a retry
+			// after a network blip costs nothing and a condition that recurs all
+			// day collapses to one message on the server side. The target is in
+			// it so that two targets on one account are still two messages.
+			MsgID: notify.MsgID(kind, fmt.Sprint(pairID), day, fmt.Sprint(target.ID)),
+		}
 
-	msg := notify.Message{
-		Title:    title,
-		Content:  content,
-		Priority: notifyPriority[kind],
-		// The idempotency key of DESIGN.md §4.1: with the day in it a retry after
-		// a network blip costs nothing and a condition that recurs all day
-		// collapses to one message on the server side.
-		MsgID: notify.MsgID(kind, fmt.Sprint(pairID), time.Now().Format(time.DateOnly)),
+		// Detached from the caller: a sync that is being cancelled still gets to
+		// say that it failed. Counted, so a shutdown waits for the event it may
+		// write.
+		a.bg.Add(1)
+		go func() {
+			defer a.bg.Done()
+			a.send(target, msg, kind, pairID)
+		}()
 	}
-
-	// Detached from the caller: a sync that is being cancelled still gets to say
-	// that it failed. Counted, so a shutdown waits for the event it may write.
-	a.bg.Add(1)
-	go func() {
-		defer a.bg.Done()
-		a.send(cfg, msg, kind, pairID)
-	}()
 }
 
-func (a *App) send(cfg notify.Config, msg notify.Message, kind string, pairID int64) {
+func notifyConfig(t store.NotifyTarget) notify.Config {
+	return notify.Config{UserID: t.UserID, UserKey: t.UserKey, Channel: t.Channel, Sender: t.Sender}
+}
+
+func (a *App) send(target store.NotifyTarget, msg notify.Message, kind string, pairID int64) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(a.runContext()), sendTimeout)
 	defer cancel()
 
-	err := a.notifier.Send(ctx, cfg, msg)
+	err := a.notifier.Send(ctx, notifyConfig(target), msg)
 	if err == nil {
-		a.log.Debugf("notify: sent %q", msg.Title)
+		a.log.Debugf("notify: sent %q to %q", msg.Title, target.Name)
 		return
 	}
 
-	level, message := store.LevelWarn, "notification could not be sent: "+err.Error()
+	level := store.LevelWarn
+	message := fmt.Sprintf("notification to %q could not be sent: %v", target.Name, err)
 	if errors.Is(err, notify.ErrQuota) {
 		// Not a fault to fix, and the reason everything here is coalesced: the
 		// quota is a finite resource and it has run out for today.
-		message = "notification not sent: the daily SCN quota is exhausted"
+		message = fmt.Sprintf("notification to %q not sent: the daily SCN quota is exhausted", target.Name)
 	}
 
 	id := pairID
@@ -103,25 +106,24 @@ func (a *App) send(cfg notify.Config, msg notify.Message, kind string, pairID in
 		pair = nil
 	}
 	a.eventFor(ctx, pair, level, store.KindError, message,
-		map[string]any{"notification": kind, "title": msg.Title})
+		map[string]any{"notification": kind, "title": msg.Title, "target": target.ID, "targetName": target.Name})
 }
 
-// handleTestNotification sends one message on request. It is the only path that
-// ignores the per-event toggles, because an operator pressing it has said what
-// they want - and without it a mistyped user key means notifications silently
-// never arrive, which is the exact failure the push channel exists to prevent.
+// handleTestNotification sends one message to the target the request names. It
+// is the only path that ignores the target's topics and its enabled switch,
+// because an operator pressing it has said what they want - and without it a
+// mistyped user key means notifications silently never arrive, which is the
+// exact failure the push channel exists to prevent.
 func (a *App) handleTestNotification(w http.ResponseWriter, r *http.Request) {
-	values, err := a.store.Config(r.Context())
+	fields, err := readFields(w, r)
 	if err != nil {
-		a.fail(w, r, http.StatusInternalServerError, err)
+		a.fail(w, r, http.StatusBadRequest, err)
 		return
 	}
-
-	cfg := notify.Config{
-		UserID:  values.Get(store.KeyNotifyUserID),
-		UserKey: values.Get(store.KeyNotifyUserKey),
-		Channel: values.Get(store.KeyNotifyChannel),
-		Sender:  values.Get(store.KeyNotifySender),
+	target, err := a.notifyTargetFromFields(r.Context(), fields)
+	if err != nil {
+		a.fail(w, r, notifyTargetErrorCode(err), err)
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), sendTimeout)
@@ -129,13 +131,14 @@ func (a *App) handleTestNotification(w http.ResponseWriter, r *http.Request) {
 
 	// No msg_id: two tests in one day are two questions, and collapsing them on
 	// the server would make the second one look like it worked.
-	err = a.notifier.Send(ctx, cfg, notify.Message{
+	err = a.notifier.Send(ctx, notifyConfig(target), notify.Message{
 		Title:   "jcc-mirror is configured",
 		Content: "A test notification from " + a.opts.Version + ".",
 	})
 	switch {
 	case errors.Is(err, notify.ErrDisabled):
-		a.fail(w, r, http.StatusBadRequest, errors.New("no SCN account is configured: fill in the user id and user key"))
+		a.fail(w, r, http.StatusBadRequest,
+			fmt.Errorf("notification target %q has no SCN user id and user key", target.Name))
 	case err != nil:
 		a.fail(w, r, http.StatusBadGateway, err)
 	default:
@@ -149,7 +152,7 @@ func (a *App) handleTestNotification(w http.ResponseWriter, r *http.Request) {
 // (DESIGN.md §4.1).
 func (a *App) NotifyEdge(ctx context.Context, kind string, pairID int64, active bool, onset, cleared string) {
 	// The state that is recorded is the state that is true, not the one that
-	// would be announced if it were: the Diagnostics view reads it back, and a
+	// would be announced if it were: the Notifications page reads it back, and a
 	// healthy tunnel described as down is worse than no description.
 	title := onset
 	if !active {

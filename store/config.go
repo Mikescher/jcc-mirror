@@ -54,23 +54,9 @@ const (
 	KeyJCCLockStale = "jcc.lock_stale"
 	KeyJCCBackups   = "jcc.backups"
 
-	KeyNotifyUserID  = "notify.user_id"
-	KeyNotifyUserKey = "notify.user_key"
-	KeyNotifyChannel = "notify.channel"
-	KeyNotifySender  = "notify.sender"
-
-	KeyNotifySyncFailed    = "notify.on_sync_failed"
-	KeyNotifySyncOK        = "notify.on_sync_ok"
-	KeyNotifyDeleteBlocked = "notify.on_delete_blocked"
-	KeyNotifySpaceLow      = "notify.on_space_low"
-	KeyNotifyLockStale     = "notify.on_lock_stale"
-	KeyNotifyTunnelDown    = "notify.on_tunnel_down"
-	KeyNotifyDBReplaced    = "notify.on_db_replaced"
-	KeyNotifyUpdate        = "notify.on_update"
-	KeyNotifyTunnelGrace   = "notify.tunnel_grace"
+	KeyNotifyTunnelGrace = "notify.tunnel_grace"
 
 	KeyUpdateURL      = "update.url"
-	KeyUpdateRemote   = "update.remote"
 	KeyUpdateAuto     = "update.auto"
 	KeyUpdateInterval = "update.interval"
 
@@ -79,30 +65,6 @@ const (
 
 	KeyTimezone = "general.timezone"
 )
-
-// NotifyToggle is the setting that decides whether one notification kind is sent
-// at all. Every kind of DESIGN.md §4.1 has one, and a kind with no toggle is
-// never sent - which is what keeps the table below and the notifier's switch from
-// drifting apart.
-func NotifyToggle(kind string) (string, bool) {
-	key, ok := notifyToggles[kind]
-	return key, ok
-}
-
-var notifyToggles = map[string]string{
-	NotifySyncFailed:    KeyNotifySyncFailed,
-	NotifySyncOK:        KeyNotifySyncOK,
-	NotifyDeleteBlocked: KeyNotifyDeleteBlocked,
-	NotifySpaceLow:      KeyNotifySpaceLow,
-	NotifyLockStale:     KeyNotifyLockStale,
-	NotifyTunnelDown:    KeyNotifyTunnelDown,
-	NotifyDBReplaced:    KeyNotifyDBReplaced,
-	// Applied and rolled back are two kinds because they carry different
-	// priorities - one is news, the other is something to look at - but one
-	// toggle, because nobody wants to hear about half of an update.
-	NotifyUpdateApplied:    KeyNotifyUpdate,
-	NotifyUpdateRolledBack: KeyNotifyUpdate,
-}
 
 // SecretMask replaces a secret's value wherever one is shown or recorded. The
 // audit trail says that a password changed, never what it changed to.
@@ -291,73 +253,6 @@ var keyDefs = []KeyDef{
 	},
 
 	{
-		Name: KeyNotifyUserID, Group: "Notifications", Label: "SCN user id",
-		Help:     "The numeric half of the SimpleCloudNotifier credentials. Leave it empty to send no notifications at all.",
-		Validate: validateOptionalInt,
-	},
-	{
-		Name: KeyNotifyUserKey, Group: "Notifications", Label: "SCN user key",
-		Help:   "The other half. It is a pair, not a single key.",
-		Secret: true,
-	},
-	{
-		Name: KeyNotifyChannel, Group: "Notifications", Label: "Channel",
-		Help: "Optional SCN channel, so the mirror's messages can be muted separately from everything else on the account.",
-	},
-	{
-		Name: KeyNotifySender, Group: "Notifications", Label: "Sender name",
-		Help:    "Optional. Which machine the message came from, when more than one thing sends to the same account.",
-		Default: "jcc-mirror",
-	},
-	{
-		Name: KeyNotifySyncFailed, Group: "Notifications", Label: "Notify: sync failed",
-		Help:     "A run that failed, or finished with files it could not transfer. One message per run, never one per file.",
-		Default:  "true",
-		Validate: validateBool,
-	},
-	{
-		Name: KeyNotifySyncOK, Group: "Notifications", Label: "Notify: sync finished cleanly",
-		Help:     "Off by default: a mirror that works is not news, and the daily quota is finite.",
-		Default:  "false",
-		Validate: validateBool,
-	},
-	{
-		Name: KeyNotifyDeleteBlocked, Group: "Notifications", Label: "Notify: deletion awaiting approval",
-		Help:     "A guard stopped a deletion and it is waiting for a person. Until someone answers, the mirror stops shrinking.",
-		Default:  "true",
-		Validate: validateBool,
-	},
-	{
-		Name: KeyNotifySpaceLow, Group: "Notifications", Label: "Notify: free space below the reserve",
-		Help:     "The destination volume no longer has room for what is queued.",
-		Default:  "true",
-		Validate: validateBool,
-	},
-	{
-		Name: KeyNotifyLockStale, Group: "Notifications", Label: "Notify: source lock stale",
-		Help:     "The publisher's lock file has sat unchanged past the jCC threshold, so the database is silently not syncing.",
-		Default:  "true",
-		Validate: validateBool,
-	},
-	{
-		Name: KeyNotifyTunnelDown, Group: "Notifications", Label: "Notify: tunnel down",
-		Help:     "No WireGuard handshake for longer than the grace period below.",
-		Default:  "true",
-		Validate: validateBool,
-	},
-	{
-		Name: KeyNotifyDBReplaced, Group: "Notifications", Label: "Notify: database replaced",
-		Help:     "ClipCornDB.db was copied over. Low priority, but it is the one file whose replacement is worth seeing.",
-		Default:  "true",
-		Validate: validateBool,
-	},
-	{
-		Name: KeyNotifyUpdate, Group: "Notifications", Label: "Notify: self-update",
-		Help:     "A new binary was fetched from the share and put in place, or the supervisor had to put the old one back. The second is the one worth a message.",
-		Default:  "true",
-		Validate: validateBool,
-	},
-	{
 		Name: KeyNotifyTunnelGrace, Group: "Notifications", Label: "Tunnel down grace",
 		Help:     "How long the tunnel may be down before it is worth a message. A rootserver reboot should not wake anyone.",
 		Default:  "15m",
@@ -366,12 +261,8 @@ var keyDefs = []KeyDef{
 
 	{
 		Name: KeyUpdateURL, Group: "Update", Label: "Binary URL",
-		Help:     "Where a newer jcc-mirror is fetched from. A path like \"dist/jcc-mirror-amd64\" is read off the publisher's share, relative to the root of the remote below, which is the usual setup: the binary sits where the mirror already reads, so the publisher needs nothing new. An absolute http(s) URL is fetched over the tunnel instead. Empty switches updating off entirely.",
+		Help:     "Where a newer jcc-mirror is fetched from: an http:// or https:// URL, fetched directly over the internet or LAN, not through the tunnel. Its Last-Modified is compared with the running binary, so the server has to send one. Credentials, if the server wants any, go in the URL as user:password@host. Empty switches updating off entirely.",
 		Validate: validateUpdateURL,
-	},
-	{
-		Name: KeyUpdateRemote, Group: "Update", Label: "Remote",
-		Help: "The remote, by name, that a share-relative binary URL is read from. Its account is also what an http(s) URL is fetched with. Empty is the first remote, which with only one configured is the only answer anyway.",
 	},
 	{
 		Name: KeyUpdateAuto, Group: "Update", Label: "Update automatically",
@@ -381,7 +272,7 @@ var keyDefs = []KeyDef{
 	},
 	{
 		Name: KeyUpdateInterval, Group: "Update", Label: "Check every",
-		Help:     "How often to ask the share whether it has a newer binary. It is one stat, so this can be short; it is checked at startup either way.",
+		Help:     "How often to ask the update URL whether it has a newer binary. It is one HEAD request, so this can be short; it is checked at startup either way.",
 		Default:  "6h",
 		Validate: validateDuration,
 	},
@@ -744,31 +635,12 @@ func validateKeepalive(s string) error {
 	return nil
 }
 
-// validateUpdateURL takes either an absolute URL or a path on the publisher's
-// share. The relative form exists because that is where the binary actually
-// lives, and writing the remote root down a second time is a way for the two to
-// disagree.
+// validateUpdateURL takes an http or https URL. Credentials may sit in its
+// userinfo, which the updater sends as Basic auth.
 func validateUpdateURL(s string) error {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil
-	}
-	if strings.Contains(s, "://") {
-		return validateHTTPURL(s)
-	}
-	if err := validateRelPath(s); err != nil {
-		return err
-	}
-	if strings.HasSuffix(s, "/") {
-		return errors.New("this is a path to one binary, not a directory")
-	}
-	return nil
-}
-
-func validateHTTPURL(s string) error {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return errors.New("required")
 	}
 	u, err := url.Parse(s)
 	if err != nil {
@@ -779,12 +651,6 @@ func validateHTTPURL(s string) error {
 	}
 	if u.Host == "" {
 		return errors.New("no host")
-	}
-	// The username and password are settings of their own. In the URL they would
-	// be echoed by /healthz and by every status read, neither of which masks
-	// anything.
-	if u.User != nil {
-		return errors.New("put the credentials in their own settings, not in the URL")
 	}
 	return nil
 }
@@ -843,15 +709,6 @@ func validatePositiveInt(s string) error {
 		return errors.New("must be at least 1")
 	}
 	return nil
-}
-
-// validateOptionalInt is for a setting whose absence turns a feature off rather
-// than leaving it half-configured.
-func validateOptionalInt(s string) error {
-	if strings.TrimSpace(s) == "" {
-		return nil
-	}
-	return validatePositiveInt(s)
 }
 
 func validatePercent(s string) error {

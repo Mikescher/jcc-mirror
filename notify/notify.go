@@ -43,7 +43,7 @@ var (
 	ErrDisabled = errors.New("notifications are not configured")
 )
 
-// Config is the account half of a notification, held in the config table.
+// Config is the account half of a notification: one notification target.
 type Config struct {
 	UserID  string
 	UserKey string
@@ -98,7 +98,7 @@ func (c *Client) Send(ctx context.Context, cfg Config, m Message) error {
 	}
 	userID, err := strconv.Atoi(strings.TrimSpace(cfg.UserID))
 	if err != nil {
-		return fmt.Errorf("notify.user_id %q is not an integer: %w", cfg.UserID, err)
+		return fmt.Errorf("SCN user id %q is not an integer: %w", cfg.UserID, err)
 	}
 	if strings.TrimSpace(m.Title) == "" {
 		return errors.New("notification has no title")

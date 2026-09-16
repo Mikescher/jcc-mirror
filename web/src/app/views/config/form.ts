@@ -4,16 +4,14 @@ import type { ConfigEntry } from '../../models';
 import { ConfigStore } from './store';
 
 /** Which settings are a checkbox rather than a text field. The registry carries
- *  no type, so it is read off the stored value - every boolean key has a
- *  true/false default - with the notification toggles named as well, since a
- *  text field there is the kind of mistake nobody notices until a message does
- *  not arrive. */
+ *  no type, so it is read off the stored value: every boolean key has a
+ *  true/false default. */
 export function isBoolean(e: ConfigEntry): boolean {
-  return !e.secret && (e.value === 'true' || e.value === 'false' || e.label.startsWith('Notify: '));
+  return !e.secret && (e.value === 'true' || e.value === 'false');
 }
 
 /** ConfigForm is one page's draft. Every config page provides its own, which is
- *  what keeps the eight save bars honest: each holds only the keys its page can
+ *  what keeps the save bars honest: each holds only the keys its page can
  *  edit, so saving here can never rewrite a field on another tab. */
 @Injectable()
 export class ConfigForm {

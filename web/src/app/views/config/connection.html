@@ -1,3 +1,86 @@
+@if (live.status(); as s) {
+  <section class="panel">
+    <div class="spread">
+      <h3>Tunnel status</h3>
+      <span
+        class="pill"
+        [class.ok]="s.tunnel.state === 'up'"
+        [class.warn]="s.tunnel.state === 'connecting'"
+        [class.bad]="s.tunnel.state === 'failed'"
+        [class.dim]="s.tunnel.state === 'unconfigured'"
+      >
+        {{ s.tunnel.state }}
+      </span>
+    </div>
+
+    @if (s.tunnel.error) {
+      <div class="banner">{{ s.tunnel.error }}</div>
+    }
+
+    <div class="cards">
+      <div class="card">
+        <div class="k">Endpoint</div>
+        <div class="v mono">{{ s.tunnel.endpoint || '—' }}</div>
+        <div class="note">the rootserver, not the publisher</div>
+      </div>
+      <div class="card">
+        <div class="k">Our addresses</div>
+        @for (addr of s.tunnel.addresses || []; track addr) {
+          <div class="v mono">{{ addr }}</div>
+        } @empty {
+          <div class="v mono">—</div>
+        }
+      </div>
+      <div class="card">
+        <div class="k">Listen port</div>
+        <div class="v mono">{{ s.tunnel.listenPort || '—' }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Uptime</div>
+        <div class="v">{{ fmt.duration(s.uptimeSeconds) }}</div>
+        <div class="note">{{ s.version }}</div>
+      </div>
+    </div>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Peer</th>
+            <th>Endpoint</th>
+            <th class="num">Handshake</th>
+            <th class="num">Tx</th>
+            <th class="num">Rx</th>
+            <th>Allowed IPs</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (p of s.tunnel.peers || []; track p.publicKey) {
+            <tr>
+              <td class="mono path">{{ p.publicKey }}</td>
+              <td class="mono">{{ p.endpoint || '—' }}</td>
+              <td class="num">
+                @if (p.handshakeAgeSeconds == null) {
+                  <span class="bad">never</span>
+                } @else {
+                  {{ fmt.duration(p.handshakeAgeSeconds) }} ago
+                }
+              </td>
+              <td class="num">{{ fmt.bytes(p.txBytes) }}</td>
+              <td class="num">{{ fmt.bytes(p.rxBytes) }}</td>
+              <td class="mono">{{ (p.allowedIps || []).join(', ') }}</td>
+            </tr>
+          } @empty {
+            <tr class="quiet">
+              <td colspan="6">No peers are configured.</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </section>
+}
+
 <section class="panel import">
   <h3>Import the config the server gave you</h3>
   <p class="note">
@@ -56,12 +139,13 @@
         <dd class="mono break">{{ live.status()?.publicKey || 'not generated yet' }}</dd>
       </dl>
       <p class="note">
-        Derived from the private key above, so it is worth a glance: it has to match the peer entry
-        the WireGuard server holds for this container.
+        Derived from the private key above, and the one thing setup needs on the other side: it has
+        to match the peer entry the WireGuard server holds for this container. Nothing here can
+        reach anything until it does.
       </p>
       <p class="note">
-        The publisher's shares behind the tunnel are set up, and tested, under
-        <a routerLink="/config/remotes">Remotes</a>.
+        The publisher's shares behind the tunnel are set up, pinged and tested under
+        <a routerLink="/remotes">Remotes</a>.
       </p>
     }
   </config-group>

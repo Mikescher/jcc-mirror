@@ -18,6 +18,7 @@ const allKinds: { kind: string; label: string }[] = [
   { kind: 'remote.probe', label: 'Remote probed' },
   { kind: 'pair.changed', label: 'Pair changed' },
   { kind: 'remote.changed', label: 'Remote changed' },
+  { kind: 'notify.changed', label: 'Notification target changed' },
   { kind: 'scan.started', label: 'Scan started' },
   { kind: 'scan.finished', label: 'Scan finished' },
   { kind: 'sync.started', label: 'Sync started' },

@@ -18,12 +18,12 @@ boundary adjusts mid-transfer, and a free-space preflight — M4's deletion behi
 every guard of `DESIGN.md` §2.5 — and M5's jCC pair — hard exclusions that never
 copy the per-user databases, a lock gate on the shared one that is re-checked
 after the copy, and a numbered backup of every database it replaces — there is
-now the **dashboard**: an Angular build compiled into the binary, six views fed
+now the **dashboard**: an Angular build compiled into the binary, four live views and the settings pages fed
 by one Server-Sent Events stream, a per-minute bandwidth series that rolls
 itself up rather than growing without bound, a read-only mode that one button in
 the header lifts, and push notifications over SCN coalesced hard enough to live
 inside a daily quota. And on top of all of it, M7's **self-update**: a binary
-fetched from a share the mirror already reads, checked, smoke-run and
+fetched over plain HTTP(S), checked, smoke-run and
 re-exec'd in place, with a supervisor that puts the old one back if the new one
 will not start.
 
@@ -38,11 +38,11 @@ cd deploy && docker compose up -d && docker compose logs -f
 
 Nothing has to be known before the process starts. The LAN dashboard does not
 depend on the tunnel, so a first boot against an empty database answers on
-`:8080` with the dashboard and an empty Config view:
+`:8080` with the dashboard and empty settings pages:
 
 1. Open `http://<synology>:8080` and press **Unlock**. Do not publish that port
    past the LAN: the dashboard has no authentication of its own.
-2. On **Connection** in Config, paste the client config the rootserver generated
+2. On **Connection**, paste the client config the rootserver generated
    for this container — `[Interface]` private key and all — into the importer. It
    fills every tunnel setting in one go: the private key, the rootserver's public
    key and endpoint, this container's tunnel address, the allowed IPs, DNS, the
@@ -100,10 +100,12 @@ request.
 | `POST /api/trash/restore` (`id`, `path`, optional `day`) | Takes one file back out of the quarantine |
 | `POST /api/runs` (`kind`, `pair`, optional `force`) | Answers as soon as the run has started, never when it has finished. `force` is the lock-gate override |
 | `POST /api/runs/cancel` | Stopping is routine: a walk stays resumable and every transfer keeps its watermark |
-| `GET /api/update` | The self-updater's panel: what is running, what the share has, what the last update did |
+| `GET /api/update` | The self-updater's panel: what is running, what the update URL has, what the last update did |
 | `POST /api/update/check` · `/api/update/apply` (optional `force`) · `/api/update/rollback` | Apply and rollback answer as soon as the binary is in place; the daemon then re-execs, so the next request reaches the new process at the same address |
 | `POST /api/diagnostics/ping` · `/api/diagnostics/throughput` (optional `remote`) | The M0 measurements, from the page rather than a shell |
-| `POST /api/notify/test` | Sends one message, ignoring the per-event toggles, and answers with what SCN said |
+| `GET /api/notify/topics` · `/api/notify/targets` | The topics a target can choose from, with their defaults, and the targets. A target says whether it has a user key and nothing more |
+| `POST /api/notify/targets` · `/api/notify/targets/update` · `/api/notify/targets/delete` | JSON or a form, with `id` naming the target on the last two. `events` is the full list of topics; a blank `userKey` keeps the stored one |
+| `POST /api/notify/test` (`id`) | Sends one message to that target, ignoring its topics and its switch, and answers with what SCN said |
 
 `remote`, where an endpoint takes one, is a remote's id; left out, it is the
 first remote.
@@ -403,7 +405,7 @@ volume is full, and `plan` says so first:
 ## The dashboard
 
 Angular, built into `web/dist` and compiled into the binary with `go:embed`, so
-the deployment stays one file and one volume. Six views, all fed by a single
+the deployment stays one file and one volume. Every page is fed by a single
 Server-Sent Events stream on `/api/stream` — one way, reconnects for free, and it
 survives whatever proxy is in front of it. The frames it carries are the same rows
 that were written to the `events` and `changes` tables, so the live view and the
@@ -415,8 +417,16 @@ history view share a schema rather than agreeing by accident.
 | **Changes** | Per-file history — added, replaced, deleted, failed — filterable by pair and operation. It is the only place one file's fate is recorded. |
 | **Events** | Scans and syncs with their durations, the database replaced or skipped for a lock, deletion guards, tunnel edges, configuration changes, errors. Each row can be expanded into the JSON it carries. |
 | **Bandwidth** | The per-minute series drawn as inline SVG, plus the 7×24 heatmap that makes the weekday/weekend shape visible. Minutes are rolled up to hours after a week and to days after a quarter — a per-minute series kept forever is half a million rows a year. |
-| **Config** | Nine tabs behind the one nav item — connection, remotes, schedule, pairs, transfer, jCC, notifications, system, audit — each with its own draft and its own save bar at the foot of the viewport. The fields are still generated from the key registry, so a key added later costs no HTML; a route-to-group table is the one place a settings group is told which tab it belongs on, and a group no tab claims lands on **System** rather than disappearing. |
-| **Diagnostics** | Handshake age and endpoint, RTT through the tunnel, a throughput probe, the reachability of each remote, a directory-by-directory explorer of any remote's tree, free space per pair, "explain plan", the notification state, the self-update panel and a live log tail. |
+| **Connection** | The tunnel settings and the wg-quick importer, with the tunnel's live state: endpoint, our addresses, listen port, and each peer's handshake age and counters. |
+| **Remotes** | The publisher's shares, each with its reachability and a Test button, plus RTT through the tunnel, a throughput probe and a directory-by-directory explorer of any remote's tree. |
+| **Schedule** · **Transfer** · **jCC** | Their settings groups; Transfer also shows how many names the walk had to normalize to NFC. |
+| **Pairs** | The pairs, each with the free space of its volume and an "explain plan" button. |
+| **Notifications** | The SCN targets, the tunnel grace period, and the conditions currently raised. |
+| **Update** | The self-update settings and panel: what runs, what the URL has, install, install anyway, roll back. |
+| **System** | Retention and timezone, the live log tail and the data directory. |
+| **Audit** | Every configuration change. |
+
+The settings pages sit in the same tab bar as the four live views, each with its own draft and its own save bar at the foot of the viewport. The fields are generated from the key registry, so a key added later costs no HTML; a page-to-group table is the one place a settings group is told which page it belongs on, and a group no page claims lands on **System** rather than disappearing.
 
 Every view is drawn from an open endpoint, the log tail — on
 `GET /api/diagnostics` and as `log` frames on the stream — included; the Unlock
@@ -430,17 +440,20 @@ included.
 
 The dashboard is pull-only, so without a push channel a stale source lock or a
 dead tunnel is invisible until someone goes and looks. **SCN**
-(`simplecloudnotifier.de`) closes that. Fill in the user id and user key under
-**Notifications** in Config; leave them empty and nothing is ever sent.
+(`simplecloudnotifier.de`) closes that. Add a target under **Notifications** in
+Config — an SCN user id and user key, optionally a channel and a sender name, and
+the topics that target wants to hear about. There can be as many targets as there
+are people or channels to tell, each with its own topics and an on/off switch;
+with none, nothing is ever sent.
 
 Two properties of that API shape the whole thing. A `403` means the daily quota is
 exhausted, so notifications are a finite resource and jcc-mirror must never emit
 one per file: everything is coalesced to at most one message per *sync run* or per
 *state transition*. And `msg_id` is an idempotency key, so it is a hash of
-`(kind, pair, day)` rather than sent-state tracked here — a retry after a network
+`(kind, pair, day, target)` rather than sent-state tracked here — a retry after a network
 blip is free, and an alert that recurs all day collapses on the server side.
 
-| Event | Default | Priority | |
+| Topic | Default for a new target | Priority | |
 |---|---|---|---|
 | Sync run failed, or finished with failures | on | 1 | One message per run: "412 files, 2 failed", never two |
 | Deletion guard tripped, awaiting approval | on | 2 | On the edge, and again when it is answered |
@@ -448,12 +461,12 @@ blip is free, and an alert that recurs all day collapses on the server side.
 | Source lock stale past the threshold | on | 1 | On the edge. Until someone overrides it the database silently never syncs |
 | Tunnel down longer than the grace period | on | 1 | On the edge, after `notify.tunnel_grace` — a rootserver rebooting should not wake anyone |
 | `ClipCornDB.db` replaced | on | 0 | |
-| Self-update applied, or rolled back | on | 0 / 2 | One toggle, two priorities: an update is news, an update that had to be undone is something to look at |
+| Self-update applied, or rolled back | on | 0 / 2 | One topic, two priorities: an update is news, an update that had to be undone is something to look at |
 | Sync run finished cleanly | off | 0 | A mirror that works is not news |
 
 "On the edge" is the discipline the quota forces: a condition that is true for
 hours is announced when it starts and once more when it clears, and never in
-between. The state that decides it lives in sqlite rather than in memory, so a
+between. The edge is decided once, for all targets together. The state that decides it lives in sqlite rather than in memory, so a
 container that crash-loops does not spend the day's allowance re-announcing the
 same thing. A notification that fails is written to `events` and never fails the
 run that produced it — it is telemetry, not a step.
@@ -463,21 +476,25 @@ run that produced it — it is telemetry, not a step.
 "Update in place without restarting docker" is not literally possible — the
 kernel holds the running executable's inode — but re-execing gives exactly the
 property that was wanted: same PID, same container, nothing for the orchestration
-to notice. The new binary lives on a share the mirror already reads, so the
-publisher still needs nothing but the file service he is already running.
+to notice. The new binary is published on an ordinary web server and fetched
+from there directly, over the host's own network — not through the tunnel, and
+with no remote involved.
 
-Point it at one under **Update** in Config. A path is read with the mirror's own
-client off the remote `update.remote` names — the first remote while it is
-empty — relative to that remote's root: the usual setup, and it keeps the
-publisher's address written down in one place. An absolute `http(s)` URL is
-fetched over the tunnel instead, with that remote's account:
+Point it at one on the **Update** page. `update.url` takes an `http://` or
+`https://` URL and nothing else; empty switches updating off. A Nextcloud public
+share works as it is, through its WebDAV address:
 
 ```
-update.url       dist/jcc-mirror-amd64
-update.remote    media
+update.url       https://cloud.example.com/public.php/dav/files/<share-token>/jcc-mirror
 update.auto      false
 update.interval  6h
 ```
+
+The server has to answer a `HEAD` with a `Last-Modified`; one that does not is an
+error rather than "nothing newer". If it wants credentials, put them in the URL
+(`https://user:password@host/...`) and they are sent as Basic auth. The URL is
+shown with the password masked in the update panel, the event log, the log and
+`update.json`.
 
 There is no version file and no manifest. The question is literally "is the file
 over there newer than mine", and its modification time answers it. What it is
@@ -488,10 +505,9 @@ newer than itself, forever.
 
 Then, in order:
 
-1. Stat the binary — a `HEAD` and its `Last-Modified` in the URL form. Newer ⇒
-   there is an update.
-2. Read it into `/data/bin/jcc-mirror.new`, and check it is plausible before
-   trusting it: the size the other side reported, and the ELF magic in the first
+1. `HEAD` the binary and read its `Last-Modified`. Newer ⇒ there is an update.
+2. Download it into `/data/bin/jcc-mirror.new`, and check it is plausible before
+   trusting it: the `Content-Length` the server reported, and the ELF magic in the first
    four bytes.
 3. Run it once as `jcc-mirror.new --version` and require a sane answer. That is
    the check the magic number cannot do: a binary for the other architecture is a
@@ -504,11 +520,10 @@ Then, in order:
    its watermark, which is what makes "just stop" an acceptable quiesce.
 6. Shut the listeners down and `exec` it.
 
-None of this is signing, and it is not meant to be. The transport is a private
-tunnel to a machine you control, so what these checks are aimed at is corruption:
-a download cut short, the wrong architecture, and — in the URL form, which is the
-only one with a web server in it — an HTML error page saved as a binary. Those
-are the failures that actually happen.
+None of this is signing, and it is not meant to be. The binary comes from a
+server you control — over TLS with an `https` URL — so what these checks are aimed
+at is corruption: a download cut short, the wrong architecture, an HTML error
+page saved as a binary. Those are the failures that actually happen.
 
 **The safety net.** The container's command is `jcc-mirror supervise serve` — the
 supervisor is a subcommand of ours rather than a shell script, because the
@@ -530,27 +545,23 @@ From a shell, on the same state:
 
 ```bash
 jcc-mirror update -data /data                    # what is running and what is installed
-jcc-mirror update -data /data -check             # and what the share has
+jcc-mirror update -data /data -check             # and what the update URL has
 jcc-mirror update -data /data -apply             # install it; restart to run it
 jcc-mirror update -data /data -apply -force      # install it even if it is not newer
 jcc-mirror update -data /data -rollback          # step back off one, without the dashboard
 ```
 
-The two halves that touch no network are what this is really for. `-rollback`
-needs neither the daemon, the tunnel nor the share, which is the point of it: it
-is for the case where the thing that is broken is the binary that would otherwise
-answer the button. `-check` and `-apply` open **no tunnel of their own** — a
-second one with the daemon's identity would have the rootserver moving the peer's
-endpoint back and forth — so only an absolute URL works from a shell, and the
-usual share-relative path is refused with a message saying as much. On the
-Synology, where the publisher is reachable over WireGuard and nowhere else,
-installing is therefore the dashboard's job.
+`-rollback` needs neither the daemon, the tunnel nor the network, which is the
+point of it: it is for the case where the thing that is broken is the binary that
+would otherwise answer the button. `-check` and `-apply` fetch the update URL
+directly, exactly as the daemon does.
 
-Publishing a new one is a copy:
+Publishing a new one is an upload to wherever `update.url` points. `make release`
+builds the amd64 binary, pushes the image and `PUT`s the binary to the WebDAV
+address in the Makefile's `RELEASE_DAV`:
 
 ```bash
-make syno                                        # or syno-arm
-scp jcc-mirror-amd64 publisher:/volume1/dist/jcc-mirror-amd64
+make release
 ```
 
 The binary directory is in the data volume, since the image's `/usr/local/bin` is
@@ -627,23 +638,23 @@ config overwrites it — but either way the key exists in exactly one place and
 never passes through a compose file, a shell history or `ps`.
 
 The engine's settings live in the same table and appear in the same form, because
-the key registry is what the Config view is generated from — a setting added in a
+the key registry is what the settings pages are generated from — a setting added in a
 later milestone costs no HTML. The tunnel's nine settings are under **Tunnel**;
 the two grids, the unattended switch and the scan interval are under
 **Schedule**; walk concurrency and the mtime tolerance under **Scan**; streams
 per file, chunk size, attempts, retry backoff, post-copy hashing and the
 free-space reserve under **Transfer**; the deletion threshold and quarantine
 retention under **Deletion**; the database's name and directory, the stale-lock
-threshold and how many copies to keep under **jCC**; the SCN credentials, the
-per-event toggles and the tunnel-down grace under **Notifications**; where the
-binary comes from — a path on a share or an absolute URL — which remote it is
-read from, whether to install it unattended and how often to look under
-**Update**; and how long the event log and the per-file history are kept under
-**Retention**, a year each by default, swept once an hour. The remotes and the
-pairs are the exception — they are rows of their own, one remote per share on
-the publisher's side with its host, share, path in the share, account and NTLM
-domain, edited on the **Remotes** and **Pairs** tabs or with `jcc-mirror remotes`
-and `jcc-mirror pairs`.
+threshold and how many copies to keep under **jCC**; the tunnel-down grace under
+**Notifications**; the `http(s)`
+URL the binary comes from, whether to install it unattended and how often to look
+under **Update**; and how long the event log and the per-file history are kept under
+**Retention**, a year each by default, swept once an hour. The remotes, the
+pairs and the notification targets are the exception — they are rows of their
+own, one remote per share on the publisher's side with its host, share, path in
+the share, account and NTLM domain, edited on the **Remotes** and **Pairs** tabs
+or with `jcc-mirror remotes` and `jcc-mirror pairs`, and one target per SCN
+account with its topics, edited on the **Notifications** tab.
 
 ## Publisher-side setup
 
@@ -732,7 +743,7 @@ engine/        the mirror: scan.go walks, diff.go plans, transfer.go moves
 store/         sqlite state: migrations, config with audit, events, and the
                engine's tables - remotes, pairs, manifest, scans, files, jobs, changes,
                delete_approvals, db_backups - plus the dashboard's bw_samples
-               and the notifications' notify_state
+               and the notifications' notify_targets and notify_state
 wg/            wireguard-go + netstack: the tunnel, ping and device status, and
                quick.go, which reads the config file the server generated
 smb/           the SMB2 client: one long-lived session, dialed over a net.Conn
@@ -743,7 +754,7 @@ remote/        the three-method interface the engine talks to, plus the two
 remote/localfs/  a local directory as a Remote, for tests, development and
                -remote-dir
 notify/        the SimpleCloudNotifier client; the coalescing above it is app/
-update/        the self-updater: the share as a source, the binary directory in
+update/        the self-updater: the HTTP(S) source, the binary directory in
                the data volume, and the supervisor that undoes a bad update
 web/           the Angular dashboard: src/ is the source, dist/ is the checked-in
                build the binary embeds

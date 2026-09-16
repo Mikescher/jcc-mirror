@@ -1,0 +1,182 @@
+<section class="panel">
+  <div class="spread">
+    <h3>Remote tools</h3>
+    <select [disabled]="!remotes().length" (change)="chooseRemote(+$any($event.target).value)">
+      @for (r of remotes(); track r.id) {
+        <option [value]="r.id" [selected]="remote() ? remote() === r.id : $first">
+          {{ r.name }}
+        </option>
+      } @empty {
+        <option value="0">no remote is configured</option>
+      }
+    </select>
+  </div>
+  <p class="note">
+    The round trip's default target, the throughput read and the tree below all go to the remote
+    chosen here.
+  </p>
+</section>
+
+<section class="panel">
+  <div class="spread">
+    <h3>Round trip</h3>
+    <div class="row">
+      <input
+        type="text"
+        placeholder="10.0.0.2 (empty: the remote's host)"
+        [value]="pingTarget()"
+        (input)="pingTarget.set($any($event.target).value)"
+      />
+      <button class="small" type="button" [disabled]="!unlocked() || pinging()" (click)="ping()">
+        Ping
+      </button>
+    </div>
+  </div>
+
+  @if (pingError()) {
+    <div class="banner">{{ pingError() }}</div>
+  }
+  @if (pingResult(); as r) {
+    <div class="cards">
+      <div class="card">
+        <div class="k">Target</div>
+        <div class="v mono">{{ r.target }}</div>
+      </div>
+      <div class="card">
+        <div class="k">RTT</div>
+        <div class="v">{{ r.millis }} ms</div>
+      </div>
+    </div>
+  }
+
+  <p class="note">
+    An empty target is the chosen remote's host, which is the publisher's address. A reply proves
+    the rootserver forwards between spokes, which is the single most likely reason for the whole
+    thing to fail and is not a jcc-mirror bug: the server's peer entries have to cover each client's
+    address, and it has to have IP forwarding on.
+  </p>
+</section>
+
+<section class="panel">
+  <div class="spread">
+    <h3>Throughput</h3>
+    <div class="row">
+      <input
+        type="text"
+        placeholder="a remote path"
+        [value]="probePath()"
+        (input)="probePath.set($any($event.target).value)"
+      />
+      <input
+        type="number"
+        placeholder="bytes (default 16 MiB)"
+        [value]="probeBytes()"
+        (input)="probeBytes.set($any($event.target).value)"
+      />
+      <button
+        class="small"
+        type="button"
+        [disabled]="!unlocked() || throughputBusy()"
+        (click)="measure()"
+      >
+        Measure
+      </button>
+    </div>
+  </div>
+
+  @if (throughputError()) {
+    <div class="banner">{{ throughputError() }}</div>
+  }
+  @if (throughput(); as t) {
+    <div class="cards">
+      <div class="card">
+        <div class="k">Read</div>
+        <div class="v">{{ fmt.bytes(t.bytes) }}</div>
+        <div class="note mono">{{ t.path }}</div>
+      </div>
+      <div class="card">
+        <div class="k">Took</div>
+        <div class="v">{{ t.millis }} ms</div>
+      </div>
+      <div class="card">
+        <div class="k">Rate</div>
+        <div class="v">{{ fmt.rate(t.bytes, t.millis / 1000) }}</div>
+      </div>
+    </div>
+  }
+
+  <p class="note">
+    A bounded read of one file on the chosen remote, timed end to end and then discarded. It is
+    capped at 256 MiB, and the bandwidth schedule applies to it like any other transfer — a probe
+    inside a capped window measures the cap, not the link.
+  </p>
+</section>
+
+<section class="panel">
+  <div class="spread">
+    <h3>Remote tree</h3>
+    <div class="row">
+      <input
+        type="text"
+        placeholder="path from the remote's root"
+        [value]="path()"
+        (input)="path.set($any($event.target).value)"
+      />
+      <button class="small" type="button" [disabled]="listBusy()" (click)="open(path())">
+        List
+      </button>
+    </div>
+  </div>
+
+  <div class="row crumbs">
+    <button class="link" type="button" (click)="open('')">root</button>
+    @for (c of crumbs(); track c.path) {
+      <span class="dim">/</span>
+      <button class="link" type="button" (click)="open(c.path)">{{ c.name }}</button>
+    }
+  </div>
+
+  @if (listError()) {
+    <div class="banner">{{ listError() }}</div>
+  }
+
+  @if (listing(); as l) {
+    <p class="note mono path">{{ l.name }} · {{ l.target }} · {{ l.millis }} ms</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th class="num">Size</th>
+            <th>Modified</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (e of l.entries; track e.path) {
+            <tr>
+              <td>
+                @if (e.isDir) {
+                  <button class="link" type="button" (click)="open(e.path)">{{ e.name }}/</button>
+                } @else {
+                  <span class="mono path">{{ e.name }}</span>
+                }
+              </td>
+              <td class="num">{{ e.isDir ? '—' : fmt.bytes(e.size) }}</td>
+              <td>{{ fmt.clock(e.mtime) }}</td>
+            </tr>
+          } @empty {
+            <tr class="quiet">
+              <td colspan="3">The directory is empty.</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  }
+
+  <p class="note">
+    Each step is exactly one directory listing, which is what a walk costs per directory — so the
+    round trip above multiplied by the number of directories is roughly what a scan takes, and it is
+    what the scan schedule should be set from.
+  </p>
+</section>

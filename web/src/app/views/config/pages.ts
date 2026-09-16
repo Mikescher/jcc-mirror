@@ -1,13 +1,13 @@
-/** The tabs of the config view, and the one place a settings group is told which
- *  tab it belongs on. The names are the registry's own (GET /api/config →
+/** The settings pages of the tab bar, and the one place a settings group is told
+ *  which page it belongs on. The names are the registry's own (GET /api/config →
  *  group), so a key added on the Go side arrives here under a name that is
  *  either claimed below or rendered on the fallback page - it can never fall out
  *  of the dashboard unnoticed. */
 export interface ConfigPage {
   path: string;
   label: string;
-  /** The sentence under the tabs. It says what the page decides, not what the
-   *  individual fields mean: those carry their own help. */
+  /** The sentence under the page title. It says what the page decides, not what
+   *  the individual fields mean: those carry their own help. */
   blurb: string;
   groups: string[];
 }
@@ -20,14 +20,14 @@ export const configPages: readonly ConfigPage[] = [
     path: 'connection',
     label: 'Connection',
     blurb:
-      'The WireGuard tunnel to the rootserver, which every remote is reached through. Nothing is mirrored until it is up.',
+      'The WireGuard tunnel to the rootserver, which every remote is reached through, and how it is doing right now. Nothing is mirrored until it is up.',
     groups: ['Tunnel'],
   },
   {
     path: 'remotes',
     label: 'Remotes',
     blurb:
-      "The publisher's SMB shares, reached through the tunnel. Each pair reads from one of them.",
+      "The publisher's SMB shares, reached through the tunnel, and the tools that ask them how they are doing. Each pair reads from one of them.",
     groups: [],
   },
   {
@@ -41,7 +41,7 @@ export const configPages: readonly ConfigPage[] = [
     path: 'pairs',
     label: 'Pairs',
     blurb:
-      'One directory of a remote mapped onto one directory here. Nothing is mirrored until a pair exists.',
+      'One directory of a remote mapped onto one directory here, with the free space it has and what a sync would do. Nothing is mirrored until a pair exists.',
     groups: [],
   },
   {
@@ -60,15 +60,23 @@ export const configPages: readonly ConfigPage[] = [
   {
     path: 'notifications',
     label: 'Notifications',
-    blurb: 'Where SimpleCloudNotify sends, and which events are worth sending.',
+    blurb:
+      'The SimpleCloudNotifier accounts messages go to, which events each one hears about, and the conditions currently raised.',
     groups: ['Notifications'],
+  },
+  {
+    path: 'update',
+    label: 'Update',
+    blurb:
+      'Where a newer binary is fetched from, whether it is installed unattended, and the buttons that install or undo one.',
+    groups: ['Update'],
   },
   {
     path: fallbackPath,
     label: 'System',
     blurb:
-      'The self-updater, how long history is kept, and the zone every timestamp is written in.',
-    groups: ['Update', 'Retention', 'General'],
+      'How long history is kept, the zone every timestamp is written in, and the daemon log. Every setting lives in the database, takes effect the moment it is saved, and is recorded under Audit.',
+    groups: ['Retention', 'General'],
   },
   {
     path: 'audit',

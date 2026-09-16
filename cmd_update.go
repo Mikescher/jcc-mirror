@@ -17,16 +17,12 @@ import (
 // - what is installed, and stepping back off it - are what it is really for: the
 // case a rollback exists for is one where the dashboard may be the broken thing.
 //
-// It reaches the binary URL directly rather than through the tunnel, because
-// opening a second one with the daemon's identity would have the rootserver
-// moving the peer's endpoint back and forth. In the deployed setup the publisher
-// is only reachable over WireGuard, so -check and -apply are for a workstation
-// or a share on the LAN; the dashboard is what installs on the Synology.
+// -check and -apply fetch the binary URL directly, exactly as the daemon does.
 func cmdUpdate(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
 	dataDir := fs.String("data", staticDataDir, "data directory: sqlite state, and bin/ where the binaries live")
-	check := fs.Bool("check", false, "ask the share what it has; the only flag that touches the network on its own")
-	apply := fs.Bool("apply", false, "install the binary from the share, if it is newer")
+	check := fs.Bool("check", false, "ask the update URL what it has; the only flag that touches the network on its own")
+	apply := fs.Bool("apply", false, "install the binary from the update URL, if it is newer")
 	force := fs.Bool("force", false, "install it even when it is not newer, or was rolled back before")
 	rollback := fs.Bool("rollback", false, "put the previous binary back, so the next start runs it")
 	if err := fs.Parse(args); err != nil {
@@ -76,7 +72,7 @@ func cmdUpdate(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	src, err := updateSourceOf(ctx, st, values)
+	src, err := updateSourceOf(values)
 	if err != nil {
 		return err
 	}
@@ -89,7 +85,7 @@ func cmdUpdate(ctx context.Context, args []string) error {
 	baseline := manager.Baseline(update.ParseBuildStamp(buildStamp))
 	newer := rel.ModTime.After(baseline)
 
-	fmt.Printf("share     %s\n", rel.URL)
+	fmt.Printf("server    %s\n", rel.URL)
 	fmt.Printf("          %s, %s\n", rel.ModTime.Format(time.RFC3339), format.Bytes(rel.Size))
 	if newer {
 		fmt.Println("          newer than what is running")
@@ -109,7 +105,7 @@ func cmdUpdate(ctx context.Context, args []string) error {
 		return nil
 	}
 	if !newer && !*force {
-		return errors.New("nothing to do: the binary on the share is not newer; -force installs it anyway")
+		return errors.New("nothing to do: the binary at the update URL is not newer; -force installs it anyway")
 	}
 
 	fmt.Printf("fetching  %s\n", rel.URL)
@@ -122,27 +118,11 @@ func cmdUpdate(ctx context.Context, args []string) error {
 	return nil
 }
 
-// updateSourceOf reads the binary URL the daemon would use, with the account of
-// the remote update.remote names. Only the absolute form works from here: a
-// binary on the publisher's share is reached over SMB through the tunnel, and
-// this command deliberately opens no tunnel of its own.
-func updateSourceOf(ctx context.Context, st *store.Store, values store.Values) (update.Source, error) {
-	rawURL, sharePath, err := update.Locate(values.Get(store.KeyUpdateURL))
+// updateSourceOf reads the binary URL the daemon would use.
+func updateSourceOf(values store.Values) (update.Source, error) {
+	rawURL, err := update.Locate(values.Get(store.KeyUpdateURL))
 	if err != nil {
 		return update.Source{}, err
 	}
-	if sharePath != "" {
-		return update.Source{}, fmt.Errorf("%q is a path on the publisher's share, which is only reachable through the tunnel: install it from the dashboard", sharePath)
-	}
-
-	// No remote means no account, which is all a public URL needs.
-	src := update.Source{URL: rawURL}
-	r, err := st.ResolveRemote(ctx, values.Get(store.KeyUpdateRemote))
-	switch {
-	case err == nil:
-		src.Username, src.Password = r.User, r.Password
-	case !errors.Is(err, store.ErrNoRemote):
-		return update.Source{}, err
-	}
-	return src, nil
+	return update.Source{URL: rawURL}, nil
 }

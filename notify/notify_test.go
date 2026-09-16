@@ -211,7 +211,7 @@ func TestSendRejectsBeforeSending(t *testing.T) {
 	}{
 		{name: "not configured", cfg: Config{}, msg: Message{Title: "t"}, wantErr: ErrDisabled},
 		{name: "half configured", cfg: Config{UserID: "1"}, msg: Message{Title: "t"}, wantErr: ErrDisabled},
-		{name: "user id not a number", cfg: Config{UserID: "u-42", UserKey: "k"}, msg: Message{Title: "t"}, wantStr: "notify.user_id"},
+		{name: "user id not a number", cfg: Config{UserID: "u-42", UserKey: "k"}, msg: Message{Title: "t"}, wantStr: "SCN user id"},
 		{name: "no title", cfg: Config{UserID: "1", UserKey: "k"}, msg: Message{}, wantStr: "title"},
 		{name: "blank title", cfg: Config{UserID: "1", UserKey: "k"}, msg: Message{Title: "   "}, wantStr: "title"},
 		{name: "priority too low", cfg: Config{UserID: "1", UserKey: "k"}, msg: Message{Title: "t", Priority: -1}, wantStr: "priority"},

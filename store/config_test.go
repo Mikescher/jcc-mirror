@@ -20,21 +20,21 @@ func TestConfigDefaultsAndSet(t *testing.T) {
 	if got := values.Get(KeyTimezone); got != "Europe/Berlin" {
 		t.Errorf("default timezone = %q, want Europe/Berlin", got)
 	}
-	if got := values.Get(KeyNotifyChannel); got != "" {
+	if got := values.Get(KeyJCCDBDir); got != "" {
 		t.Errorf("unset key = %q, want empty", got)
 	}
 
-	changed, err := s.ConfigSet(ctx, map[string]string{KeyNotifyChannel: "mirror"}, "test")
+	changed, err := s.ConfigSet(ctx, map[string]string{KeyJCCDBDir: "mirror"}, "test")
 	if err != nil {
 		t.Fatalf("ConfigSet: %v", err)
 	}
-	if len(changed) != 1 || changed[0] != KeyNotifyChannel {
-		t.Errorf("changed = %v, want [%s]", changed, KeyNotifyChannel)
+	if len(changed) != 1 || changed[0] != KeyJCCDBDir {
+		t.Errorf("changed = %v, want [%s]", changed, KeyJCCDBDir)
 	}
 
 	// Writing the same value again is not a change, so it must not fill the audit
 	// trail with rows that say nothing happened.
-	changed, err = s.ConfigSet(ctx, map[string]string{KeyNotifyChannel: "mirror"}, "test")
+	changed, err = s.ConfigSet(ctx, map[string]string{KeyJCCDBDir: "mirror"}, "test")
 	if err != nil {
 		t.Fatalf("ConfigSet: %v", err)
 	}
@@ -57,14 +57,15 @@ func TestConfigValidation(t *testing.T) {
 	s := newStore(t)
 
 	cases := map[string]struct{ key, value string }{
-		"not a cidr": {KeyWGAllowedIPs, "everything"},
-		"endpoint":   {KeyWGEndpoint, "rootserver"},
-		"not base64": {KeyWGPeerKey, "definitely not a key"},
-		"short key":  {KeyWGPeerKey, "aGVsbG8="},
-		"mtu":        {KeyWGMTU, "9"},
-		"keepalive":  {KeyWGKeepalive, "-1"},
-		"update url": {KeyUpdateURL, "ftp://nas/bin"},
-		"timezone":   {KeyTimezone, "Middle/Earth"},
+		"not a cidr":  {KeyWGAllowedIPs, "everything"},
+		"endpoint":    {KeyWGEndpoint, "rootserver"},
+		"not base64":  {KeyWGPeerKey, "definitely not a key"},
+		"short key":   {KeyWGPeerKey, "aGVsbG8="},
+		"mtu":         {KeyWGMTU, "9"},
+		"keepalive":   {KeyWGKeepalive, "-1"},
+		"update url":  {KeyUpdateURL, "ftp://nas/bin"},
+		"update path": {KeyUpdateURL, "dist/jcc-mirror-amd64"},
+		"timezone":    {KeyTimezone, "Middle/Earth"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -113,13 +114,15 @@ func TestConfigSetIsAtomic(t *testing.T) {
 	}
 }
 
+const testPSK = "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM="
+
 func TestConfigAuditMasksSecrets(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
 
 	if _, err := s.ConfigSet(ctx, map[string]string{
-		KeyNotifyUserKey: "hunter2",
-		KeyNotifyChannel: "ro",
+		KeyWGPresharedKey: testPSK,
+		KeyJCCDBDir:       "ro",
 	}, "test"); err != nil {
 		t.Fatalf("ConfigSet: %v", err)
 	}
@@ -133,11 +136,11 @@ func TestConfigAuditMasksSecrets(t *testing.T) {
 	}
 	for _, e := range entries {
 		switch e.Key {
-		case KeyNotifyUserKey:
+		case KeyWGPresharedKey:
 			if e.New != SecretMask {
 				t.Errorf("audit recorded the secret as %q", e.New)
 			}
-		case KeyNotifyChannel:
+		case KeyJCCDBDir:
 			if e.New != "ro" {
 				t.Errorf("audit of a non-secret = %q, want ro", e.New)
 			}
@@ -145,11 +148,11 @@ func TestConfigAuditMasksSecrets(t *testing.T) {
 	}
 
 	// The value itself is still readable, of course - only the trail is masked.
-	got, err := s.ConfigGet(ctx, KeyNotifyUserKey)
+	got, err := s.ConfigGet(ctx, KeyWGPresharedKey)
 	if err != nil {
 		t.Fatalf("ConfigGet: %v", err)
 	}
-	if got != "hunter2" {
+	if got != testPSK {
 		t.Errorf("stored secret = %q", got)
 	}
 }

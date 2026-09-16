@@ -166,6 +166,7 @@ section.panel {
 }
 
 .card {
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   padding: 0.7rem 0.85rem;
@@ -181,6 +182,13 @@ section.panel {
 .card .v {
   font-size: 1.05rem;
   margin-top: 0.15rem;
+}
+
+/* Addresses, keys and paths have no spaces to break at, and a grid track will
+   not shrink below its longest unbreakable word. */
+.card .v,
+.card .note {
+  overflow-wrap: anywhere;
 }
 
 .note {

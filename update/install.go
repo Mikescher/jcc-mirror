@@ -40,7 +40,7 @@ type State struct {
 
 	// RemoteModTime is the Last-Modified of the binary that was installed. It is
 	// the baseline every later check compares against, and it has to be: the
-	// compiled-in build stamp is when the binary was built, the share's timestamp
+	// compiled-in build stamp is when the binary was built, the server's timestamp
 	// is when it was uploaded, and the second is always later than the first - so
 	// comparing against the build stamp alone would find the running binary
 	// newer than itself, forever.

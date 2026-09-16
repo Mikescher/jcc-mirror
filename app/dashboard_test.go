@@ -348,13 +348,7 @@ func TestNotificationsOnlyGoOutOnTheEdge(t *testing.T) {
 	defer srv.Close()
 	a.notifier = &notify.Client{Endpoint: srv.URL}
 
-	form := url.Values{
-		store.KeyNotifyUserID:  {"7"},
-		store.KeyNotifyUserKey: {"secret"},
-	}
-	if rec := postForm(t, h, "/api/config", form); rec.Code != http.StatusOK {
-		t.Fatalf("configure notifications: %d %s", rec.Code, rec.Body)
-	}
+	createNotifyTarget(t, h, map[string]any{"name": "phone", "userId": "7", "userKey": "secret"})
 
 	a.NotifyEdge(ctx, store.NotifyTunnelDown, 0, true, "the tunnel is down", "the tunnel is back")
 	first := waitForMessage(t, sent)
@@ -383,9 +377,9 @@ func TestNotificationsOnlyGoOutOnTheEdge(t *testing.T) {
 	}
 }
 
-// TestNotificationsRespectTheirToggle: a kind switched off must not reach the
-// network at all, not merely be filtered later.
-func TestNotificationsRespectTheirToggle(t *testing.T) {
+// TestNotificationsRespectTheirTopics: a kind a target has not chosen, or a
+// target that is switched off, must not reach the network at all.
+func TestNotificationsRespectTheirTopics(t *testing.T) {
 	a, h := newApp(t)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -394,19 +388,12 @@ func TestNotificationsRespectTheirToggle(t *testing.T) {
 	defer srv.Close()
 	a.notifier = &notify.Client{Endpoint: srv.URL}
 
-	form := url.Values{
-		store.KeyNotifyUserID:        {"7"},
-		store.KeyNotifyUserKey:       {"secret"},
-		store.KeyNotifyTunnelDown:    {"false"},
-		store.KeyNotifyDBReplaced:    {"false"},
-		store.KeyNotifySyncFailed:    {"false"},
-		store.KeyNotifySpaceLow:      {"false"},
-		store.KeyNotifyLockStale:     {"false"},
-		store.KeyNotifyDeleteBlocked: {"false"},
-	}
-	if rec := postForm(t, h, "/api/config", form); rec.Code != http.StatusOK {
-		t.Fatalf("configure notifications: %d %s", rec.Code, rec.Body)
-	}
+	createNotifyTarget(t, h, map[string]any{
+		"name": "quiet", "userId": "7", "userKey": "secret", "events": []string{"sync_failed", "update"},
+	})
+	createNotifyTarget(t, h, map[string]any{
+		"name": "off", "userId": "8", "userKey": "secret", "enabled": false, "events": []string{"tunnel_down"},
+	})
 
 	a.Notify(context.Background(), store.NotifyTunnelDown, 0, "should not be sent", "")
 	time.Sleep(150 * time.Millisecond)

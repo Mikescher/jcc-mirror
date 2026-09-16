@@ -11,8 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"blackforestbytes.com/jcc-mirror/remote/localfs"
 )
 
 // The test binary doubles as the binary being installed. It is a real ELF, it
@@ -74,7 +72,7 @@ func selfBytes(t *testing.T) []byte {
 }
 
 // serve answers HEAD and GET for one body with one modification time, which is
-// the whole of what the updater asks a share for.
+// the whole of what the updater asks a server for.
 func serve(t *testing.T, body []byte, mod time.Time) Source {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +83,7 @@ func serve(t *testing.T, body []byte, mod time.Time) Source {
 	return Source{URL: srv.URL + "/dist/jcc-mirror", HTTP: srv.Client()}
 }
 
-func TestHeadReportsWhatTheShareHolds(t *testing.T) {
+func TestHeadReportsWhatTheServerHolds(t *testing.T) {
 	mod := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
 	src := serve(t, []byte("\x7fELF and then some"), mod)
 
@@ -101,7 +99,7 @@ func TestHeadReportsWhatTheShareHolds(t *testing.T) {
 	}
 }
 
-// A share that reports no Last-Modified has to be an error: it is the only thing
+// A server that reports no Last-Modified has to be an error: it is the only thing
 // the comparison rests on, and an update that silently never happens is the
 // failure least likely to be noticed.
 func TestHeadRefusesAResponseWithoutALastModified(t *testing.T) {
@@ -306,81 +304,47 @@ func TestConfirmClosesTheRollbackWindow(t *testing.T) {
 }
 
 func TestLocate(t *testing.T) {
-	if _, _, err := Locate("  "); err != ErrNotConfigured {
+	if _, err := Locate("  "); err != ErrNotConfigured {
 		t.Errorf("err = %v, want ErrNotConfigured", err)
 	}
-	if url, path, _ := Locate("http://elsewhere/bin"); url != "http://elsewhere/bin" || path != "" {
-		t.Errorf("absolute = (%q, %q)", url, path)
+	for _, in := range []string{"http://elsewhere/bin", " https://user:pw@elsewhere:8443/a/b "} {
+		if got, err := Locate(in); err != nil || got != strings.TrimSpace(in) {
+			t.Errorf("Locate(%q) = (%q, %v)", in, got, err)
+		}
 	}
-	// Not escaped and not joined to anything: it is a path on the share, which is
-	// what the remote client is handed verbatim.
-	if url, path, _ := Locate(" dist/jcc mirror-amd64 "); url != "" || path != "dist/jcc mirror-amd64" {
-		t.Errorf("share-relative = (%q, %q)", url, path)
+	for _, in := range []string{"dist/jcc-mirror-amd64", "/dist/jcc-mirror", "ftp://elsewhere/bin", "file:///bin/jcc", "https:///bin", "http://%zz"} {
+		if _, err := Locate(in); err == nil || errors.Is(err, ErrNotConfigured) {
+			t.Errorf("Locate(%q) err = %v, want a refusal", in, err)
+		}
 	}
 }
 
-// TestHeadAndDownloadOffTheShare is the form the deployment actually uses: the
-// binary sits on the publisher's share, so the updater stats and reads it with
-// the same client the mirror reads everything else with.
-func TestHeadAndDownloadOffTheShare(t *testing.T) {
-	dir := t.TempDir()
-	body := []byte("\x7fELF and then some")
-	if err := os.MkdirAll(filepath.Join(dir, "dist"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(dir, "dist", "jcc-mirror-amd64")
-	if err := os.WriteFile(bin, body, 0o644); err != nil {
-		t.Fatal(err)
-	}
+// Credentials in the URL are sent as Basic auth and never shown: not in the
+// release, which ends up in the state file and the dashboard, and not in errors.
+func TestCredentialsInTheURLAreSentAndRedacted(t *testing.T) {
 	mod := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
-	if err := os.Chtimes(bin, mod, mod); err != nil {
-		t.Fatal(err)
-	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, p, ok := r.BasicAuth(); !ok || u != "deploy" || p != "s3cret" {
+			http.Error(w, "who are you", http.StatusUnauthorized)
+			return
+		}
+		http.ServeContent(w, r, "jcc-mirror", mod, strings.NewReader("\x7fELF"))
+	}))
+	defer srv.Close()
 
-	share, err := localfs.New(dir)
-	if err != nil {
-		t.Fatalf("localfs.New: %v", err)
-	}
-	src := Source{Path: "dist/jcc-mirror-amd64", Share: share}
-
-	rel, err := src.Head(t.Context())
+	withAuth := strings.Replace(srv.URL, "://", "://deploy:s3cret@", 1) + "/jcc-mirror"
+	rel, err := Source{URL: withAuth, HTTP: srv.Client()}.Head(t.Context())
 	if err != nil {
 		t.Fatalf("head: %v", err)
 	}
-	if !rel.ModTime.Equal(mod) {
-		t.Errorf("mod time = %v, want %v", rel.ModTime, mod)
-	}
-	if rel.Size != int64(len(body)) {
-		t.Errorf("size = %d, want %d", rel.Size, len(body))
-	}
-	if rel.URL != "dist/jcc-mirror-amd64" {
-		t.Errorf("release names %q, want the path on the share", rel.URL)
+	if strings.Contains(rel.URL, "s3cret") || !strings.Contains(rel.URL, "deploy:") {
+		t.Errorf("release URL = %q, want the user kept and the password masked", rel.URL)
 	}
 
-	dst := filepath.Join(t.TempDir(), "bin", "candidate")
-	n, err := src.Download(t.Context(), dst)
-	if err != nil {
-		t.Fatalf("download: %v", err)
-	}
-	if n != int64(len(body)) {
-		t.Errorf("downloaded %d bytes, want %d", n, len(body))
-	}
-	got, err := os.ReadFile(dst)
-	if err != nil || string(got) != string(body) {
-		t.Fatalf("downloaded %q (%v), want the file on the share", got, err)
-	}
-}
-
-// A share-relative binary with no client to read it with has to say so rather
-// than fall back to fetching nothing: an update that silently never happens is
-// the failure least likely to be noticed.
-func TestShareRelativeBinaryNeedsARemote(t *testing.T) {
-	src := Source{Path: "dist/jcc-mirror-amd64"}
-	if _, err := src.Head(t.Context()); !errors.Is(err, ErrNoRemote) {
-		t.Errorf("head err = %v, want ErrNoRemote", err)
-	}
-	if _, err := src.Download(t.Context(), filepath.Join(t.TempDir(), "bin")); !errors.Is(err, ErrNoRemote) {
-		t.Errorf("download err = %v, want ErrNoRemote", err)
+	wrong := strings.Replace(srv.URL, "://", "://deploy:wr0ng@", 1) + "/jcc-mirror"
+	_, err = Source{URL: wrong, HTTP: srv.Client()}.Download(t.Context(), filepath.Join(t.TempDir(), "bin"))
+	if err == nil || strings.Contains(err.Error(), "wr0ng") {
+		t.Errorf("download err = %v, want a refusal without the password", err)
 	}
 }
 

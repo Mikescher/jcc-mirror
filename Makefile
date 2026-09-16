@@ -7,10 +7,12 @@ HASH=$(shell git rev-parse HEAD)
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 # The build time, not the commit time: the self-updater compares it against the
 # Last-Modified of the binary on the share, which is when it was uploaded.
-BUILDSTAMP=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILDSTAMP:=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS=-X main.version=$(VERSION) -X main.buildStamp=$(BUILDSTAMP)
 
-.PHONY: build web test vet run syno syno-arm docker push-docker clean
+RELEASE_DAV=https://cloud.mikescher.com/public.php/dav/files/2JwdMYXzG7gpFBc
+
+.PHONY: build web test vet run syno syno-arm docker push-docker release clean
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
@@ -47,6 +49,16 @@ push-docker:
 	docker image push $(DOCKER_NAME):$(HASH)
 	docker image push $(DOCKER_NAME):$(NAMESPACE)-latest
 	docker image push $(DOCKER_NAME):latest
+
+# The binary the self-updater fetches runs inside the container, so it is built
+# like the one in the image: static, linux/amd64.
+release: docker
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
+	$(MAKE) push-docker
+	curl --fail --show-error -X PUT \
+	     -H 'Content-Type: application/octet-stream' \
+	     --upload-file $(BINARY) \
+	     '$(RELEASE_DAV)/$(BINARY)'
 
 clean:
 	rm -f $(BINARY) $(BINARY)-amd64 $(BINARY)-arm64

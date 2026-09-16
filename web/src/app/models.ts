@@ -369,6 +369,30 @@ export interface NotifyState {
   detail?: string;
 }
 
+/** One SimpleCloudNotifier account messages go to. The user key never leaves
+ *  the daemon; userKeySet is all the page learns. */
+export interface NotifyTarget {
+  id: number;
+  name: string;
+  userId: string;
+  userKeySet: boolean;
+  channel: string;
+  sender: string;
+  enabled: boolean;
+  /** Topic keys, see NotifyTopic. */
+  events: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A kind of message a target can be told about. */
+export interface NotifyTopic {
+  key: string;
+  label: string;
+  help: string;
+  default: boolean;
+}
+
 export interface PairDiagnostics {
   id: number;
   name: string;
@@ -387,7 +411,7 @@ export interface DiagnosticsView {
   log: LogLine[];
 }
 
-/** UpdateStatus is the self-updater panel: what is running, what the share has,
+/** UpdateStatus is the self-updater panel: what is running, what the URL has,
  *  and which of the two buttons makes sense right now (DESIGN.md §5). */
 export interface UpdateStatus {
   version: string;
@@ -404,7 +428,7 @@ export interface UpdateStatus {
   checkedAt?: string;
   available?: Release;
   newer: boolean;
-  /** Set when the binary on the share is one a previous attempt rolled back, and
+  /** Set when the binary at the URL is one a previous attempt rolled back, and
    *  will therefore not be installed again on its own. */
   blocked?: string;
   busy?: boolean;

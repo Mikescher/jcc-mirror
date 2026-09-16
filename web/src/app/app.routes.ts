@@ -1,8 +1,28 @@
-import { Routes } from '@angular/router';
+import { Route, Routes } from '@angular/router';
+import { configPages } from './views/config/pages';
 
-/** The six views of DESIGN.md §4, lazily loaded so the shell and the "now" view
- *  are what a first paint costs. Config is a view of its own tabs: which
- *  settings land on which of them is in views/config/pages.ts, not here. */
+type LoadComponent = NonNullable<Route['loadComponent']>;
+
+/** The settings pages each own a component; the ones that are nothing but their
+ *  settings groups share ConfigGroupsPage, which reads its groups off the route
+ *  path. */
+const configComponents: Record<string, LoadComponent> = {
+  connection: () => import('./views/config/connection').then((m) => m.ConfigConnectionPage),
+  remotes: () => import('./views/config/remotes').then((m) => m.ConfigRemotesPage),
+  schedule: () => import('./views/config/schedule').then((m) => m.ConfigSchedulePage),
+  pairs: () => import('./views/config/pairs').then((m) => m.ConfigPairsPage),
+  notifications: () =>
+    import('./views/config/notifications').then((m) => m.ConfigNotificationsPage),
+  update: () => import('./views/config/update').then((m) => m.ConfigUpdatePage),
+  audit: () => import('./views/config/audit').then((m) => m.ConfigAuditPage),
+};
+
+const groupsPage: LoadComponent = () =>
+  import('./views/config/groups-page').then((m) => m.ConfigGroupsPage);
+
+/** The four live views of DESIGN.md §4 and the settings pages, all in the one
+ *  tab bar. Lazily loaded so the shell and the "now" view are what a first
+ *  paint costs. Which settings land on which page is in views/config/pages.ts. */
 export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'now' },
   {
@@ -26,63 +46,16 @@ export const routes: Routes = [
     loadComponent: () => import('./views/bandwidth').then((m) => m.BandwidthPage),
   },
   {
-    path: 'config',
+    path: '',
     loadComponent: () => import('./views/config/shell').then((m) => m.ConfigShell),
-    children: [
-      { path: '', pathMatch: 'full', redirectTo: 'connection' },
-      {
-        path: 'connection',
-        title: 'Connection · Config · jcc-mirror',
-        loadComponent: () =>
-          import('./views/config/connection').then((m) => m.ConfigConnectionPage),
-      },
-      {
-        path: 'remotes',
-        title: 'Remotes · Config · jcc-mirror',
-        loadComponent: () => import('./views/config/remotes').then((m) => m.ConfigRemotesPage),
-      },
-      {
-        path: 'schedule',
-        title: 'Schedule · Config · jcc-mirror',
-        loadComponent: () => import('./views/config/schedule').then((m) => m.ConfigSchedulePage),
-      },
-      {
-        path: 'pairs',
-        title: 'Pairs · Config · jcc-mirror',
-        loadComponent: () => import('./views/config/pairs').then((m) => m.ConfigPairsPage),
-      },
-      {
-        path: 'transfer',
-        title: 'Transfer · Config · jcc-mirror',
-        loadComponent: () => import('./views/config/groups-page').then((m) => m.ConfigGroupsPage),
-      },
-      {
-        path: 'jcc',
-        title: 'jCC · Config · jcc-mirror',
-        loadComponent: () => import('./views/config/groups-page').then((m) => m.ConfigGroupsPage),
-      },
-      {
-        path: 'notifications',
-        title: 'Notifications · Config · jcc-mirror',
-        loadComponent: () =>
-          import('./views/config/notifications').then((m) => m.ConfigNotificationsPage),
-      },
-      {
-        path: 'system',
-        title: 'System · Config · jcc-mirror',
-        loadComponent: () => import('./views/config/groups-page').then((m) => m.ConfigGroupsPage),
-      },
-      {
-        path: 'audit',
-        title: 'Audit · Config · jcc-mirror',
-        loadComponent: () => import('./views/config/audit').then((m) => m.ConfigAuditPage),
-      },
-    ],
+    children: configPages.map((page) => ({
+      path: page.path,
+      title: `${page.label} · jcc-mirror`,
+      loadComponent: configComponents[page.path] ?? groupsPage,
+    })),
   },
-  {
-    path: 'diagnostics',
-    title: 'Diagnostics · jcc-mirror',
-    loadComponent: () => import('./views/diagnostics').then((m) => m.DiagnosticsPage),
-  },
+  { path: 'config', pathMatch: 'full', redirectTo: 'connection' },
+  { path: 'config/:page', redirectTo: ':page' },
+  { path: 'diagnostics', redirectTo: 'connection' },
   { path: '**', redirectTo: 'now' },
 ];

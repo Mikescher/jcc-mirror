@@ -6,7 +6,7 @@
         <span class="note mono">{{ s.version }}</span>
         <span class="pill" [class]="tunnel().klass">{{ tunnel().label }}</span>
         @if (!remotes().length) {
-          <a class="pill warn" routerLink="/config/remotes">no remote</a>
+          <a class="pill warn" routerLink="/remotes">no remote</a>
         } @else if (unreachable()) {
           <span class="pill bad" [title]="unreachable()">remote unreachable</span>
         }
@@ -14,7 +14,7 @@
           <span class="pill warn">unattended off</span>
         }
         @if (s.updateReady) {
-          <a class="pill warn" routerLink="/diagnostics">update available</a>
+          <a class="pill warn" routerLink="/update">update available</a>
         }
         @if (busy()) {
           <span class="pill ok">running</span>
@@ -40,8 +40,10 @@
     <a routerLink="/changes" routerLinkActive="active">Changes</a>
     <a routerLink="/events" routerLinkActive="active">Events</a>
     <a routerLink="/bandwidth" routerLinkActive="active">Bandwidth</a>
-    <a routerLink="/config" routerLinkActive="active">Config</a>
-    <a routerLink="/diagnostics" routerLinkActive="active">Diagnostics</a>
+    <span class="sep" aria-hidden="true"></span>
+    @for (page of pages; track page.path) {
+      <a [routerLink]="['/', page.path]" routerLinkActive="active">{{ page.label }}</a>
+    }
   </nav>
 </header>
 

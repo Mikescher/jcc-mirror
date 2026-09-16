@@ -122,7 +122,7 @@ func TestActionsAndReadsAreBothOpen(t *testing.T) {
 		}
 	}
 
-	if rec := postForm(t, h, "/api/config", url.Values{store.KeyNotifyChannel: {"ro"}}); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyJCCDBDir: {"ro"}}); rec.Code != http.StatusOK {
 		t.Fatalf("POST /api/config = %d: %s", rec.Code, rec.Body)
 	}
 
@@ -140,46 +140,49 @@ func TestSettingsTakeAFormOrJSON(t *testing.T) {
 	a, h := newApp(t)
 	ctx := context.Background()
 
-	if rec := postForm(t, h, "/api/config", url.Values{store.KeyNotifyChannel: {"ro"}}); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyJCCDBDir: {"ro"}}); rec.Code != http.StatusOK {
 		t.Fatalf("a form body = %d: %s", rec.Code, rec.Body)
 	}
-	if got, err := a.Store().ConfigGet(ctx, store.KeyNotifyChannel); err != nil || got != "ro" {
-		t.Fatalf("after the form the channel is %q (err %v)", got, err)
+	if got, err := a.Store().ConfigGet(ctx, store.KeyJCCDBDir); err != nil || got != "ro" {
+		t.Fatalf("after the form the database directory is %q (err %v)", got, err)
 	}
 
-	body := strings.NewReader(`{` + strconv.Quote(store.KeyNotifyChannel) + `:"rw"}`)
+	body := strings.NewReader(`{` + strconv.Quote(store.KeyJCCDBDir) + `:"rw"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/config", body)
 	req.Header.Set("Content-Type", "application/json")
 	if rec := do(t, h, req); rec.Code != http.StatusOK {
 		t.Fatalf("a JSON body = %d: %s", rec.Code, rec.Body)
 	}
-	if got, err := a.Store().ConfigGet(ctx, store.KeyNotifyChannel); err != nil || got != "rw" {
-		t.Errorf("after the JSON body the channel is %q (err %v)", got, err)
+	if got, err := a.Store().ConfigGet(ctx, store.KeyJCCDBDir); err != nil || got != "rw" {
+		t.Errorf("after the JSON body the database directory is %q (err %v)", got, err)
 	}
 }
+
+// testPSK is a well-formed WireGuard key, standing in for any secret setting.
+const testPSK = "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM="
 
 func TestBlankSecretKeepsTheStoredOne(t *testing.T) {
 	a, h := newApp(t)
 	ctx := context.Background()
 
-	if rec := postForm(t, h, "/api/config", url.Values{store.KeyNotifyUserKey: {"hunter2"}}); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyWGPresharedKey: {testPSK}}); rec.Code != http.StatusOK {
 		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
 	}
 
 	// The dashboard is never sent a stored secret, so an untouched field comes
 	// back blank - and must not wipe it.
 	if rec := postForm(t, h, "/api/config", url.Values{
-		store.KeyNotifyUserKey: {""},
-		store.KeyNotifyChannel: {"ro"},
+		store.KeyWGPresharedKey: {""},
+		store.KeyJCCDBDir:       {"ro"},
 	}); rec.Code != http.StatusOK {
 		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
 	}
 
-	got, err := a.Store().ConfigGet(ctx, store.KeyNotifyUserKey)
+	got, err := a.Store().ConfigGet(ctx, store.KeyWGPresharedKey)
 	if err != nil {
 		t.Fatalf("ConfigGet: %v", err)
 	}
-	if got != "hunter2" {
+	if got != testPSK {
 		t.Errorf("secret after a blank submit = %q", got)
 	}
 }
@@ -187,7 +190,7 @@ func TestBlankSecretKeepsTheStoredOne(t *testing.T) {
 func TestSecretsNeverLeaveTheProcess(t *testing.T) {
 	a, h := newApp(t)
 
-	if rec := postForm(t, h, "/api/config", url.Values{store.KeyNotifyUserKey: {"hunter2"}}); rec.Code != http.StatusOK {
+	if rec := postForm(t, h, "/api/config", url.Values{store.KeyWGPresharedKey: {testPSK}}); rec.Code != http.StatusOK {
 		t.Fatalf("save = %d: %s", rec.Code, rec.Body)
 	}
 	priv, err := a.Store().ConfigGet(context.Background(), store.KeyWGPrivateKey)
@@ -200,7 +203,7 @@ func TestSecretsNeverLeaveTheProcess(t *testing.T) {
 		req.Header.Set("Accept", "text/html")
 		body := do(t, h, req).Body.String()
 
-		for name, secret := range map[string]string{"user key": "hunter2", "private key": priv} {
+		for name, secret := range map[string]string{"preshared key": testPSK, "private key": priv} {
 			if strings.Contains(body, secret) {
 				t.Errorf("GET %s leaked the %s", path, name)
 			}

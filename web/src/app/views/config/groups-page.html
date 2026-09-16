@@ -1,5 +1,30 @@
 @for (group of groups(); track group.name) {
-  <config-group [group]="group" />
+  <config-group [group]="group">
+    @if (group.name === 'Scan' && diagnostics.view(); as v) {
+      <dl class="facts">
+        <dt>names normalized</dt>
+        <dd [class.warn]="v.nonNfcNames > 0">{{ fmt.comma(v.nonNfcNames) }}</dd>
+      </dl>
+      <p class="note">
+        Names the walk had to normalize to NFC. A non-zero count means part of the tree went past
+        macOS and came back decomposed; without the normalization every title with an umlaut would
+        look new on every scan, and the whole collection would transfer again.
+      </p>
+    }
+  </config-group>
 }
 
 <config-save-bar />
+
+@if (page.path === 'system') {
+  <config-log-tail [seed]="diagnostics.view()?.log">
+    @if (diagnostics.view(); as v) {
+      <dl class="facts">
+        <dt>data directory</dt>
+        <dd class="mono break">{{ v.dataDir }}</dd>
+        <dt>database</dt>
+        <dd>{{ v.status.database }}</dd>
+      </dl>
+    }
+  </config-log-tail>
+}

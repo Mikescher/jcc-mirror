@@ -1,15 +1,14 @@
-// Package update is the self-updater of DESIGN.md §5: fetch a newer binary from
-// the same share the mirror already reads, prove it is plausible, put it in
-// place and re-exec.
+// Package update is the self-updater of DESIGN.md §5: fetch a newer binary over
+// plain HTTP(S), prove it is plausible, put it in place and re-exec.
 //
 // "Update in place without restarting docker" is not literally possible - the
 // kernel holds the running executable's inode - but re-execing gives exactly the
 // property that was wanted: same PID, same container, no orchestration involved.
 //
-// There is no signing, deliberately. The transport is a private WireGuard tunnel
-// to a machine the operator controls, so what the checks here are aimed at is
-// corruption: a truncated download, an HTML error page saved as a binary, a
-// binary for the wrong architecture. Those are the realistic failures, and they
+// There is no signing, deliberately. The binary comes from a server the operator
+// controls, so what the checks here are aimed at is corruption: a truncated
+// download, an HTML error page saved as a binary, a binary for the wrong
+// architecture. Those are the realistic failures, and they
 // are all caught before anything is renamed.
 package update
 
@@ -19,13 +18,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"blackforestbytes.com/jcc-mirror/remote"
 )
 
 // elfMagic is the first four bytes of every ELF file. Checking it costs nothing
@@ -34,7 +32,7 @@ import (
 var elfMagic = []byte{0x7f, 'E', 'L', 'F'}
 
 // maxBinary bounds a download. The binary is around 25 MB; this is generous
-// enough never to be hit by a real one and small enough that a share serving
+// enough never to be hit by a real one and small enough that a server serving
 // something unbounded cannot fill the data volume.
 const maxBinary = 512 << 20
 
@@ -42,38 +40,31 @@ const maxBinary = 512 << 20
 // that in this long is not one to re-exec into.
 const smokeTimeout = 20 * time.Second
 
-// Source is where the new binary comes from. Exactly one of URL and Path names
-// it: Path is a file on the publisher's share, which is where it lives and needs
-// nothing new on his side, and URL is an ordinary web download for a build
-// served from somewhere else. Either way the fetch rides the tunnel, so it is
-// the same encrypted path everything else to the publisher takes.
+// Source is where the new binary comes from: an http or https URL, fetched
+// directly rather than through the tunnel. Credentials, when the server wants
+// any, go in the URL's userinfo and are sent as Basic auth - which is why
+// everything shown to a person goes through Location.
 type Source struct {
 	URL  string
-	Path string
-	// Share is required when Path is set. It is the client the mirror already
-	// reads with, so the download is one more read of a share that is open
-	// anyway rather than a second way in.
-	Share remote.Remote
-
-	Username string
-	Password string
-	HTTP     *http.Client
+	HTTP *http.Client
 }
 
-// Location is where the binary comes from, in the form worth showing someone.
-func (s Source) Location() string {
-	if s.Path != "" {
-		return s.Path
+// Location is the URL with any password masked, the form worth showing someone.
+func (s Source) Location() string { return redact(s.URL) }
+
+func redact(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
 	}
-	return s.URL
+	return u.Redacted()
 }
 
-// Release is what the share holds. There is no version file and no manifest: the
-// question is literally "is the file over there newer than mine", and the
-// modification time answers it (DESIGN.md §5).
+// Release is what the server holds. There is no version file and no manifest:
+// the question is literally "is the file over there newer than mine", and the
+// Last-Modified answers it (DESIGN.md §5).
 type Release struct {
-	// URL is where the binary came from - a web address, or a path on the
-	// publisher's share.
+	// URL is where the binary came from, redacted.
 	URL     string    `json:"url"`
 	ModTime time.Time `json:"modTime"`
 	Size    int64     `json:"size"`
@@ -89,24 +80,17 @@ func (s Source) client() *http.Client {
 func (s Source) request(ctx context.Context, method string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, s.URL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build %s %s: %w", method, s.URL, err)
-	}
-	if s.Username != "" || s.Password != "" {
-		req.SetBasicAuth(s.Username, s.Password)
+		return nil, fmt.Errorf("build %s %s: %w", method, s.Location(), err)
 	}
 	req.Header.Set("User-Agent", "jcc-mirror")
 	return req, nil
 }
 
-// Head asks the share what it has. A source that answers without a modification
-// time is an error rather than a silent "not newer": the whole comparison rests
-// on it, and an update that silently never happens is the failure mode this is
-// least likely to be noticed by.
+// Head asks the server what it has. A source that answers without a
+// modification time is an error rather than a silent "not newer": the whole
+// comparison rests on it, and an update that silently never happens is the
+// failure mode this is least likely to be noticed by.
 func (s Source) Head(ctx context.Context) (Release, error) {
-	if s.Path != "" {
-		return s.statShare(ctx)
-	}
-
 	req, err := s.request(ctx, http.MethodHead)
 	if err != nil {
 		return Release{}, err
@@ -114,61 +98,28 @@ func (s Source) Head(ctx context.Context) (Release, error) {
 
 	resp, err := s.client().Do(req)
 	if err != nil {
-		return Release{}, fmt.Errorf("head %s: %w", s.URL, err)
+		return Release{}, fmt.Errorf("head: %w", err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Release{}, fmt.Errorf("head %s -> %s", s.URL, resp.Status)
+		return Release{}, fmt.Errorf("head %s -> %s", s.Location(), resp.Status)
 	}
 
 	raw := resp.Header.Get("Last-Modified")
 	if raw == "" {
-		return Release{}, fmt.Errorf("%s answered without a Last-Modified, so there is nothing to compare against", s.URL)
+		return Release{}, fmt.Errorf("%s answered without a Last-Modified, so there is nothing to compare against", s.Location())
 	}
 	mod, err := http.ParseTime(raw)
 	if err != nil {
-		return Release{}, fmt.Errorf("Last-Modified %q of %s: %w", raw, s.URL, err)
+		return Release{}, fmt.Errorf("Last-Modified %q of %s: %w", raw, s.Location(), err)
 	}
 
-	return Release{URL: s.URL, ModTime: mod.UTC(), Size: resp.ContentLength}, nil
+	return Release{URL: s.Location(), ModTime: mod.UTC(), Size: resp.ContentLength}, nil
 }
 
-// statShare is Head against the publisher's share, where the binary normally
-// sits: the same stat the scanner makes of every other file.
-func (s Source) statShare(ctx context.Context) (Release, error) {
-	if s.Share == nil {
-		return Release{}, ErrNoRemote
-	}
-
-	e, err := s.Share.Stat(ctx, s.Path)
-	if err != nil {
-		return Release{}, fmt.Errorf("stat %s on the share: %w", s.Path, err)
-	}
-	if e.IsDir {
-		return Release{}, fmt.Errorf("%s on the share is a directory, not a binary", s.Path)
-	}
-	if e.MTime.IsZero() {
-		return Release{}, fmt.Errorf("%s on the share has no timestamp, so there is nothing to compare against", s.Path)
-	}
-	return Release{URL: s.Path, ModTime: e.MTime.UTC(), Size: e.Size}, nil
-}
-
-// open starts the download. The two forms differ only here; everything the
-// caller does with the bytes is the same either way.
 func (s Source) open(ctx context.Context) (io.ReadCloser, error) {
-	if s.Path != "" {
-		if s.Share == nil {
-			return nil, ErrNoRemote
-		}
-		rc, err := s.Share.Open(ctx, s.Path, 0)
-		if err != nil {
-			return nil, fmt.Errorf("read %s off the share: %w", s.Path, err)
-		}
-		return rc, nil
-	}
-
 	req, err := s.request(ctx, http.MethodGet)
 	if err != nil {
 		return nil, err
@@ -176,12 +127,12 @@ func (s Source) open(ctx context.Context) (io.ReadCloser, error) {
 
 	resp, err := s.client().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("get %s: %w", s.URL, err)
+		return nil, fmt.Errorf("get: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("get %s -> %s: %s", s.URL, resp.Status, strings.TrimSpace(string(snippet)))
+		return nil, fmt.Errorf("get %s -> %s: %s", s.Location(), resp.Status, strings.TrimSpace(string(snippet)))
 	}
 	return resp.Body, nil
 }
@@ -302,7 +253,7 @@ func parseVersion(line string) (version, build string, ok bool) {
 
 // ParseBuildStamp reads the -ldflags timestamp. A build that carries no usable
 // one - a `go build` with no Makefile behind it - returns the zero time, which
-// every caller reads as "cannot tell whether the share is newer" rather than as
+// every caller reads as "cannot tell whether the server's is newer" rather than as
 // "the epoch, so everything is newer".
 func ParseBuildStamp(s string) time.Time {
 	s = strings.TrimSpace(s)
@@ -321,22 +272,22 @@ func ParseBuildStamp(s string) time.Time {
 // It is a sentinel because "nobody asked for updates" is not a fault to report.
 var ErrNotConfigured = errors.New("no update URL is configured")
 
-// ErrNoRemote is what a share-relative binary answers when there is no client to
-// read it with. It is a sentinel so a caller that has no remote at all - the CLI,
-// which deliberately does not open a second tunnel - can say so in its own words.
-var ErrNoRemote = errors.New("the binary is a path on the publisher's share, and no remote is configured")
-
-// Locate reads the configured binary setting, which is either an absolute URL or
-// a path on the publisher's share. The relative form is the usual one: it is
-// where the binary actually lives, and writing the remote root down a second
-// time is a way for the two to disagree.
-func Locate(raw string) (url, path string, err error) {
+// Locate checks the configured binary URL: http or https with a host, nothing
+// else.
+func Locate(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
-	switch {
-	case raw == "":
-		return "", "", ErrNotConfigured
-	case strings.Contains(raw, "://"):
-		return raw, "", nil
+	if raw == "" {
+		return "", ErrNotConfigured
 	}
-	return "", raw, nil
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("update URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("update URL %s: must be http:// or https://", u.Redacted())
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("update URL %s: has no host", u.Redacted())
+	}
+	return raw, nil
 }
