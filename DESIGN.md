@@ -286,7 +286,8 @@ changed on every scan, forever, and 30 TB re-transfers. All belong in M2:
 ### 2.5 Deletion safety (S2)
 
 Unattended deletion of a 30 TB dataset is the one operation here that destroys something
-irrecoverable:
+irrecoverable. A pair's mode decides how much of this applies: `mirror` deletes with only rules 2
+and 4, `guarded` applies all four, and `additive` never deletes.
 
 1. **Threshold** — refuse a plan that deletes more than *N* files or *X* % of the pair; pause it and
    surface it for one-click approval.
@@ -528,7 +529,7 @@ is saved. Nothing has to be known before the process starts.
 - **Tunnel**: our private key, the rootserver's public key, endpoint, our address inside the tunnel,
   allowed-ips, optional preshared key, optional DNS, MTU, keepalive — the nine the import writes.
   Changing any of them re-opens the tunnel in place.
-- **Pairs**: `{id, name, type: raw|jcc, remote_id, remote_path, local_path, mode: mirror|additive,
+- **Pairs**: `{id, name, type: raw|jcc, remote_id, remote_path, local_path, mode: mirror|guarded|additive,
   includes[], excludes[], delete_guard, priority, owner, file_mode, dir_mode, enabled}`. The last
   three are applied to every file and directory the engine creates under `local_path`, before a
   file is renamed into place; empty keeps what the process produces. `remote_id` is the remote the pair
@@ -629,7 +630,7 @@ Setup elsewhere, once:
 | M1 | Skeleton: binary (`blackforestbytes.com/jcc-mirror`), sqlite state, config table + setup view, `Remote` interface + SMB implementation + local fake, events, `/healthz`. | |
 | M2 | Scanner, differ, transfer: resumable walk, bounded reads at an offset, `.part` files, verify, rename, job state machine, retry — **and adopt mode**, without which the USB bootstrap can't be recognised. | The core, testable from the CLI with no UI. |
 | M3 | Scheduler + limiter: 7×24 grid, caps, window boundaries mid-transfer, free-space preflight. | |
-| M4 | Deletion + guards: mirror mode, threshold, quarantine, retention, non-empty assertion. | Deliberately after M2/M3 — run additive-only until the diff is trusted. |
+| M4 | Deletion + guards: mirror and guarded modes, threshold, quarantine, retention, non-empty assertion. | Deliberately after M2/M3 — run additive-only until the diff is trusted. |
 | M5 | jCC pair: hard exclusions, lock gate with the re-check, staged rename, numbered backups + rollback. | Small once M2 is solid. |
 | M6 | Dashboard: Angular + embed, SSE, the live views and the settings pages, bandwidth rollups, actions, SCN notifications. | Notifications ship with the dashboard rather than later — until then a stopped sync is invisible. |
 | M7 | Self-update: mtime check, sanity checks, re-exec, supervisor fallback. | Last — a broken updater is the one bug that is hard to recover from remotely. |

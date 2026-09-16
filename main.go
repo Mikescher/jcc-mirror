@@ -71,7 +71,7 @@ var commands = []command{
 	{"plan", groupMirror, "say what a sync would do, and change nothing", cmdPlan},
 	{"sync", groupMirror, "queue the plan and transfer it", cmdSync},
 	{"adopt", groupMirror, "recognise a USB bootstrap already on disk, matched on size", cmdAdopt},
-	{"delete", groupMirror, "quarantine what the publisher no longer has, behind the guards", cmdDelete},
+	{"delete", groupMirror, "delete what the publisher no longer has; a guarded pair quarantines it, behind the guards", cmdDelete},
 	{"trash", groupMirror, "list, restore from and empty the quarantine", cmdTrash},
 	{"db", groupMirror, "the jCC database: its lock gate, the copies kept, and the way back", cmdDB},
 	{"jobs", groupMirror, "inspect the transfer queue, including what failed and why", cmdJobs},

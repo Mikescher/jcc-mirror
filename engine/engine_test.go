@@ -40,7 +40,7 @@ func newHarness(t *testing.T, opts ...func(*Options)) *harness {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	pair := store.Pair{Name: "media", RemotePath: "", LocalPath: dst, Enabled: true}
+	pair := store.Pair{Name: "media", RemotePath: "", LocalPath: dst, Mode: store.ModeAdditive, Enabled: true}
 	if err := st.CreatePair(ctx, &pair); err != nil {
 		t.Fatalf("create pair: %v", err)
 	}

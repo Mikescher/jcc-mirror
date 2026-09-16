@@ -11,7 +11,7 @@ import (
 func pairForDeletion(t *testing.T, s *Store) Pair {
 	t.Helper()
 
-	p := Pair{Name: "media", LocalPath: "/mnt/media", Mode: ModeMirror, Enabled: true}
+	p := Pair{Name: "media", LocalPath: "/mnt/media", Mode: ModeGuarded, Enabled: true}
 	if err := s.CreatePair(context.Background(), &p); err != nil {
 		t.Fatalf("create pair: %v", err)
 	}

@@ -131,7 +131,7 @@ export interface Pair {
   /** Relative to the root of the pair's remote. */
   remotePath: string;
   localPath: string;
-  mode: 'additive' | 'mirror';
+  mode: 'mirror' | 'guarded' | 'additive';
   includes: string[];
   excludes: string[];
   deleteGuard: number;

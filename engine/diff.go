@@ -32,10 +32,10 @@ type Plan struct {
 	ReplaceBytes int64 `json:"replaceBytes"`
 
 	// Vanished is what we hold and the publisher no longer has. What becomes of it
-	// is the pair's Mode: an additive pair keeps it, a mirror pair quarantines it
-	// once the additions have landed. Guard is why a person has to look first, when
-	// the count is over a threshold, and Approved says one already has
-	// (DESIGN.md §2.5).
+	// is the pair's Mode: an additive pair keeps it, a mirror pair deletes it and a
+	// guarded pair quarantines it, both once the additions have landed. Guard is
+	// why a person has to look first on a guarded pair, when the count is over a
+	// threshold, and Approved says one already has (DESIGN.md §2.5).
 	Vanished      int    `json:"vanished"`
 	VanishedBytes int64  `json:"vanishedBytes"`
 	Mode          string `json:"mode"`
@@ -219,10 +219,10 @@ func (e *Engine) plan(ctx context.Context, pair store.Pair, sample int, fn func(
 		return Plan{}, err
 	}
 
-	// What a mirror pair would do with the vanished files, before it does it: a
+	// What a guarded pair would do with the vanished files, before it does it: a
 	// plan that trips a guard is the one worth reading, and reading it here costs
 	// nothing while reading it after the fact costs a run.
-	if p.Mode == store.ModeMirror && p.Vanished > 0 {
+	if p.Mode == store.ModeGuarded && p.Vanished > 0 {
 		if p.Guard = guardTrip(pair, e.opts.DeletePercent, int64(p.Vanished), p.LocalFiles); p.Guard != "" {
 			approval, ok, err := e.store.LatestApproval(ctx, pair.ID)
 			if err != nil {

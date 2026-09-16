@@ -407,14 +407,16 @@ func planSummary(p engine.Plan) string {
 // has, in the few words a summary line has room for.
 func vanishedFate(p engine.Plan) string {
 	switch {
-	case p.Mode != store.ModeMirror:
+	case p.Mode == store.ModeAdditive:
 		return "kept: the pair is additive"
 	case p.Vanished == 0:
 		return "nothing to delete"
 	case p.Guard != "" && !p.Approved:
 		return "held for approval: " + p.Guard
-	default:
+	case p.Mode == store.ModeGuarded:
 		return "to be quarantined"
+	default:
+		return "to be deleted"
 	}
 }
 
@@ -427,9 +429,13 @@ func reapSummary(r engine.ReapResult) string {
 	case r.Skipped != "":
 		return "nothing deleted — " + r.Skipped
 	default:
-		out := fmt.Sprintf("%s file(s) quarantined (%s)", format.Comma(int64(r.Deleted)), format.Bytes(r.Bytes))
+		verb := "deleted"
+		if r.Mode == store.ModeGuarded {
+			verb = "quarantined"
+		}
+		out := fmt.Sprintf("%s file(s) %s (%s)", format.Comma(int64(r.Deleted)), verb, format.Bytes(r.Bytes))
 		if r.Failed > 0 {
-			out += fmt.Sprintf(", %s could not be moved", format.Comma(int64(r.Failed)))
+			out += fmt.Sprintf(", %s could not be removed", format.Comma(int64(r.Failed)))
 		}
 		return out
 	}

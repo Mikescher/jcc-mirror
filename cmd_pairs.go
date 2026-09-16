@@ -128,7 +128,7 @@ func printPairState(ctx context.Context, st *store.Store, p store.Pair) error {
 	if p.Owner != "" || p.FileMode != "" || p.DirMode != "" {
 		fmt.Printf("  new entries    owner %s, files %s, directories %s\n", orDash(p.Owner), orDash(p.FileMode), orDash(p.DirMode))
 	}
-	if p.DeleteGuard > 0 {
+	if p.Mode == store.ModeGuarded && p.DeleteGuard > 0 {
 		fmt.Printf("  delete guard   %s files before a deletion waits for approval\n", format.Comma(int64(p.DeleteGuard)))
 	}
 
@@ -381,9 +381,9 @@ func pairFlags(fs *flag.FlagSet) (*store.Pair, *bool) {
 	fs.StringVar(&p.Type, "type", store.PairRaw, "\"raw\", or \"jcc\" for the ClipCornDB directory: hard exclusions and a lock gate on the database")
 	fs.StringVar(&p.RemotePath, "remote", "", "directory on the pair's remote, relative to that remote's root; empty means the root itself")
 	fs.StringVar(&p.LocalPath, "local", "", "absolute directory here that the pair mirrors into")
-	fs.StringVar(&p.Mode, "mode", store.ModeAdditive, "\"additive\" or \"mirror\"; a mirror pair quarantines what the publisher drops, behind the guards")
+	fs.StringVar(&p.Mode, "mode", store.ModeMirror, "\"mirror\" deletes what the publisher drops, \"guarded\" quarantines it behind the guards, \"additive\" keeps it")
 	fs.IntVar(&p.Priority, "priority", 100, "lower runs first")
-	fs.IntVar(&p.DeleteGuard, "guard", 100, "hold a deletion of more than this many files until it is approved; 0 removes the count limit, leaving the percentage threshold")
+	fs.IntVar(&p.DeleteGuard, "guard", 100, "guarded pairs: hold a deletion of more than this many files until it is approved; 0 removes the count limit, leaving the percentage threshold")
 	fs.StringVar(&p.Owner, "owner", "", "numeric uid:gid given to every file and directory the mirror creates, e.g. 1026:100; needs root; empty keeps the process's own")
 	fs.StringVar(&p.FileMode, "file-mode", "", "octal mode set on every file the mirror creates, e.g. 0000 for a Synology ACL share; empty is 0644 minus the umask")
 	fs.StringVar(&p.DirMode, "dir-mode", "", "octal mode set on every directory the mirror creates; empty is 0755 minus the umask")

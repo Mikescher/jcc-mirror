@@ -100,15 +100,17 @@ func printPlan(p engine.Plan) error {
 		// The count is the point of it: a diff that has gone wrong shows up as a
 		// vanished count in the thousands long before anything acts on one.
 		switch {
-		case p.Mode != store.ModeMirror:
+		case p.Mode == store.ModeAdditive:
 			fmt.Printf("=> the %s vanished file(s) are counted and will not be deleted: this pair is\n   additive, so the tree here only ever grows.\n", format.Comma(int64(p.Vanished)))
 		case p.Guard != "" && !p.Approved:
 			fmt.Printf("=> the %s vanished file(s) are on hold: %s.\n   `jcc-mirror delete -pair %s -approve` allows exactly this set.\n",
 				format.Comma(int64(p.Vanished)), p.Guard, p.PairName)
 		case p.Guard != "":
 			fmt.Printf("=> the %s vanished file(s) have been approved and go to the quarantine on the\n   next sync.\n", format.Comma(int64(p.Vanished)))
-		default:
+		case p.Mode == store.ModeGuarded:
 			fmt.Printf("=> the %s vanished file(s) move to .jccmirror/trash on the next sync, once the\n   additions have landed, and are removed for good when the retention runs out.\n", format.Comma(int64(p.Vanished)))
+		default:
+			fmt.Printf("=> the %s vanished file(s) are deleted for good on the next sync, once the\n   additions have landed. This pair is a mirror: nothing holds or quarantines them.\n", format.Comma(int64(p.Vanished)))
 		}
 	}
 	if p.Database != nil {

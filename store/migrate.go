@@ -45,20 +45,65 @@ type migration struct {
 	sql     string
 }
 
+// noForeignKeys marks a migration that rebuilds a referenced table. Such a
+// migration has to run with foreign keys off, or dropping the old table cascades
+// into everything that references it.
+const noForeignKeys = "-- foreign_keys: off\n"
+
 func (s *Store) applyMigration(ctx context.Context, m migration) error {
-	err := s.tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, m.sql); err != nil {
-			return fmt.Errorf("migration %s: %w", m.name, err)
-		}
-		// PRAGMA user_version takes no placeholder, and the value is an int parsed
-		// from the filename, so there is nothing to inject.
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, m.version)); err != nil {
-			return fmt.Errorf("migration %s: set version: %w", m.name, err)
-		}
-		return nil
-	})
+	if strings.HasPrefix(m.sql, noForeignKeys) {
+		return s.applyWithoutForeignKeys(ctx, m)
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error { return runMigration(ctx, tx, m) })
+}
+
+// applyWithoutForeignKeys pins one connection: the pragma is per connection, and
+// sqlite ignores it inside a transaction.
+func (s *Store) applyWithoutForeignKeys(ctx context.Context, m migration) error {
+	conn, err := s.db.Conn(ctx)
 	if err != nil {
+		return fmt.Errorf("migration %s: %w", m.name, err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("migration %s: %w", m.name, err)
+	}
+	// The connection goes back to the pool, and every other one has them on.
+	defer conn.ExecContext(context.WithoutCancel(ctx), `PRAGMA foreign_keys = ON`)
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migration %s: begin transaction: %w", m.name, err)
+	}
+	defer tx.Rollback()
+
+	if err := runMigration(ctx, tx, m); err != nil {
 		return err
+	}
+	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("migration %s: check foreign keys: %w", m.name, err)
+	}
+	broken := rows.Next()
+	rows.Close()
+	if broken {
+		return fmt.Errorf("migration %s: leaves rows referencing something that is not there", m.name)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migration %s: commit: %w", m.name, err)
+	}
+	return nil
+}
+
+func runMigration(ctx context.Context, tx *sql.Tx, m migration) error {
+	if _, err := tx.ExecContext(ctx, m.sql); err != nil {
+		return fmt.Errorf("migration %s: %w", m.name, err)
+	}
+	// PRAGMA user_version takes no placeholder, and the value is an int parsed
+	// from the filename, so there is nothing to inject.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, m.version)); err != nil {
+		return fmt.Errorf("migration %s: set version: %w", m.name, err)
 	}
 	return nil
 }

@@ -18,8 +18,9 @@ import (
 type ReapResult struct {
 	PairID   int64  `json:"pairId"`
 	PairName string `json:"pair"`
+	Mode     string `json:"mode"`
 
-	Deleted int   `json:"deleted"` // quarantined, not unlinked
+	Deleted int   `json:"deleted"` // quarantined on a guarded pair, unlinked on a mirror pair
 	Bytes   int64 `json:"bytes"`
 	Missing int   `json:"missing"` // gone from disk already; only the row went
 	Failed  int   `json:"failed"`
@@ -38,9 +39,10 @@ type ReapResult struct {
 	Duration    time.Duration `json:"duration"`
 }
 
-// Reap is the deletion half of a mirror pair: the files the publisher no longer
-// has are moved into the quarantine here, and the quarantine of previous runs is
-// emptied once its retention has passed.
+// Reap is the deletion half of a mirror or guarded pair: the files the publisher
+// no longer has are deleted here - a guarded pair moves them into the quarantine,
+// behind the guards - and the quarantine of previous runs is emptied once its
+// retention has passed.
 //
 // It runs after a sync rather than inside one. The tree only ever shrinks once
 // the additions have landed, so a run that could not reach the publisher, or
@@ -48,15 +50,15 @@ type ReapResult struct {
 // (DESIGN.md §2.5).
 func (e *Engine) Reap(ctx context.Context, pair store.Pair) (res ReapResult, err error) {
 	started := time.Now()
-	res = ReapResult{PairID: pair.ID, PairName: pair.Name}
+	res = ReapResult{PairID: pair.ID, PairName: pair.Name, Mode: pair.Mode}
 	// However this ends - refused, held, or done - it took as long as it took.
 	defer func() { res.Duration = time.Since(started) }()
 
-	// Before anything else, and for every pair: a pair switched back to additive
+	// Before anything else, and for every pair: a pair switched away from guarded
 	// still has yesterday's quarantine to let go of.
 	e.pruneTrash(ctx, pair, &res)
 
-	if pair.Mode != store.ModeMirror {
+	if pair.Mode == store.ModeAdditive {
 		res.Skipped = "the pair is additive: nothing here is ever deleted"
 		return res, nil
 	}
@@ -106,19 +108,20 @@ func (e *Engine) Reap(ctx context.Context, pair store.Pair) (res ReapResult, err
 		return res, nil
 	}
 
-	localFiles, _, err := e.store.FileStats(ctx, pair.ID)
-	if err != nil {
-		return res, err
-	}
-
-	if reason := guardTrip(pair, e.opts.DeletePercent, files, localFiles); reason != "" {
-		decided, err := e.hold(ctx, pair, scan.ID, files, bytes, reason, &res)
-		if err != nil || !decided {
+	if pair.Mode == store.ModeGuarded {
+		localFiles, _, err := e.store.FileStats(ctx, pair.ID)
+		if err != nil {
 			return res, err
+		}
+		if reason := guardTrip(pair, e.opts.DeletePercent, files, localFiles); reason != "" {
+			decided, err := e.hold(ctx, pair, scan.ID, files, bytes, reason, &res)
+			if err != nil || !decided {
+				return res, err
+			}
 		}
 	}
 
-	res.Deleted, res.Bytes, res.Missing, res.Failed, err = e.quarantine(ctx, pair, files)
+	res.Deleted, res.Bytes, res.Missing, res.Failed, err = e.remove(ctx, pair, files)
 	if err != nil {
 		return res, err
 	}
@@ -129,19 +132,30 @@ func (e *Engine) Reap(ctx context.Context, pair store.Pair) (res ReapResult, err
 		}
 	}
 
-	msg := fmt.Sprintf("%s file(s) of %q quarantined, %s, after %s",
-		format.Comma(int64(res.Deleted)), pair.Name, format.Bytes(res.Bytes), format.Duration(time.Since(started)))
+	msg := fmt.Sprintf("%s file(s) of %q %s, %s, after %s",
+		format.Comma(int64(res.Deleted)), pair.Name, removedVerb(pair), format.Bytes(res.Bytes), format.Duration(time.Since(started)))
 	level := store.LevelInfo
 	if res.Failed > 0 {
 		level = store.LevelWarn
-		msg += fmt.Sprintf("; %s could not be moved", format.Comma(int64(res.Failed)))
+		msg += fmt.Sprintf("; %s could not be removed", format.Comma(int64(res.Failed)))
+	}
+	data := map[string]any{
+		"mode": pair.Mode, "deleted": res.Deleted, "bytes": res.Bytes, "missing": res.Missing, "failed": res.Failed,
+		"seconds": time.Since(started).Seconds(),
+	}
+	if pair.Mode == store.ModeGuarded {
+		data["retention"] = e.opts.TrashRetention.String()
 	}
 	e.log.Infof("delete: %s", msg)
-	e.event(ctx, level, store.KindDeleted, pair.ID, msg, map[string]any{
-		"deleted": res.Deleted, "bytes": res.Bytes, "missing": res.Missing, "failed": res.Failed,
-		"retention": e.opts.TrashRetention.String(), "seconds": time.Since(started).Seconds(),
-	})
+	e.event(ctx, level, store.KindDeleted, pair.ID, msg, data)
 	return res, nil
+}
+
+func removedVerb(pair store.Pair) string {
+	if pair.Mode == store.ModeGuarded {
+		return "quarantined"
+	}
+	return "deleted"
 }
 
 // hold is what happens to a deletion the guards stopped: it goes ahead only on an
@@ -263,16 +277,22 @@ func (e *Engine) vanished(ctx context.Context, pair store.Pair, fn func(relpath 
 	}
 }
 
-// quarantine moves the vanished files into the day's trash directory and drops
-// their row of local truth. A file that will not move is counted and stepped
-// over: one directory with the wrong permissions must not stop the other nine
-// thousand deletions.
-func (e *Engine) quarantine(ctx context.Context, pair store.Pair, expect int64) (deleted int, bytes int64, missing, failed int, err error) {
-	dir := trashDirFor(pair, time.Now())
-	if err := makeDir(pair, dir); err != nil {
-		return 0, 0, 0, 0, fmt.Errorf("create the quarantine directory: %w", err)
+// remove takes the vanished files out of the tree and drops their row of local
+// truth: a guarded pair moves them into the day's trash directory, a mirror pair
+// unlinks them. A file that will not go is counted and stepped over: one
+// directory with the wrong permissions must not stop the other nine thousand
+// deletions.
+func (e *Engine) remove(ctx context.Context, pair store.Pair, expect int64) (deleted int, bytes int64, missing, failed int, err error) {
+	var dir string
+	if pair.Mode == store.ModeGuarded {
+		dir = trashDirFor(pair, time.Now())
+		if err := makeDir(pair, dir); err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("create the quarantine directory: %w", err)
+		}
+		e.log.Infof("delete: quarantining %s file(s) of %q into %s", format.Comma(expect), pair.Name, dir)
+	} else {
+		e.log.Infof("delete: deleting %s file(s) of %q", format.Comma(expect), pair.Name)
 	}
-	e.log.Infof("delete: quarantining %s file(s) of %q into %s", format.Comma(expect), pair.Name, dir)
 
 	_, _, err = e.vanished(ctx, pair, func(relpath string, size int64) error {
 		if err := ctx.Err(); err != nil {
@@ -292,18 +312,7 @@ func (e *Engine) quarantine(ctx context.Context, pair store.Pair, expect int64) 
 			return nil
 
 		default:
-			dst, err := trashPath(dir, relpath)
-			if err != nil {
-				e.log.Errorf("delete: %v", err)
-				failed++
-				return nil
-			}
-			if err := makeDir(pair, filepath.Dir(dst)); err != nil {
-				e.log.Errorf("delete: %q: %v", relpath, err)
-				failed++
-				return nil
-			}
-			if err := os.Rename(src, dst); err != nil {
+			if err := removeOne(pair, dir, src, relpath); err != nil {
 				e.log.Errorf("delete: %q: %v", relpath, err)
 				failed++
 				return nil
@@ -323,6 +332,21 @@ func (e *Engine) quarantine(ctx context.Context, pair store.Pair, expect int64) 
 		return nil
 	})
 	return deleted, bytes, missing, failed, err
+}
+
+// removeOne unlinks src, or moves it below dir when there is one.
+func removeOne(pair store.Pair, dir, src, relpath string) error {
+	if dir == "" {
+		return os.Remove(src)
+	}
+	dst, err := trashPath(dir, relpath)
+	if err != nil {
+		return err
+	}
+	if err := makeDir(pair, filepath.Dir(dst)); err != nil {
+		return err
+	}
+	return os.Rename(src, dst)
 }
 
 // pruneTrash empties the quarantine of everything past its retention. A failure

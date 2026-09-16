@@ -34,14 +34,21 @@
       <dd class="mono">{{ p.localPath }}</dd>
       <dt>deletions</dt>
       <dd>
-        @if (p.mode === 'mirror') {
-          @if (p.deleteGuard) {
-            more than {{ fmt.comma(p.deleteGuard) }} files in one run wait for approval
-          } @else {
-            no per-pair count limit; only the percentage guard applies
+        @switch (p.mode) {
+          @case ('mirror') {
+            deleted outright, without guards
           }
-        } @else {
-          none — this pair is additive
+          @case ('guarded') {
+            @if (p.deleteGuard) {
+              quarantined; more than {{ fmt.comma(p.deleteGuard) }} files in one run wait for
+              approval
+            } @else {
+              quarantined; no per-pair count limit, only the percentage guard applies
+            }
+          }
+          @default {
+            none — this pair is additive
+          }
         }
       </dd>
       @if (p.includes.length) {
@@ -208,35 +215,47 @@
             [disabled]="!unlocked()"
             (change)="editPair(p.id, 'mode', $any($event.target).value)"
           >
-            <option value="additive" [selected]="pairField(p, 'mode') === 'additive'">
-              additive
-            </option>
             <option value="mirror" [selected]="pairField(p, 'mode') === 'mirror'">
-              mirror (quarantines what the publisher drops)
+              mirror (deletes what the publisher drops)
+            </option>
+            <option value="guarded" [selected]="pairField(p, 'mode') === 'guarded'">
+              guarded (quarantines it, behind the guards)
+            </option>
+            <option value="additive" [selected]="pairField(p, 'mode') === 'additive'">
+              additive (keeps it)
             </option>
           </select>
           <span class="help">
-            @if (pairField(p, 'mode') === 'mirror') {
-              Files the publisher no longer has are moved into .jccmirror/trash here, behind the
-              deletion guards, and emptied after the retention period.
-            } @else {
-              Nothing here is ever deleted: files the publisher no longer has are kept.
+            @switch (pairField(p, 'mode')) {
+              @case ('mirror') {
+                Files the publisher no longer has are deleted here too, with no guard and no
+                quarantine.
+              }
+              @case ('guarded') {
+                Files the publisher no longer has are moved into .jccmirror/trash here, behind the
+                deletion guards, and emptied after the retention period.
+              }
+              @default {
+                Nothing here is ever deleted: files the publisher no longer has are kept.
+              }
             }
           </span>
         </label>
-        <label class="field">
-          <span class="name">Delete guard</span>
-          <input
-            type="text"
-            autocomplete="off"
-            [value]="pairField(p, 'deleteGuard')"
-            [disabled]="!unlocked()"
-            (input)="editPair(p.id, 'deleteGuard', $any($event.target).value)"
-          />
-          <span class="help">
-            Deletions above this many files wait for approval; 0 leaves only the percentage guard.
-          </span>
-        </label>
+        @if (pairField(p, 'mode') === 'guarded') {
+          <label class="field">
+            <span class="name">Delete guard</span>
+            <input
+              type="text"
+              autocomplete="off"
+              [value]="pairField(p, 'deleteGuard')"
+              [disabled]="!unlocked()"
+              (input)="editPair(p.id, 'deleteGuard', $any($event.target).value)"
+            />
+            <span class="help">
+              Deletions above this many files wait for approval; 0 leaves only the percentage guard.
+            </span>
+          </label>
+        }
         <label class="field">
           <span class="name">Excludes</span>
           <input
@@ -381,10 +400,9 @@
 <section class="panel">
   <h3>Add a pair</h3>
   <p class="note">
-    In <strong>additive</strong> mode the tree here only ever grows — what the publisher no longer
-    has is kept. In <strong>mirror</strong> mode it is quarantined here too, behind the deletion
-    guards. A pair is additive until it is told otherwise, which is the point: run additive-only
-    until the diff is trusted.
+    In <strong>mirror</strong> mode, the default, what the publisher no longer has is deleted here
+    too. In <strong>guarded</strong> mode it is quarantined instead, behind the deletion guards. In
+    <strong>additive</strong> mode the tree here only ever grows.
   </p>
   @if (!remotes().length) {
     <div class="hold">
@@ -457,15 +475,23 @@
     <label class="field">
       <span class="name">Mode</span>
       <select [disabled]="!unlocked()" (change)="editNew('mode', $any($event.target).value)">
-        <option value="additive" [selected]="newPair()['mode'] === 'additive'">additive</option>
         <option value="mirror" [selected]="newPair()['mode'] === 'mirror'">mirror</option>
+        <option value="guarded" [selected]="newPair()['mode'] === 'guarded'">guarded</option>
+        <option value="additive" [selected]="newPair()['mode'] === 'additive'">additive</option>
       </select>
       <span class="help">
-        @if (newPair()['mode'] === 'mirror') {
-          Files the publisher no longer has are moved into .jccmirror/trash here, behind the
-          deletion guards, and emptied after the retention period.
-        } @else {
-          Nothing here is ever deleted: files the publisher no longer has are kept.
+        @switch (newPair()['mode']) {
+          @case ('mirror') {
+            Files the publisher no longer has are deleted here too, with no guard and no
+            quarantine.
+          }
+          @case ('guarded') {
+            Files the publisher no longer has are moved into .jccmirror/trash here, behind the
+            deletion guards, and emptied after the retention period.
+          }
+          @default {
+            Nothing here is ever deleted: files the publisher no longer has are kept.
+          }
         }
       </span>
     </label>

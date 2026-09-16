@@ -391,7 +391,7 @@ func TestDashboardApprovesADeletion(t *testing.T) {
 
 	// No per-pair count limit at all, so what holds this back is the stored 10%
 	// threshold: one of two files is half the pair.
-	m.updatePair(t, url.Values{"mode": {store.ModeMirror}, "deleteGuard": {"0"}})
+	m.updatePair(t, url.Values{"mode": {store.ModeGuarded}, "deleteGuard": {"0"}})
 	m.run(t, RunScan)
 	if sync := m.run(t, RunSync); sync.Error != "" {
 		t.Fatalf("sync: %s", sync.Error)

@@ -86,12 +86,16 @@ func printReap(pair store.Pair, res engine.ReapResult) {
 		return
 	}
 
+	verb := "deleted    "
+	if res.Mode == store.ModeGuarded {
+		verb = "quarantined"
+	}
 	fmt.Printf("\ndeletion from %q finished in %s\n", pair.Name, format.Duration(res.Duration))
-	fmt.Printf("  quarantined    %s files, %s\n", format.Comma(int64(res.Deleted)), format.Bytes(res.Bytes))
+	fmt.Printf("  %s    %s files, %s\n", verb, format.Comma(int64(res.Deleted)), format.Bytes(res.Bytes))
 	fmt.Printf("  already gone   %s files were no longer on disk\n", format.Comma(int64(res.Missing)))
-	fmt.Printf("  failed         %s files could not be moved\n", format.Comma(int64(res.Failed)))
+	fmt.Printf("  failed         %s files could not be removed\n", format.Comma(int64(res.Failed)))
 
-	if res.Deleted > 0 {
+	if res.Deleted > 0 && res.Mode == store.ModeGuarded {
 		fmt.Printf("\n=> nothing was unlinked: `jcc-mirror trash -pair %s` lists what is held and\n", pair.Name)
 		fmt.Printf("   can put a file back until its retention runs out.\n")
 	}

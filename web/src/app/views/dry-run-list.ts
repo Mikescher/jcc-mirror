@@ -94,7 +94,7 @@ export class DryRunList {
       case 'replace':
         return { label: 'replace', cls: '' };
       case 'delete':
-        if (plan.mode !== 'mirror') return { label: 'vanished · kept', cls: '' };
+        if (plan.mode === 'additive') return { label: 'vanished · kept', cls: '' };
         if (plan.guard && !plan.approved) return { label: 'delete · on hold', cls: 'warn' };
         return { label: 'delete', cls: 'bad' };
       default:

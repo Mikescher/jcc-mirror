@@ -10,12 +10,12 @@ import (
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
-// mirror switches the harness pair to the mode that deletes, with the guards the
-// caller wants to exercise.
-func (h *harness) mirror(guard int) {
+// setMode switches the harness pair to mode, with the guard the caller wants to
+// exercise.
+func (h *harness) setMode(mode string, guard int) {
 	h.t.Helper()
 
-	h.pair.Mode = store.ModeMirror
+	h.pair.Mode = mode
 	h.pair.DeleteGuard = guard
 	if err := h.store.UpdatePair(context.Background(), &h.pair); err != nil {
 		h.t.Fatalf("update pair: %v", err)
@@ -47,12 +47,12 @@ func (h *harness) exists(rel string) bool {
 	return err == nil
 }
 
-// TestMirrorQuarantinesWhatThePublisherDropped is the whole of §2.5 in one run:
+// TestGuardedQuarantinesWhatThePublisherDropped is the whole of §2.5 in one run:
 // the file leaves the tree, it is not unlinked, local truth stops claiming it,
 // and it can be put back.
-func TestMirrorQuarantinesWhatThePublisherDropped(t *testing.T) {
+func TestGuardedQuarantinesWhatThePublisherDropped(t *testing.T) {
 	h := newHarness(t)
-	h.mirror(0)
+	h.setMode(store.ModeGuarded, 0)
 	h.write("Filme/gone.mkv", 2048)
 	h.write("Filme/stays.mkv", 1024)
 	h.scan()
@@ -103,10 +103,10 @@ func TestMirrorQuarantinesWhatThePublisherDropped(t *testing.T) {
 	}
 }
 
-// TestAdditivePairNeverDeletes is the default, and the reason mirror mode is not:
-// until the diff is trusted, a publisher who unplugs a disk costs nothing here.
+// TestAdditivePairNeverDeletes: a publisher who unplugs a disk costs nothing here.
 func TestAdditivePairNeverDeletes(t *testing.T) {
 	h := newHarness(t)
+	h.setMode(store.ModeAdditive, 0)
 	h.write("Filme/gone.mkv", 512)
 	h.write("Filme/stays.mkv", 512)
 	h.scan()
@@ -124,11 +124,54 @@ func TestAdditivePairNeverDeletes(t *testing.T) {
 	}
 }
 
+// TestMirrorDeletesWithoutGuards: a set both guards would hold goes at once, and
+// is unlinked rather than quarantined.
+func TestMirrorDeletesWithoutGuards(t *testing.T) {
+	h := newHarness(t, func(o *Options) { o.DeletePercent = 10 })
+	h.setMode(store.ModeMirror, 1)
+	for _, rel := range []string{"a.mkv", "b.mkv", "c.mkv"} {
+		h.write(rel, 128)
+	}
+	h.scan()
+	h.sync()
+
+	h.drop("a.mkv")
+	h.drop("b.mkv")
+	h.scan()
+
+	plan, err := h.engine.Plan(context.Background(), h.pair, 0)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if plan.Vanished != 2 || plan.Guard != "" {
+		t.Errorf("plan reports %d vanished with guard %q, want 2 and no guard", plan.Vanished, plan.Guard)
+	}
+
+	res := h.reap()
+	if res.Blocked != nil || res.Deleted != 2 || res.Bytes != 256 {
+		t.Fatalf("reap = %+v, want both files deleted and nothing held", res)
+	}
+	if h.exists("a.mkv") || h.exists("b.mkv") || !h.exists("c.mkv") {
+		t.Error("the tree does not match the publisher's")
+	}
+	if days, err := Trash(h.pair, 0); err != nil || len(days) != 0 {
+		t.Errorf("a mirror pair quarantined %+v (err %v), want the files unlinked", days, err)
+	}
+	if _, err := os.Stat(trashRoot(h.pair)); err == nil {
+		t.Error("a mirror pair created the quarantine directory")
+	}
+	for _, rel := range []string{"a.mkv", "b.mkv"} {
+		if _, ok, err := h.store.FileAt(context.Background(), h.pair.ID, rel); err != nil || ok {
+			t.Errorf("local truth still holds %s: ok=%v err=%v", rel, ok, err)
+		}
+	}
+}
+
 // TestTheDeletionThresholdHoldsTheWholeSet is the first guard: over the limit,
 // nothing at all goes - not the first N and then a stop.
 func TestTheDeletionThresholdHoldsTheWholeSet(t *testing.T) {
 	h := newHarness(t)
-	h.mirror(1)
+	h.setMode(store.ModeGuarded, 1)
 	for _, rel := range []string{"a.mkv", "b.mkv", "c.mkv"} {
 		h.write(rel, 128)
 	}
@@ -188,7 +231,7 @@ func TestTheDeletionThresholdHoldsTheWholeSet(t *testing.T) {
 // yes must not have that yes apply to them.
 func TestAnApprovalDoesNotSurviveANewWalk(t *testing.T) {
 	h := newHarness(t)
-	h.mirror(1)
+	h.setMode(store.ModeGuarded, 1)
 	for _, rel := range []string{"a.mkv", "b.mkv", "c.mkv", "d.mkv"} {
 		h.write(rel, 128)
 	}
@@ -227,7 +270,7 @@ func TestAnApprovalDoesNotSurviveANewWalk(t *testing.T) {
 // the file count does not: a small pair losing most of itself.
 func TestThePercentageThresholdTripsOnItsOwn(t *testing.T) {
 	h := newHarness(t, func(o *Options) { o.DeletePercent = 10 })
-	h.mirror(0) // no count limit at all: the percentage is the only guard left
+	h.setMode(store.ModeGuarded, 0) // no count limit at all: the percentage is the only guard left
 	for _, rel := range []string{"a.mkv", "b.mkv", "c.mkv", "d.mkv"} {
 		h.write(rel, 128)
 	}
@@ -247,7 +290,7 @@ func TestThePercentageThresholdTripsOnItsOwn(t *testing.T) {
 // that still holds work is a tree that has not finished growing.
 func TestDeletionWaitsForTheAdditionsToLand(t *testing.T) {
 	h := newHarness(t)
-	h.mirror(0)
+	h.setMode(store.ModeMirror, 0)
 	h.write("gone.mkv", 128)
 	h.scan()
 	h.sync()
@@ -273,7 +316,7 @@ func TestDeletionWaitsForTheAdditionsToLand(t *testing.T) {
 // side: a publisher whose share is not mounted has not deleted his collection.
 func TestDeletionRefusesAnEmptyManifest(t *testing.T) {
 	h := newHarness(t)
-	h.mirror(0)
+	h.setMode(store.ModeMirror, 0)
 	h.write("gone.mkv", 128)
 	h.scan()
 	h.sync()
@@ -296,7 +339,7 @@ func TestDeletionRefusesAnEmptyManifest(t *testing.T) {
 // should not leave an empty directory for Jellyfin to list.
 func TestDeletionLeavesTheDirectoriesTidy(t *testing.T) {
 	h := newHarness(t)
-	h.mirror(0)
+	h.setMode(store.ModeMirror, 0)
 	h.write("Serien/Show/S01/e01.mkv", 128)
 	h.write("Filme/keep.mkv", 128)
 	h.scan()
@@ -318,7 +361,7 @@ func TestDeletionLeavesTheDirectoriesTidy(t *testing.T) {
 // it does not empty it.
 func TestExcludedFilesAreNotDeletions(t *testing.T) {
 	h := newHarness(t)
-	h.mirror(0)
+	h.setMode(store.ModeMirror, 0)
 	h.write("Filme/a.mkv", 128)
 	h.write("Serien/b.mkv", 128)
 	h.scan()
@@ -344,7 +387,7 @@ func TestExcludedFilesAreNotDeletions(t *testing.T) {
 // once an hour.
 func TestARefusalHoldsUntilTheNextWalk(t *testing.T) {
 	h := newHarness(t)
-	h.mirror(1)
+	h.setMode(store.ModeGuarded, 1)
 	for _, rel := range []string{"a.mkv", "b.mkv", "c.mkv"} {
 		h.write(rel, 128)
 	}

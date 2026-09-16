@@ -24,13 +24,14 @@ const (
 	PairJCC = "jcc"
 )
 
-// Pair modes. In additive mode the local tree only ever grows. In mirror mode a
-// file the publisher no longer has is quarantined here too, behind the guards of
-// DESIGN.md §2.5 - which is why additive is the default: run additive-only until
-// the diff is trusted.
+// Pair modes. In mirror mode a file the publisher no longer has is deleted here
+// too, with no guard in front of it. In guarded mode it is quarantined instead,
+// behind the guards of DESIGN.md §2.5. In additive mode the local tree only ever
+// grows.
 const (
-	ModeAdditive = "additive"
 	ModeMirror   = "mirror"
+	ModeGuarded  = "guarded"
+	ModeAdditive = "additive"
 )
 
 // ErrNoPair is returned when a pair does not exist.
@@ -48,7 +49,7 @@ type Pair struct {
 	Mode        string    `json:"mode"`
 	Includes    []string  `json:"includes"`
 	Excludes    []string  `json:"excludes"`
-	DeleteGuard int       `json:"deleteGuard"` // deletions above this many files wait for approval; 0 is no count limit
+	DeleteGuard int       `json:"deleteGuard"` // guarded mode only: deletions above this many files wait for approval; 0 is no count limit
 	Priority    int       `json:"priority"`    // lower runs first
 	Owner       string    `json:"owner"`       // "uid:gid" for what the engine creates here; "" keeps the process's own
 	FileMode    string    `json:"fileMode"`    // octal; "" is 0644 minus the umask
@@ -75,10 +76,10 @@ func (p *Pair) Normalize() error {
 	}
 
 	if p.Mode == "" {
-		p.Mode = ModeAdditive
+		p.Mode = ModeMirror
 	}
-	if p.Mode != ModeAdditive && p.Mode != ModeMirror {
-		return fmt.Errorf("mode %q: want %q or %q", p.Mode, ModeAdditive, ModeMirror)
+	if p.Mode != ModeMirror && p.Mode != ModeGuarded && p.Mode != ModeAdditive {
+		return fmt.Errorf("mode %q: want %q, %q or %q", p.Mode, ModeMirror, ModeGuarded, ModeAdditive)
 	}
 
 	// The remote side is compared against the paths the SMB client reports, which

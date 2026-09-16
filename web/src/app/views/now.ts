@@ -40,7 +40,7 @@ const actions: { kind: string; label: string; help: string; jcc?: boolean }[] = 
   {
     kind: 'delete',
     label: 'Delete',
-    help: 'The deletion phase on its own: on a mirror pair, moves files the publisher no longer has into .jccmirror/trash, where they are kept for the retention period. Held for approval above the threshold and skipped while transfers are queued or failed. An additive pair never deletes.',
+    help: 'The deletion phase on its own: removes files the publisher no longer has. A mirror pair deletes them outright; a guarded pair moves them into .jccmirror/trash, where they are kept for the retention period, and holds them for approval above the threshold. Skipped while transfers are queued or failed. An additive pair never deletes.',
   },
   {
     kind: 'db',

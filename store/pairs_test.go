@@ -56,8 +56,8 @@ func TestPairNormalizeFillsDefaults(t *testing.T) {
 	if p.Type != PairRaw {
 		t.Errorf("type = %q, want %q", p.Type, PairRaw)
 	}
-	if p.Mode != ModeAdditive {
-		t.Errorf("mode = %q, want %q", p.Mode, ModeAdditive)
+	if p.Mode != ModeMirror {
+		t.Errorf("mode = %q, want %q", p.Mode, ModeMirror)
 	}
 	if p.Priority != 100 {
 		t.Errorf("priority = %d, want 100", p.Priority)
@@ -80,7 +80,7 @@ func TestPairNormalizeKeepsExplicitValues(t *testing.T) {
 	p := Pair{
 		Name:        "jcc",
 		Type:        PairJCC,
-		Mode:        ModeMirror,
+		Mode:        ModeGuarded,
 		LocalPath:   "/data/jcc",
 		Priority:    1,
 		DeleteGuard: 25,
@@ -88,8 +88,8 @@ func TestPairNormalizeKeepsExplicitValues(t *testing.T) {
 	if err := p.Normalize(); err != nil {
 		t.Fatalf("Normalize: %v", err)
 	}
-	if p.Type != PairJCC || p.Mode != ModeMirror {
-		t.Errorf("type/mode = %q/%q, want %q/%q", p.Type, p.Mode, PairJCC, ModeMirror)
+	if p.Type != PairJCC || p.Mode != ModeGuarded {
+		t.Errorf("type/mode = %q/%q, want %q/%q", p.Type, p.Mode, PairJCC, ModeGuarded)
 	}
 	if p.Priority != 1 || p.DeleteGuard != 25 {
 		t.Errorf("priority/guard = %d/%d, want 1/25", p.Priority, p.DeleteGuard)
@@ -133,7 +133,7 @@ func TestPairRoundTrip(t *testing.T) {
 		Type:        PairJCC,
 		RemotePath:  "Movies",
 		LocalPath:   "/data/media",
-		Mode:        ModeMirror,
+		Mode:        ModeGuarded,
 		Includes:    []string{"*.mkv", "*.mp4"},
 		Excludes:    []string{"sample", "@eaDir"},
 		DeleteGuard: 7,
@@ -269,7 +269,7 @@ func TestUpdatePair(t *testing.T) {
 	p := newPair(t, s, "media")
 
 	p.Name = "movies"
-	p.Mode = ModeMirror
+	p.Mode = ModeGuarded
 	p.Excludes = []string{"@eaDir"}
 	p.Priority = 5
 	p.Enabled = true
@@ -281,7 +281,7 @@ func TestUpdatePair(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PairByID: %v", err)
 	}
-	if got.Name != "movies" || got.Mode != ModeMirror || got.Priority != 5 || !got.Enabled {
+	if got.Name != "movies" || got.Mode != ModeGuarded || got.Priority != 5 || !got.Enabled {
 		t.Errorf("read back %+v after the update", got)
 	}
 	if want := []string{"@eaDir"}; !slices.Equal(got.Excludes, want) {

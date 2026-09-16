@@ -553,7 +553,7 @@ func TestJCCReportsAStaleLock(t *testing.T) {
 // which is worth more than one walk's opinion of it.
 func TestJCCNeverQuarantinesTheDatabase(t *testing.T) {
 	h := newJCC(t)
-	h.pair.Mode = store.ModeMirror
+	h.pair.Mode = store.ModeGuarded
 	if err := h.store.UpdatePair(context.Background(), &h.pair); err != nil {
 		t.Fatalf("make the pair a mirror: %v", err)
 	}

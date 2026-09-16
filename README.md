@@ -27,8 +27,9 @@ fetched over plain HTTP(S), checked, smoke-run and
 re-exec'd in place, with a supervisor that puts the old one back if the new one
 will not start.
 
-A pair is additive until it is told otherwise, which is the point: run
-additive-only until the diff is trusted.
+A pair is a plain mirror until it is told otherwise: what the publisher drops is
+deleted here too. `-mode guarded` puts the deletion guards in front of that, and
+`-mode additive` never deletes at all.
 
 ## Running it
 
@@ -240,8 +241,10 @@ runs after a sync rather than inside one: the tree only ever shrinks once the
 additions have landed. A pair whose queue still holds work, or holds a file that
 failed for good, does not delete anything at all this time round.
 
-It is opt-in per pair. `-mode additive` — the default — keeps everything; `-mode
-mirror` quarantines what the publisher dropped. Four guards stand in front of it:
+The pair's mode decides what happens. `-mode mirror`, the default, deletes what
+the publisher dropped, with nothing in front of it beyond the two rules above and
+the non-empty manifest below. `-mode additive` keeps everything. `-mode guarded`
+quarantines what the publisher dropped, with four guards in front of it:
 
 - **Two thresholds.** A deletion of more than the pair's `-guard` files, or of
   more than `delete.max_percent` of what the pair holds, is not carried out. It
@@ -346,14 +349,12 @@ this side's lock. Afterwards the next sync compares the restored database agains
 the publisher's and fetches his again: what you want when the transfer was the
 problem, and not when it was not — disable the pair first in that case.
 
-A mirror pair never quarantines the database either. A walk that missed it is far
+No pair deletes or quarantines the database either. A walk that missed it is far
 likelier than a collection that lost it.
 
-**What is still not built**, so it does not come as a surprise:
-
-| | |
-|---|---|
-| **An additive pair is still never shrunk.** | `additive` is the default and means what it says: files the publisher no longer has are counted by `plan` and kept. Deletion is opt-in per pair, with `-mode mirror`. |
+A mirror pair has no undo: it unlinks what the publisher no longer has, with no
+threshold, approval or quarantine. A pair that should not lose files to a mistake
+on the publisher's side wants `-mode guarded`.
 
 ## The schedule
 

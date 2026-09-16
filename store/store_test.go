@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -160,5 +161,75 @@ func TestUpdateHTTPMigration(t *testing.T) {
 		if (urls == 1) != keep {
 			t.Errorf("%q: %d update.url rows left, want kept = %v", url, urls, keep)
 		}
+	}
+}
+
+// TestPairModesMigration runs 0012 over a database stopped at 0011: a mirror pair
+// becomes a guarded one, and what references it survives the table rebuild.
+func TestPairModesMigration(t *testing.T) {
+	ctx := context.Background()
+	s := &Store{}
+	var err error
+	s.db, err = sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "test.db")+"?_txlock=immediate&_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	ms, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+	for _, m := range ms[:11] {
+		if err := s.applyMigration(ctx, m); err != nil {
+			t.Fatalf("apply %s: %v", m.name, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO pairs (id, name, type, remote_path, local_path, mode, created_at, updated_at, owner)
+		VALUES (1, 'movies', 'raw', 'Filme', '/mnt/Filme', 'mirror', 0, 0, '1026:100'),
+		       (2, 'series', 'raw', 'Serien', '/mnt/Serien', 'additive', 0, 0, '');
+		INSERT INTO files (pair_id, relpath, size, mtime, state, verified_at) VALUES (1, 'a.mkv', 1, 0, 'synced', 0);
+		INSERT INTO changes (ts, pair_id, relpath, op) VALUES (0, 1, 'a.mkv', 'add');`); err != nil {
+		t.Fatalf("plant the rows: %v", err)
+	}
+
+	if err := s.applyMigration(ctx, ms[11]); err != nil {
+		t.Fatalf("apply %s: %v", ms[11].name, err)
+	}
+
+	pairs, err := s.Pairs(ctx)
+	if err != nil {
+		t.Fatalf("Pairs: %v", err)
+	}
+	modes := map[string]string{}
+	for _, p := range pairs {
+		modes[p.Name] = p.Mode
+	}
+	if modes["movies"] != ModeGuarded || modes["series"] != ModeAdditive {
+		t.Errorf("modes after the migration = %v, want movies guarded and series additive", modes)
+	}
+	if pairs[0].Owner != "1026:100" {
+		t.Errorf("owner = %q, want it carried over", pairs[0].Owner)
+	}
+
+	var files, changes int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT (SELECT count(*) FROM files WHERE pair_id = 1), (SELECT count(*) FROM changes WHERE pair_id = 1)`).
+		Scan(&files, &changes); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if files != 1 || changes != 1 {
+		t.Errorf("the rebuild took %d files and %d changes with it, want 1 and 1", 1-files, 1-changes)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM pairs WHERE id = 1`); err != nil {
+		t.Fatalf("delete pair: %v", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM files`).Scan(&files); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if files != 0 {
+		t.Error("foreign keys stayed off after the migration: deleting the pair left its files")
 	}
 }

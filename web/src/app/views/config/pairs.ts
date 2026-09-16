@@ -13,7 +13,7 @@ const pairDefaults: Record<string, string> = {
   remoteId: '0',
   remotePath: '',
   localPath: '',
-  mode: 'additive',
+  mode: 'mirror',
   includes: '',
   excludes: '',
   priority: '100',
