@@ -355,8 +355,8 @@ func TestNotificationsOnlyGoOutOnTheEdge(t *testing.T) {
 	if first["title"] != "the tunnel is down" {
 		t.Errorf("first message = %v", first["title"])
 	}
-	if first["user_id"] != float64(7) {
-		t.Errorf("user_id came through as %#v; it has to be a number", first["user_id"])
+	if first["user_id"] != "7" {
+		t.Errorf("user_id came through as %#v, want the string 7", first["user_id"])
 	}
 	if first["msg_id"] == nil || first["msg_id"] == "" {
 		t.Error("no idempotency key was sent, so a retry would be a second message")

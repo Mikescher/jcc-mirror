@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -129,9 +128,6 @@ func (t *NotifyTarget) Normalize() error {
 	t.UserID = strings.TrimSpace(t.UserID)
 	if t.UserID == "" {
 		return errors.New("SCN user id is required")
-	}
-	if _, err := strconv.Atoi(t.UserID); err != nil {
-		return fmt.Errorf("SCN user id %q is not a number", t.UserID)
 	}
 
 	t.UserKey = strings.TrimSpace(t.UserKey)

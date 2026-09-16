@@ -20,7 +20,7 @@ const targetInputs: readonly TargetInput[] = [
   {
     key: 'userId',
     label: 'SCN user id',
-    help: 'The numeric half of the SimpleCloudNotifier credentials.',
+    help: 'One half of the SimpleCloudNotifier credentials.',
   },
   {
     key: 'userKey',

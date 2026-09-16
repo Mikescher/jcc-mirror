@@ -71,9 +71,6 @@ func TestNotifyTargetRoundTrip(t *testing.T) {
 		t.Errorf("no targets listed as %s", body)
 	}
 
-	if rec := postJSON(t, h, "/api/notify/targets", map[string]any{"name": "x", "userId": "abc", "userKey": "k"}); rec.Code != http.StatusBadRequest {
-		t.Errorf("a non-numeric user id = %d, want 400", rec.Code)
-	}
 	if rec := postJSON(t, h, "/api/notify/targets", map[string]any{"name": "x", "userId": "7"}); rec.Code != http.StatusBadRequest {
 		t.Errorf("no user key = %d, want 400", rec.Code)
 	}
@@ -156,20 +153,20 @@ func TestNotifyTargetRoundTrip(t *testing.T) {
 // scnRecorder is an SCN endpoint that remembers which account got which title.
 type scnRecorder struct {
 	mu   sync.Mutex
-	got  map[float64][]string
+	got  map[string][]string
 	srv  *httptest.Server
 	fail bool
 }
 
 func newSCNRecorder(t *testing.T) *scnRecorder {
 	t.Helper()
-	rec := &scnRecorder{got: map[float64][]string{}}
+	rec := &scnRecorder{got: map[string][]string{}}
 	rec.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		rec.mu.Lock()
 		defer rec.mu.Unlock()
-		uid, _ := body["user_id"].(float64)
+		uid, _ := body["user_id"].(string)
 		title, _ := body["title"].(string)
 		rec.got[uid] = append(rec.got[uid], title)
 		if rec.fail {
@@ -180,7 +177,7 @@ func newSCNRecorder(t *testing.T) *scnRecorder {
 	return rec
 }
 
-func (r *scnRecorder) titles(uid float64) []string {
+func (r *scnRecorder) titles(uid string) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := slices.Clone(r.got[uid])
@@ -210,10 +207,10 @@ func TestEachTargetGetsOnlyItsTopics(t *testing.T) {
 	a.Notify(ctx, store.NotifyDBReplaced, 1, "db", "")
 	a.bg.Wait()
 
-	if got, want := scn.titles(1), []string{"failed", "tunnel"}; !slices.Equal(got, want) {
+	if got, want := scn.titles("1"), []string{"failed", "tunnel"}; !slices.Equal(got, want) {
 		t.Errorf("ops received %v, want %v", got, want)
 	}
-	if got, want := scn.titles(2), []string{"ok", "rolled back", "tunnel"}; !slices.Equal(got, want) {
+	if got, want := scn.titles("2"), []string{"ok", "rolled back", "tunnel"}; !slices.Equal(got, want) {
 		t.Errorf("fan received %v, want %v", got, want)
 	}
 }
@@ -254,10 +251,10 @@ func TestTestNotificationGoesToOneTarget(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"sent": true`) {
 		t.Fatalf("test = %d %s", rec.Code, rec.Body)
 	}
-	if got := scn.titles(2); len(got) != 1 {
+	if got := scn.titles("2"); len(got) != 1 {
 		t.Errorf("the named target received %v", got)
 	}
-	if got := scn.titles(1); len(got) != 0 {
+	if got := scn.titles("1"); len(got) != 0 {
 		t.Errorf("another target received %v", got)
 	}
 

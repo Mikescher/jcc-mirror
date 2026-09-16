@@ -101,7 +101,6 @@ func TestNotifyTargetNormalizeRefuses(t *testing.T) {
 	cases := map[string]NotifyTarget{
 		"no name":       {UserID: "7", UserKey: "k"},
 		"no user id":    {Name: "x", UserKey: "k"},
-		"user id text":  {Name: "x", UserID: "u-7", UserKey: "k"},
 		"no user key":   {Name: "x", UserID: "7"},
 		"unknown topic": {Name: "x", UserID: "7", UserKey: "k", Events: []string{"sync_failed", "coffee"}},
 	}

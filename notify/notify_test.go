@@ -55,18 +55,14 @@ func TestSendEncodesMinimalBody(t *testing.T) {
 	client, body := capture(t, http.StatusOK, `{"success":true}`)
 
 	before := time.Now().Unix()
-	err := client.Send(context.Background(), Config{UserID: "42", UserKey: "key"}, Message{Title: "sync failed"})
+	err := client.Send(context.Background(), Config{UserID: "USR42", UserKey: "key"}, Message{Title: "sync failed"})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	after := time.Now().Unix()
 
-	uid, ok := body["user_id"].(json.Number)
-	if !ok {
-		t.Fatalf("user_id is %T (%v), want a JSON number", body["user_id"], body["user_id"])
-	}
-	if uid.String() != "42" {
-		t.Errorf("user_id is %s, want 42", uid)
+	if body["user_id"] != "USR42" {
+		t.Errorf("user_id is %T (%v), want the string USR42", body["user_id"], body["user_id"])
 	}
 	if body["user_key"] != "key" {
 		t.Errorf("user_key is %v, want key", body["user_key"])
@@ -211,7 +207,6 @@ func TestSendRejectsBeforeSending(t *testing.T) {
 	}{
 		{name: "not configured", cfg: Config{}, msg: Message{Title: "t"}, wantErr: ErrDisabled},
 		{name: "half configured", cfg: Config{UserID: "1"}, msg: Message{Title: "t"}, wantErr: ErrDisabled},
-		{name: "user id not a number", cfg: Config{UserID: "u-42", UserKey: "k"}, msg: Message{Title: "t"}, wantStr: "SCN user id"},
 		{name: "no title", cfg: Config{UserID: "1", UserKey: "k"}, msg: Message{}, wantStr: "title"},
 		{name: "blank title", cfg: Config{UserID: "1", UserKey: "k"}, msg: Message{Title: "   "}, wantStr: "title"},
 		{name: "priority too low", cfg: Config{UserID: "1", UserKey: "k"}, msg: Message{Title: "t", Priority: -1}, wantStr: "priority"},

@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -76,10 +75,9 @@ type Client struct {
 // run that emits a handful of notifications reuses the connection.
 var sharedHTTP = &http.Client{Timeout: defaultTimeout}
 
-// payload is the JSON body. user_id is a number, not a string, which is why the
-// configured value has to be parsed rather than passed through.
+// payload is the JSON body.
 type payload struct {
-	UserID     int    `json:"user_id"`
+	UserID     string `json:"user_id"`
 	UserKey    string `json:"user_key"`
 	Title      string `json:"title"`
 	Content    string `json:"content,omitempty"`
@@ -96,10 +94,6 @@ func (c *Client) Send(ctx context.Context, cfg Config, m Message) error {
 	if !cfg.Enabled() {
 		return ErrDisabled
 	}
-	userID, err := strconv.Atoi(strings.TrimSpace(cfg.UserID))
-	if err != nil {
-		return fmt.Errorf("SCN user id %q is not an integer: %w", cfg.UserID, err)
-	}
 	if strings.TrimSpace(m.Title) == "" {
 		return errors.New("notification has no title")
 	}
@@ -113,7 +107,7 @@ func (c *Client) Send(ctx context.Context, cfg Config, m Message) error {
 	}
 
 	body, err := json.Marshal(payload{
-		UserID:     userID,
+		UserID:     strings.TrimSpace(cfg.UserID),
 		UserKey:    strings.TrimSpace(cfg.UserKey),
 		Title:      m.Title,
 		Content:    m.Content,
