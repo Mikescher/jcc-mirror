@@ -64,7 +64,13 @@ const (
 	KeyRetainChanges = "retention.changes"
 
 	KeyTimezone = "general.timezone"
+
+	KeyRemoteAPIKey = "remote_api.key"
 )
+
+// RemoteAPIOff is the value that switches the remote API off from the Config
+// view, which cannot send an empty secret: a blank secret field means "keep it".
+const RemoteAPIOff = "off"
 
 // SecretMask replaces a secret's value wherever one is shown or recorded. The
 // audit trail says that a password changed, never what it changed to.
@@ -295,6 +301,13 @@ var keyDefs = []KeyDef{
 		Help:     "The zone the transfer schedule is expressed in. Deliberately a setting of its own rather than the container's TZ.",
 		Default:  "Europe/Berlin",
 		Validate: validateTimezone,
+	},
+
+	{
+		Name: KeyRemoteAPIKey, Group: "Remote API", Label: "API key",
+		Help:     `The key a client sends as "Authorization: Bearer <key>" or "X-Api-Key: <key>" to read /api/remote/v1. At least 16 characters without spaces; "openssl rand -hex 32" makes a good one. Empty or "off" switches the remote API off, and it answers 404.`,
+		Secret:   true,
+		Validate: validateAPIKey,
 	},
 }
 
@@ -566,6 +579,23 @@ func validateOptionalKey(s string) error {
 		return nil
 	}
 	return validateKey(s)
+}
+
+// validateAPIKey takes a bearer key or the word that switches the API off. The
+// key is compared as typed and has to survive an HTTP header unchanged.
+func validateAPIKey(s string) error {
+	if s == "" || s == RemoteAPIOff {
+		return nil
+	}
+	if len(s) < 16 {
+		return errors.New("at least 16 characters, or \"off\"")
+	}
+	for _, r := range s {
+		if r < '!' || r > '~' {
+			return errors.New("printable ASCII only, without spaces")
+		}
+	}
+	return nil
 }
 
 func validateEndpoint(s string) error {

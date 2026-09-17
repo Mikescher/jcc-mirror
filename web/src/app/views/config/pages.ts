@@ -75,8 +75,8 @@ export const configPages: readonly ConfigPage[] = [
     path: fallbackPath,
     label: 'System',
     blurb:
-      'How long history is kept, the zone every timestamp is written in, and the daemon log. Every setting lives in the database, takes effect the moment it is saved, and is recorded under Audit.',
-    groups: ['Retention', 'General'],
+      'How long history is kept, the zone every timestamp is written in, the key of the read-only remote API, and the daemon log. Every setting lives in the database, takes effect the moment it is saved, and is recorded under Audit.',
+    groups: ['Retention', 'General', 'Remote API'],
   },
   {
     path: 'audit',

@@ -399,6 +399,12 @@ and needs an explicit approval (§2.5), a DB replace keeps numbered backups it c
 from (§3), and every configuration change is written to an audit trail with the caller's address.
 Publishing that port to the internet is the one deployment mistake this design cannot absorb.
 
+**Remote read-only API.** `/api/remote/v1/` is the one exception, and it is read-only by
+construction: it answers GET and nothing else, and only with the key stored as `remote_api.key`
+(a secret, set on the System page). No key means the prefix answers 404. It exists so a reverse
+proxy can publish that prefix — and only that prefix — to a monitoring client somewhere else; the
+rest of the port stays exactly as unauthenticated and as unpublishable as above.
+
 The dashboard does keep a **read-only mode**, and it is honest about being a guard rail rather than
 a control: it lives entirely in the browser, is remembered in `localStorage`, defaults to locked,
 and is toggled by one Unlock/Lock button in the header. Every mutating control is disabled while it

@@ -72,7 +72,13 @@ func (a *App) Handler() http.Handler {
 	// itself. It is registered last so no API path can be shadowed by it.
 	mux.Handle("GET /", a.uiHandler())
 
-	return noStore(mux)
+	// The remote API sits in a mux of its own: it has to see every method to
+	// answer 405 itself, and a method-less pattern conflicts with "GET /".
+	root := http.NewServeMux()
+	root.Handle(remoteAPIPrefix, a.remoteAPI())
+	root.Handle("/", mux)
+
+	return noStore(root)
 }
 
 // noStore keeps the API out of every cache: it is all live state, and a stale

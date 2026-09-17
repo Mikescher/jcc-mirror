@@ -430,7 +430,7 @@ history view share a schema rather than agreeing by accident.
 | **Pairs** | The pairs, each with the free space of its volume and an "explain plan" button. |
 | **Notifications** | The SCN targets, the tunnel grace period, and the conditions currently raised. |
 | **Update** | The self-update settings and panel: what runs, what the URL has, install, install anyway, roll back. |
-| **System** | Retention and timezone, the live log tail and the data directory. |
+| **System** | Retention and timezone, the remote API key, the live log tail and the data directory. |
 | **Audit** | Every configuration change. |
 
 The settings pages sit in the same tab bar as the four live views, each with its own draft and its own save bar at the foot of the viewport. The fields are generated from the key registry, so a key added later costs no HTML; a page-to-group table is the one place a settings group is told which page it belongs on, and a group no page claims lands on **System** rather than disappearing.
@@ -442,6 +442,68 @@ bandwidth series is sampled off the connection the SMB session runs over rather
 than off the transfer engine, so what the graph shows is what the link actually
 carried — SMB's own framing and the walk's thousands of directory listings
 included.
+
+## Remote read-only API
+
+A key-guarded, read-only view of the same state for a client that is not on the
+LAN — a monitoring dashboard behind a reverse proxy that publishes
+`/api/remote/v1/` and nothing else. It is served by the same handler as the
+dashboard; the LAN routes stay unauthenticated and unchanged.
+
+**Switching it on.** Set **Remote API → API key** (`remote_api.key`) on the
+**System** page: at least 16 printable ASCII characters without spaces, e.g.
+`openssl rand -hex 32`. It is a secret like any other — never sent back to the
+dashboard, masked in the audit trail. Empty (the default) or the word `off`
+switches the API off, and every request under the prefix answers
+`404 {"error": "remote API disabled"}`; `off` exists because a blank secret field
+in the Config view means "keep the stored one". The key is read on every request,
+so a change applies without a restart.
+
+**Every request** needs the key as either header:
+
+```
+Authorization: Bearer <key>
+X-Api-Key: <key>
+```
+
+The check runs in this order: API off → `404`; key missing or wrong → `401` with
+`WWW-Authenticate: Bearer`; any method but `GET` → `405` with `Allow: GET` (HEAD
+included); an unknown path under the prefix → `404`; a bad query parameter →
+`400`. Every error is `{"error": "<message>"}`, and every response carries
+`Cache-Control: no-store`. The key is compared in constant time.
+
+| Endpoint | Answers | Parameters |
+|---|---|---|
+| `GET /api/remote/v1/status` | `{"status": Status, "runs": RunState}` — the same object the stream's first `state` frame carries: tunnel and peers, remotes, database, schedule window, `updateReady`, the running operation with its progress, and the last six finished runs | — |
+| `GET /api/remote/v1/pairs` | `[]PairView`, as `GET /api/pairs` | — |
+| `GET /api/remote/v1/events` | `[]Event`, newest first | `limit` (default 100, capped at 1000), `level` (`debug` `info` `warn` `error`, repeatable), `kind` (repeatable), `pair` (id), `since` (RFC 3339, inclusive) |
+| `GET /api/remote/v1/jobs` | `[]Job`, oldest first — the order they run in | `limit` (default 100, capped at 1000), `state` (`pending` `running` `verifying` `done` `failed`, repeatable), `pair` (id) |
+| `GET /api/remote/v1/logs` | `{"lines": []Line, "cursor": "…", "reset": true?}` | `after` (a cursor), `limit` (default 200, capped at 2000) |
+| `GET /api/remote/v1/stream` | the dashboard's SSE stream, as `/api/stream` | — |
+
+A `limit` that is not a positive integer is a `400`; one above the cap is
+capped. Repeat a parameter to match any of several values:
+`?state=pending&state=failed`.
+
+**The logs cursor.** The log tail is the daemon's in-memory ring of its last 500
+lines — nothing older exists anywhere the API could read. Each line has a `seq`
+that starts at 1 when the process starts and counts up by one per line. The
+cursor is an opaque string, currently `<boot>.<seq>`: the process start in Unix
+milliseconds and the `seq` of the last line handed out. Pass it back verbatim.
+
+- Without `after`: the newest `limit` lines, oldest first, and a cursor at the
+  newest line.
+- With `after`: the lines after the cursor, oldest first, at most `limit` of
+  them, and a cursor at the last one returned — so a backlog longer than `limit`
+  is paged through by calling again until `lines` comes back empty. With nothing
+  new the cursor comes back unchanged.
+- `reset: true` means the lines do not continue from the cursor. Either the
+  cursor is from another process — a restart or a self-update re-exec, which
+  starts `seq` over — and the answer starts at the oldest line this process still
+  holds; or lines between the cursor and the oldest one held have already left
+  the ring, and the answer starts at that oldest line. A client should mark a gap
+  in what it shows.
+- A cursor that does not parse is a `400`.
 
 ## Notifications
 
@@ -655,8 +717,9 @@ retention under **Deletion**; the database's name and directory, the stale-lock
 threshold and how many copies to keep under **jCC**; the tunnel-down grace under
 **Notifications**; the `http(s)`
 URL the binary comes from, whether to install it unattended and how often to look
-under **Update**; and how long the event log and the per-file history are kept under
-**Retention**, a year each by default, swept once an hour. The remotes, the
+under **Update**; how long the event log and the per-file history are kept under
+**Retention**, a year each by default, swept once an hour; and the key of the
+[remote read-only API](#remote-read-only-api) under **Remote API**. The remotes, the
 pairs and the notification targets are the exception — they are rows of their
 own, one remote per share on the publisher's side with its host, share, path in
 the share, account and NTLM domain, edited on the **Remotes** and **Pairs** tabs
