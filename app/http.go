@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,6 +43,7 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/remote/list", a.handleRemoteList)
 	mux.HandleFunc("GET /api/stream", a.handleStream)
 
+	mux.HandleFunc("GET /api/login", a.handleLoginPage)
 	mux.HandleFunc("POST /api/login", a.handleLogin)
 	mux.HandleFunc("POST /api/logout", a.handleLogout)
 
@@ -109,6 +109,14 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	code := http.StatusOK
 	if !st.Healthy() {
 		code = http.StatusServiceUnavailable
+	}
+	// The probe is the one route outside the gate, so an unauthenticated caller
+	// is told the verdict and nothing else: the full Status names our public key,
+	// the peer's endpoint and every remote, which is a great deal more than a
+	// liveness check has to say to whoever can reach the port (DESIGN.md §4).
+	if !a.authenticated(r) {
+		writeJSON(w, code, map[string]bool{"healthy": st.Healthy()})
+		return
 	}
 	writeJSON(w, code, st)
 }
@@ -421,11 +429,7 @@ func readSettings(w http.ResponseWriter, r *http.Request) (map[string]string, er
 // actorOf labels an audit row. There are no user accounts, so the address is the
 // only thing that distinguishes two operators.
 func actorOf(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	return "dashboard@" + host
+	return "dashboard@" + hostOf(r)
 }
 
 // fail answers an error the way everything here answers: as JSON with a message

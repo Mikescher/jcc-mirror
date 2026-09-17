@@ -133,6 +133,11 @@ type StreamState struct {
 	Runs   RunState `json:"runs"`
 }
 
+// streamAuthInterval is how often a live stream re-checks the credential it
+// arrived with, and so how long one can outlive a changed password. A variable
+// rather than a constant so a test need not wait one out.
+var streamAuthInterval = 30 * time.Second
+
 // handleStream is the live half of the dashboard. Everything it carries, the log
 // tail included, is readable from the REST views as well; the stream exists so a
 // page does not have to poll for it (DESIGN.md §4).
@@ -165,6 +170,9 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 	keepalive := time.NewTicker(30 * time.Second)
 	defer keepalive.Stop()
 
+	recheck := time.NewTicker(streamAuthInterval)
+	defer recheck.Stop()
+
 	for {
 		select {
 		case <-r.Context().Done():
@@ -181,6 +189,14 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			rc.Flush()
+		case <-recheck.C:
+			// A credential that has stopped being good ends the stream. Without
+			// this the gate would only ever be asked once, and a stream started
+			// before a password change would outlive it for as long as the browser
+			// cared to hold the connection.
+			if !a.stillAuthorized(r) {
+				return
+			}
 		case <-keepalive.C:
 			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
 				return

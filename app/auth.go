@@ -5,8 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"blackforestbytes.com/jcc-mirror/store"
 )
@@ -79,6 +83,26 @@ func (a *App) authenticated(r *http.Request) bool {
 	return keyMatches(requestKey(r), want)
 }
 
+// stillAuthorized re-checks the credential a long-lived request arrived with.
+// The gate runs once, before the handler, and an event stream then lives for as
+// long as the browser holds it open - so a password changed to shut someone out
+// would never reach the connection they already have. The stream asks this on a
+// tick, which bounds that to one interval (DESIGN.md §4).
+//
+// Which credential to re-check is decided by the path, because the two branches
+// of the root mux answer to different secrets and handleStream serves both: a
+// remote stream is behind remote_api.key and knows nothing of the password.
+func (a *App) stillAuthorized(r *http.Request) bool {
+	if !strings.HasPrefix(r.URL.Path, remoteAPIPrefix) {
+		return a.authenticated(r)
+	}
+	key, err := a.store.ConfigGet(r.Context(), store.KeyRemoteAPIKey)
+	if err != nil || key == "" || key == store.RemoteAPIOff {
+		return false
+	}
+	return keyMatches(requestKey(r), key)
+}
+
 // sessionToken derives the cookie value from the password. It is deterministic
 // on purpose: a restart - a self-update in particular - must not log everyone
 // out, and there is no session table to survive one. The cost is that nothing but
@@ -94,6 +118,89 @@ func sessionToken(password string) string {
 // that a font renders two ways.
 func NewPassword() (string, error) {
 	return rand.Text(), nil
+}
+
+// Login throttling. The generated password is long enough that guessing it is
+// not a threat, but validatePassword accepts eight characters, and a hand-typed
+// one reachable by every client of a shared tunnel is guessable given unlimited
+// attempts. A run of failures from one address closes that address off for a
+// while.
+//
+// These are variables rather than constants so a test can shorten the lockout
+// without waiting one out.
+var (
+	loginMaxFailures = 10
+	loginLockout     = time.Minute
+	// loginForget is how long a quiet record is kept, so the map cannot grow with
+	// every address that ever mistyped.
+	loginForget = 10 * time.Minute
+)
+
+// loginAttempts counts failed logins per address.
+//
+// A locked-out address is refused without its password being looked at, and that
+// is the whole point: evaluating it would hand out the one bit an attacker is
+// after and leave the lockout worth nothing. The cost is that everything behind
+// one reverse proxy shares an address, and so shares a lockout.
+type loginAttempts struct {
+	mu   sync.Mutex
+	seen map[string]*loginRecord
+}
+
+type loginRecord struct {
+	failures int
+	seenAt   time.Time
+	until    time.Time
+}
+
+func newLoginAttempts() *loginAttempts {
+	return &loginAttempts{seen: map[string]*loginRecord{}}
+}
+
+// lockedFor says how long this address still has to wait, zero when it may try.
+func (l *loginAttempts) lockedFor(addr string, now time.Time) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	rec := l.seen[addr]
+	if rec == nil || now.After(rec.until) {
+		return 0
+	}
+	return rec.until.Sub(now)
+}
+
+// fail records one wrong password and reports whether it is the one that started
+// a lockout - the only failure worth a log line, because logging every one would
+// let a flood push the real lines out of the ring the dashboard serves.
+func (l *loginAttempts) fail(addr string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for other, rec := range l.seen {
+		if now.Sub(rec.seenAt) > loginForget && now.After(rec.until) {
+			delete(l.seen, other)
+		}
+	}
+
+	rec := l.seen[addr]
+	if rec == nil {
+		rec = &loginRecord{}
+		l.seen[addr] = rec
+	}
+	rec.failures++
+	rec.seenAt = now
+	if rec.failures < loginMaxFailures {
+		return false
+	}
+	rec.failures = 0
+	rec.until = now.Add(loginLockout)
+	return true
+}
+
+func (l *loginAttempts) succeed(addr string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.seen, addr)
 }
 
 // handleSession says whether this browser is past the gate. The login page polls
@@ -114,6 +221,16 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Before the password is so much as read: a lockout that looked at it would
+	// tell an attacker which guess was right.
+	addr, now := hostOf(r), time.Now()
+	if wait := a.logins.lockedFor(addr, now); wait > 0 {
+		w.Header().Set("Retry-After", fmt.Sprint(int(wait.Seconds())+1))
+		a.fail(w, r, http.StatusTooManyRequests,
+			fmt.Errorf("too many wrong passwords; try again in %ds", int(wait.Seconds())+1))
+		return
+	}
+
 	want, err := a.store.ConfigGet(r.Context(), store.KeyDashboardPassword)
 	if err != nil {
 		a.fail(w, r, http.StatusInternalServerError, err)
@@ -125,10 +242,13 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !keyMatches(strings.TrimSpace(fields["password"]), want) {
-		a.log.Warnf("dashboard: rejected a login from %s", actorOf(r))
+		if locked := a.logins.fail(addr, now); locked {
+			a.log.Warnf("dashboard: %d wrong passwords from %s; refusing it for %s", loginMaxFailures, addr, loginLockout)
+		}
 		a.fail(w, r, http.StatusUnauthorized, errors.New("wrong password"))
 		return
 	}
+	a.logins.succeed(addr)
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
@@ -150,6 +270,23 @@ func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 	})
 	writeJSON(w, http.StatusOK, map[string]bool{"authed": false})
+}
+
+// handleLoginPage answers a browser that navigated to the login endpoint itself
+// rather than posting to it. The prompt lives at whatever page was asked for, so
+// this sends it to one instead of rendering a form at an endpoint's URL.
+func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// hostOf is the address a request came from, which is all that distinguishes two
+// operators here: there are no user accounts.
+func hostOf(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // wantsHTML distinguishes a browser navigating from a script calling. Sec-Fetch-Mode

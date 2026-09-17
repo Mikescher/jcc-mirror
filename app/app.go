@@ -111,6 +111,10 @@ type App struct {
 	// the store is closed the moment Close returns and both of them write to it.
 	bg sync.WaitGroup
 
+	// logins throttles the one route that takes a guessable secret. It holds its
+	// own lock: nothing it does belongs under the one below.
+	logins *loginAttempts
+
 	mu        sync.Mutex
 	baseCtx   context.Context // the daemon's lifetime, which a run's context hangs off
 	tunnel    *wg.Tunnel
@@ -140,6 +144,7 @@ func New(st *store.Store, log *logs.Logger, opts Options) *App {
 		store: st, log: log, opts: opts, started: time.Now(),
 		limiter: engine.NewLimiter(0), notifier: &notify.Client{},
 		restart: make(chan string, 1), closing: make(chan struct{}),
+		logins: newLoginAttempts(),
 	}
 	a.upd.manager = update.NewManager(opts.DataDir)
 	return a

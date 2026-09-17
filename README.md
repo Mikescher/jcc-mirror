@@ -99,7 +99,9 @@ and it is read on every request, so changing it on the **System** page applies a
 once and logs every browser out. `jcc-mirror password -data /data` prints the
 stored one, `-reset` generates a new one and `-set` takes one — it reads sqlite
 directly, so it needs neither the daemon, the tunnel nor the network, which is
-what makes it the way back in after a container log has rolled over.
+what makes it the way back in after a container log has rolled over. A run of
+wrong passwords from one address closes that address off for a minute, so an
+eight-character password is not a password plus unlimited guesses.
 
 What the password does not replace is the network boundary, and that is still
 where the dashboard answers: the compose file maps `:8080` onto the LAN and the
@@ -110,13 +112,13 @@ it is remembered in `localStorage`, it defaults to locked, and what it stops is 
 stray click, not a request.
 
 Everything needs the password except `GET /healthz` — the liveness contract,
-which says nothing that watching the container restart would not — and the three
-routes the login page itself uses:
+which tells an unauthenticated caller the verdict and nothing else — and the
+three routes the login page itself uses:
 
 | Endpoint | |
 |---|---|
 | `GET /` and every route under it | The dashboard. Unknown paths answer with the shell, because the router is on the client; a browser without the password is served the login page with a 401 and never the app — no view, no bundle, no state |
-| `GET /healthz` | Status as JSON; 503 only when the database has stopped answering |
+| `GET /healthz` | `{"healthy":bool}`, and 503 only when the database has stopped answering. With the password it is the full Status instead: the whole of it names our public key, the peer's endpoint and every remote, which is more than a probe outside the gate should say |
 | `POST /api/login` · `/api/logout` · `GET /api/session` | The password exchanged for the session cookie, the cookie dropped again, and whether this browser still carries a valid one |
 | `GET /api/stream` | Server-Sent Events: `state` frames with the status and the running operation, plus `events` and `changes` as they happen, and `log` frames carrying the container's own log |
 | `GET /api/status` · `/api/schedule` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/changes` · `/api/remotes` · `/api/pairs` · `/api/jobs` · `/api/scans` · `/api/trash` · `/api/runs` · `/api/bandwidth` · `/api/diagnostics` · `/api/update` · `/api/remote/list` (optional `remote`) | Read views. Secrets are never returned — a remote says whether it has a password and nothing more; `status` carries the current window and cap, and `remotes` |

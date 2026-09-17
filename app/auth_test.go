@@ -1,12 +1,14 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"blackforestbytes.com/jcc-mirror/store"
 )
@@ -219,4 +221,135 @@ func authedAnswer(t *testing.T, rec *httptest.ResponseRecorder) bool {
 		t.Fatalf("decode %s: %v", rec.Body, err)
 	}
 	return body.Authed
+}
+
+// TestHealthzTellsAnUnauthenticatedCallerOnlyTheVerdict: the probe is outside
+// the gate, so what it says to whoever can reach the port has to be the health
+// and not the whole Status - which names our public key, the peer's endpoint and
+// every remote.
+func TestHealthzTellsAnUnauthenticatedCallerOnlyTheVerdict(t *testing.T) {
+	_, h := newApp(t)
+
+	open := send(t, h, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if open.Code != http.StatusOK {
+		t.Fatalf("GET /healthz = %d: %s", open.Code, open.Body)
+	}
+
+	var trimmed map[string]any
+	if err := json.Unmarshal(open.Body.Bytes(), &trimmed); err != nil {
+		t.Fatalf("decode %s: %v", open.Body, err)
+	}
+	if len(trimmed) != 1 || trimmed["healthy"] != true {
+		t.Errorf("an unauthenticated probe answered %v, want the verdict alone", trimmed)
+	}
+
+	// The same route, past the gate, is still the whole thing: it is what the
+	// diagnostics read.
+	full := do(t, h, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	for _, key := range []string{"version", "tunnel", "remotes", "database"} {
+		if !strings.Contains(full.Body.String(), `"`+key+`"`) {
+			t.Errorf("an authenticated probe left out %q:\n%s", key, full.Body)
+		}
+	}
+}
+
+// TestNavigatingToTheLoginEndpointGoesToThePage: the prompt lives at whatever
+// page was asked for, so the endpoint itself sends a browser to one rather than
+// answering the mux's 405.
+func TestNavigatingToTheLoginEndpointGoesToThePage(t *testing.T) {
+	_, h := newApp(t)
+
+	rec := send(t, h, httptest.NewRequest(http.MethodGet, "/api/login", nil))
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("GET /api/login = %d, want 303: %s", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Get("Location"); got != "/" {
+		t.Errorf("Location = %q, want /", got)
+	}
+}
+
+// TestTooManyWrongPasswordsCloseTheAddressOff: validatePassword accepts eight
+// characters, so unlimited attempts is the difference between a password and a
+// guessable one. A locked-out address is refused without its password being
+// read, because evaluating it would hand out the one bit being guessed for.
+func TestTooManyWrongPasswordsCloseTheAddressOff(t *testing.T) {
+	_, h := newApp(t)
+
+	defer func(max int, lock time.Duration) {
+		loginMaxFailures, loginLockout = max, lock
+	}(loginMaxFailures, loginLockout)
+	loginMaxFailures, loginLockout = 3, 50*time.Millisecond
+
+	for i := range loginMaxFailures {
+		if rec := login(t, h, "not-the-password"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("wrong password %d = %d, want 401: %s", i+1, rec.Code, rec.Body)
+		}
+	}
+
+	rec := login(t, h, "not-the-password")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("one wrong password past the limit = %d, want 429: %s", rec.Code, rec.Body)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("a refusal with no Retry-After")
+	}
+	// The right one too, or the lockout would be a way to ask whether a guess was
+	// right.
+	if rec := login(t, h, h.password); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("the right password while locked out = %d, want 429: %s", rec.Code, rec.Body)
+	}
+
+	time.Sleep(2 * loginLockout)
+	if rec := login(t, h, h.password); rec.Code != http.StatusOK {
+		t.Errorf("the right password after the lockout = %d, want 200: %s", rec.Code, rec.Body)
+	}
+}
+
+// TestAChangedPasswordEndsAnOpenStream: the gate runs once per request and a
+// stream outlives any number of them, so without a re-check a browser shut out
+// by a password change would go on being sent the whole dashboard state for as
+// long as it held the connection.
+func TestAChangedPasswordEndsAnOpenStream(t *testing.T) {
+	a, h := newApp(t)
+
+	defer func(d time.Duration) { streamAuthInterval = d }(streamAuthInterval)
+	streamAuthInterval = 20 * time.Millisecond
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+h.password)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("open the stream: %v", err)
+	}
+	defer res.Body.Close()
+
+	// The state frame proves the stream is live before the password moves under it.
+	buf := make([]byte, 4096)
+	if _, err := res.Body.Read(buf); err != nil {
+		t.Fatalf("read the first frame: %v", err)
+	}
+
+	if _, err := a.store.ConfigSet(ctx, map[string]string{store.KeyDashboardPassword: "hunter2hunter2"}, "test"); err != nil {
+		t.Fatalf("change the password: %v", err)
+	}
+
+	// The read ends when the daemon closes the connection. The context deadline is
+	// the failure: it means the stream outlived the change.
+	for {
+		if _, err := res.Body.Read(buf); err != nil {
+			if ctx.Err() != nil {
+				t.Fatal("the stream was still open after the password changed")
+			}
+			return
+		}
+	}
 }

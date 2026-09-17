@@ -403,8 +403,10 @@ view, no bundle, no state. Gating the whole of it is the half that matters: a cr
 the mutations alone leaves every read and the whole UI open to the same subnet, which is not much of
 a boundary. `Authorization: Bearer <password>` and `X-Api-Key: <password>` are accepted as well, so
 a script needs nothing derived and the README's `curl` examples stay one header away from working.
-Ungated: `/healthz`, which is a documented liveness contract and says nothing that watching the
-container restart would not, and the three routes the login form itself needs.
+Ungated: `/healthz`, a documented liveness contract, and the three routes the login form itself
+needs. The probe answers an unauthenticated caller with the verdict alone, because the full `Status`
+names our public key, the peer's endpoint and every remote — a probe that must answer whoever can
+reach the port should say whether the daemon is alive and not describe it.
 
 **Where the password comes from.** It is the config key `dashboard.password`, `Seeded`, so
 `EnsureSeeded` generates one at first start — `crypto/rand.Text()`, 26 base32 characters, long
@@ -419,6 +421,13 @@ directly, so it needs neither the daemon, the tunnel nor the network, which is t
 every other CLI command here. The password is read per request, so a change made in the Config view
 applies at once — and logs every browser out.
 
+`POST /api/login` is the one route that takes a guessable secret, so it is throttled: a run of
+failures from one address refuses that address for a minute, and refuses it *without reading the
+password*, because evaluating one during a lockout would hand back the single bit the guessing is
+after. Only the failure that starts a lockout is logged, so a flood cannot push the real lines out
+of the ring the dashboard serves. Everything behind one reverse proxy shares an address and so
+shares a lockout; that is the price of having no accounts to lock instead.
+
 **The session** is one cookie, `jccmirror_session`: `HttpOnly`, `SameSite=Strict`, `Path=/`, thirty
 days, and **no `Secure` flag**, because the dashboard answers on plain HTTP and a `Secure` cookie
 would simply never be stored. Its value is `sha256("jccmirror-session-v1\0" + password)` rather
@@ -427,6 +436,13 @@ than the password, so what sits in the browser cannot be read back out and typed
 drive the API from a browser that can reach it. The derivation is deterministic on purpose: there is
 no session table, and a restart — a self-update in particular (§5) — must not log everyone out. The
 cost is worth stating plainly: nothing but changing the password revokes a cookie.
+
+One thing does not follow from a per-request check, and it is the event stream: the gate runs before
+the handler, and a stream then lives for as long as the browser holds it open, so a password changed
+to shut someone out would never reach the connection they already have. The stream re-checks its own
+credential on a tick and ends when it stops being good, which bounds that to one interval. Which
+credential it re-checks is decided by the path, because `handleStream` serves the remote API too and
+that branch answers to `remote_api.key` alone.
 
 **What the password does not replace.** The reach is still worth narrowing, because this is plain
 HTTP and defence in depth is free here: **bind explicitly** to the LAN listener and the netstack
