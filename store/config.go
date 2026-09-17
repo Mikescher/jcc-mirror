@@ -66,6 +66,8 @@ const (
 	KeyTimezone = "general.timezone"
 
 	KeyRemoteAPIKey = "remote_api.key"
+
+	KeyDashboardPassword = "dashboard.password"
 )
 
 // RemoteAPIOff is the value that switches the remote API off from the Config
@@ -308,6 +310,14 @@ var keyDefs = []KeyDef{
 		Help:     `The key a client sends as "Authorization: Bearer <key>" or "X-Api-Key: <key>" to read /api/remote/v1. At least 16 characters without spaces; "openssl rand -hex 32" makes a good one. Empty or "off" switches the remote API off, and it answers 404.`,
 		Secret:   true,
 		Validate: validateAPIKey,
+	},
+
+	{
+		Name: KeyDashboardPassword, Group: "Dashboard", Label: "Password",
+		Help:     "The password the dashboard asks for before it shows anything. One is made up at first start and printed to the container log; `jcc-mirror password -data /data` prints it again. Changing it logs every browser out.",
+		Secret:   true,
+		Seeded:   true,
+		Validate: validatePassword,
 	},
 }
 
@@ -589,6 +599,22 @@ func validateAPIKey(s string) error {
 	}
 	if len(s) < 16 {
 		return errors.New("at least 16 characters, or \"off\"")
+	}
+	for _, r := range s {
+		if r < '!' || r > '~' {
+			return errors.New("printable ASCII only, without spaces")
+		}
+	}
+	return nil
+}
+
+// validatePassword takes what the dashboard's prompt will accept. The bound is
+// low because the generated one is long: a password typed over it is the
+// operator's choice, and refusing it outright only invites the value being left
+// at the generated one in a note somewhere.
+func validatePassword(s string) error {
+	if len(s) < 8 {
+		return errors.New("at least 8 characters")
 	}
 	for _, r := range s {
 		if r < '!' || r > '~' {

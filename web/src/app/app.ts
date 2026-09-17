@@ -7,7 +7,11 @@ import * as fmt from './format';
 
 /** App is the shell: the navigation over the live views and the settings pages, the one line of status that is
  *  worth seeing from every one of them, and the read-only toggle. Everything
- *  below it reads the same live stream. */
+ *  below it reads the same live stream.
+ *
+ *  There is no sign-in here: the daemon serves this app only to a browser that
+ *  already holds the session cookie, and the prompt it serves instead is a page
+ *  of its own (app/auth.go). */
 @Component({
   selector: 'app-root',
   imports: [RouterOutlet, RouterLink, RouterLinkActive],
@@ -54,5 +58,9 @@ export class App {
 
   toggleLock(): void {
     this.api.toggleUnlocked();
+  }
+
+  logout(): void {
+    void this.api.logout();
   }
 }

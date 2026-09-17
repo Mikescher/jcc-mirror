@@ -40,8 +40,10 @@ export class ApiError extends Error {
  *  silently re-arm every button on the page. */
 const unlockedKey = 'jccmirror.unlocked';
 
-/** Api is the whole HTTP surface. Every endpoint is open: the dashboard is
- *  reachable on the LAN and inside the WireGuard tunnel and nowhere else. */
+/** Api is the whole HTTP surface. Every endpoint is behind the dashboard
+ *  password, which the daemon checks per request; this app is only ever served
+ *  to a browser that is already past it, so there is nothing to sign in to here
+ *  and only the 401 of an expired cookie to handle. */
 @Injectable({ providedIn: 'root' })
 export class Api {
   /** Whether the actions are armed. This is a guard rail and nothing more - the
@@ -68,6 +70,14 @@ export class Api {
   private async request<T>(path: string, init: RequestInit): Promise<T> {
     const res = await fetch(path, { ...init, credentials: 'same-origin' });
 
+    // The cookie outlived the session it was made for, or the password was
+    // changed under us. Reloading is the whole recovery: the daemon answers the
+    // navigation with the password prompt instead of this app.
+    if (res.status === 401) {
+      location.reload();
+      throw new ApiError(401, 'the dashboard password is needed again');
+    }
+
     const text = await res.text();
     const parsed = text ? (JSON.parse(text) as unknown) : null;
     if (!res.ok) {
@@ -78,6 +88,16 @@ export class Api {
       throw new ApiError(res.status, message);
     }
     return parsed as T;
+  }
+
+  /** logout drops the session cookie. The reload is what shows the prompt: it is
+   *  the daemon that decides this app is not served any more. */
+  async logout(): Promise<void> {
+    try {
+      await this.post('/api/logout');
+    } finally {
+      location.reload();
+    }
   }
 
   // ---- the read-only toggle ---------------------------------------------

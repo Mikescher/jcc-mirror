@@ -22,6 +22,7 @@ func (a *App) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", a.handleHealth)
+	mux.HandleFunc("GET /api/session", a.handleSession)
 	mux.HandleFunc("GET /api/status", a.handleStatus)
 	mux.HandleFunc("GET /api/schedule", a.handleGetSchedule)
 	mux.HandleFunc("GET /api/config", a.handleGetConfig)
@@ -42,6 +43,9 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET /api/update", a.handleGetUpdate)
 	mux.HandleFunc("GET /api/remote/list", a.handleRemoteList)
 	mux.HandleFunc("GET /api/stream", a.handleStream)
+
+	mux.HandleFunc("POST /api/login", a.handleLogin)
+	mux.HandleFunc("POST /api/logout", a.handleLogout)
 
 	mux.HandleFunc("POST /api/config", a.handleSetConfig)
 	mux.HandleFunc("POST /api/config/wireguard/import", a.handleImportWireguard)
@@ -74,9 +78,13 @@ func (a *App) Handler() http.Handler {
 
 	// The remote API sits in a mux of its own: it has to see every method to
 	// answer 405 itself, and a method-less pattern conflicts with "GET /".
+	//
+	// The password gate goes on the dashboard's mux rather than on root, which is
+	// what keeps the remote API behind its own key and nothing else: the prefix
+	// pattern wins over "/" here, so remote requests never reach the gate.
 	root := http.NewServeMux()
 	root.Handle(remoteAPIPrefix, a.remoteAPI())
-	root.Handle("/", mux)
+	root.Handle("/", a.requirePassword(mux))
 
 	return noStore(root)
 }

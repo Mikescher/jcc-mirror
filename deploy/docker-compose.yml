@@ -1,6 +1,8 @@
 # The dashboard answers on :8080 before anything is configured, so a first start
-# needs nothing but this file. Do not publish that port beyond the LAN: the
-# dashboard has no authentication of its own.
+# needs nothing but this file. It asks for a password: one is generated on the
+# first start and printed to the container log on every start, and
+# `docker compose run --rm jcc-mirror password -data /data` prints it again once
+# that log has rolled over.
 services:
   jcc-mirror:
     image: registry.blackforestbytes.com/mikescher/jcc-mirror:latest
@@ -9,6 +11,8 @@ services:
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
     ports:
+      # Publishing this beyond the LAN leaves the password as the only thing in
+      # front of the dashboard, over plain HTTP. Keep it here.
       - "8080:8080"   # the LAN dashboard; the one inside the tunnel needs no mapping
     volumes:
       - ./data:/data                # sqlite state, the WireGuard identity, DB backups, updated binaries

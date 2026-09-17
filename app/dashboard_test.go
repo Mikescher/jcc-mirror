@@ -65,10 +65,10 @@ func TestDashboardIsServedFromTheBinary(t *testing.T) {
 	}
 }
 
-// TestReadViewsAreOpenAndAnswerJSON walks the views the dashboard is drawn from.
-// The page is one Angular app with nothing else to draw itself out of, so a view
-// that answers anything but JSON leaves a panel blank (DESIGN.md §4).
-func TestReadViewsAreOpenAndAnswerJSON(t *testing.T) {
+// TestReadViewsAnswerJSON walks the views the dashboard is drawn from. The page
+// is one Angular app with nothing else to draw itself out of, so a view that
+// answers anything but JSON leaves a panel blank (DESIGN.md §4).
+func TestReadViewsAnswerJSON(t *testing.T) {
 	m := newMirror(t)
 	m.write(t, "Filme/a.mkv", 2048)
 	m.run(t, RunScan)
@@ -147,9 +147,9 @@ func TestTheMeterCountsWhatCrossesTheWire(t *testing.T) {
 }
 
 // TestTheLogTailIsServed: the container log on a Synology is exactly what an
-// operator cannot get at, so the tail is how it is read at all. It goes to every
-// reader, because the dashboard is reachable on the LAN or through the WireGuard
-// tunnel and nowhere else, and nothing secret is printed into that log.
+// operator cannot get at, so the tail is how it is read at all. It is behind the
+// password like every other view, and nothing secret is kept in the ring it is
+// read out of (logs.Secretf).
 func TestTheLogTailIsServed(t *testing.T) {
 	a, h := newApp(t)
 	a.log.Infof("something worth reading")
@@ -179,7 +179,7 @@ func TestTheStreamCarriesTheLog(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	got, err := readStream(srv.URL)
+	got, err := readStream(srv.URL, h.password)
 	if err != nil {
 		t.Fatalf("reading the stream: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestTheStreamCarriesTheLog(t *testing.T) {
 // readStream opens the event stream and reads until the log arrives. The deadline
 // is what ends it: the connection itself stays open for as long as the daemon is
 // up, so there is nothing else to read to.
-func readStream(base string) (string, error) {
+func readStream(base, password string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -202,6 +202,7 @@ func readStream(base string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	req.Header.Set("Authorization", "Bearer "+password)
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -541,7 +542,7 @@ func TestImportingABrokenWireguardConfig(t *testing.T) {
 	}
 }
 
-func postImport(t *testing.T, h http.Handler, config string) *httptest.ResponseRecorder {
+func postImport(t *testing.T, h *dash, config string) *httptest.ResponseRecorder {
 	t.Helper()
 	body, err := json.Marshal(map[string]string{"config": config})
 	if err != nil {

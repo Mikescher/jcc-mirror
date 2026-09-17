@@ -38,7 +38,7 @@ detail sections:
 |---|---|---|
 | S1 | Re-check the source lock *after* copying the DB; discard if it appeared. | One extra request; closes the mid-copy race. Not a SQLite command. |
 | S2 | Deletion threshold + quarantine + non-empty-remote assertion. | A publisher-side share going away makes the entire tree look deleted. |
-| S3 | The dashboard's reach *is* its access control: bind explicitly, never publish `:8080` past the LAN. | There is no authentication, so "force replace" and "approve deletion" are exactly as protected as the network they answer on. See §4. |
+| S3 | The dashboard is behind a password, and its reach is narrowed as well: bind explicitly, keep `:8080` on the LAN. | Reach alone stops being access control the moment the dashboard is reachable by every client of a shared tunnel rather than only by the publisher, and "force replace" and "approve deletion" are not things to hand to a subnet. See §4. |
 | S4 | Free-space preflight, per plan and per file. | 30 TB may not fit; a full volume on a Synology is its own kind of bad day. |
 | S5 | Keep the last N copies of `ClipCornDB.db`. | A few MB each. The entire recovery story for a bad transfer, which is the only realistic failure mode left. |
 
@@ -178,7 +178,7 @@ dev.IpcSet(uapiConfig)   // private key, peer pubkey, endpoint, allowed-ips, kee
 dev.Up()
 
 smbc, _ := smb.New(smb.Config{Dial: tnet.DialContext, ...})   // the remote, on the tunnel
-ln, _   := tnet.ListenTCP(&net.TCPAddr{Port: 8080})           // dashboard, on the tunnel
+ln, _   := tnet.ListenTCP(&net.TCPAddr{Port: 80})             // dashboard, on the tunnel
 ```
 
 Consequences:
@@ -187,9 +187,15 @@ Consequences:
   unprivileged container.
 - The WireGuard identity belongs to the container, so moving it between hosts is a volume copy.
 - `tnet.ListenTCP` puts the dashboard **on the tunnel**, so user 1 reaches it over WireGuard with
-  zero configuration on user 2's side — no port forward, no host WG. It is also the second half of
-  S3: the dashboard has no authentication, so everyone on the WG subnet has "force replace" and
-  "approve deletion" as surely as everyone on the LAN does. That is an accepted cost, argued in §4.
+  zero configuration on user 2's side — no port forward, no host WG. Port 80 costs nothing there:
+  the listener is a netstack socket inside the process, so the kernel's privileged-port check never
+  sees it and no capability is needed.
+- Every other client of the same rootserver can therefore reach the dashboard on plain
+  `http://<our-tunnel-address>/` too, but only if the peer entry's `AllowedIPs` covers those
+  clients' addresses rather than only the rootserver's `/32`: cryptokey routing drops an inbound
+  packet whose source is outside the peer's allowed range, so that one field decides both
+  directions, and the rootserver has to forward between its peers besides. That the audience is a
+  subnet rather than one host is the reason the dashboard has a password (S3, §4).
 
 **Topology.** The WireGuard server runs on a rootserver; user 1's NAS and user 2's container are
 both clients of it. Three consequences:
@@ -371,45 +377,77 @@ handshake age, endpoint, addresses and peers on **Connection**; RTT, a throughpu
 directory-listing explorer on **Remotes**, beside each remote's reachability reported against the
 `\\host\share\path` it actually reached; free space and "explain plan" per pair on **Pairs**; the
 NFC-normalized name count on **Transfer**; the notification conditions on **Notifications**; the
-self-update panel on **Update**; the live log tail and the data directory on **System**. A
-page-to-group table is the single place membership is written down, and a group no page claims lands
-on System rather than disappearing, which is what keeps a key added on the Go side from falling out
-of the dashboard unnoticed. Remotes, Pairs and Audit have no save bar: a remote and a pair are records
+self-update panel on **Update**; the live log tail, the dashboard's own password and the data
+directory on **System**. A page-to-group table is the single place membership is written down, and a
+group no page claims lands on System rather than disappearing, which is what keeps a key added on
+the Go side from falling out of the dashboard unnoticed. Remotes, Pairs and Audit have no save bar: a remote and a pair are records
 saved one at a time, and the audit trail is read-only; the notification targets on Notifications are
 records of the same kind.
 
 **Actions**: trigger scan, trigger sync, pause/resume, approve a guarded deletion, force a DB
 replace, roll back a DB backup, check for update.
 
-**Auth (S3).** There is none, and that is a decision rather than an omission. The dashboard answers
-on the LAN and inside the WireGuard tunnel and nowhere else, and a bearer token would move that
-boundary nowhere: with no user accounts to authenticate against, the only secret the daemon can
-issue is one it generates and prints to the container log — which is readable by exactly the people
-the port already is, so it costs a lookup before every change and excludes nobody. The boundary that
-is actually doing the work is the reachability of the port, so that is what S3 protects: **bind
-explicitly** to the LAN listener and the netstack listener rather than `0.0.0.0`, do not publish
-`:8080` past the LAN in compose, and run no CORS, so a page on another origin cannot drive the API
-from a browser that can reach it.
+**Auth (S3).** The dashboard is behind a password, and S3 is where the case for it belongs, because
+the tempting answer is that reach is enough. It reads well: there are no user accounts to
+authenticate against, so the only secret the daemon can issue is one it generates and prints to the
+container log, and a secret readable by exactly the people the port is readable by excludes nobody.
+What that argument needs is for the port's audience to be the people who may press "force replace",
+and the netstack listener is where that stops holding — the dashboard answers on the WG subnet, so
+its audience is every client of the rootserver rather than the publisher alone (§2.2), and a
+boundary that admits a whole shared tunnel cannot carry the destructive actions by itself.
 
-The cost is stated plainly because it is real: **"force replace" and "approve deletion" are
-reachable unauthenticated** from any device on the LAN and from anything on the WG subnet. The
-mitigation is that the WG subnet is two NASes and a rootserver we control, and that the destructive
-paths are guarded on their own terms rather than by a login — deletion is thresholded, quarantined
-and needs an explicit approval (§2.5), a DB replace keeps numbered backups it can be rolled back
-from (§3), and every configuration change is written to an audit trail with the caller's address.
-Publishing that port to the internet is the one deployment mistake this design cannot absorb.
+So: one password, in front of the **whole** dashboard — the API, the SSE stream and the Angular
+bundle alike. A request for a page that does not carry it is answered with a standalone login page
+and `401`, never with the app, so nothing of the dashboard reaches an unauthenticated browser: no
+view, no bundle, no state. Gating the whole of it is the half that matters: a credential in front of
+the mutations alone leaves every read and the whole UI open to the same subnet, which is not much of
+a boundary. `Authorization: Bearer <password>` and `X-Api-Key: <password>` are accepted as well, so
+a script needs nothing derived and the README's `curl` examples stay one header away from working.
+Ungated: `/healthz`, which is a documented liveness contract and says nothing that watching the
+container restart would not, and the three routes the login form itself needs.
 
-**Remote read-only API.** `/api/remote/v1/` is the one exception, and it is read-only by
-construction: it answers GET and nothing else, and only with the key stored as `remote_api.key`
+**Where the password comes from.** It is the config key `dashboard.password`, `Seeded`, so
+`EnsureSeeded` generates one at first start — `crypto/rand.Text()`, 26 base32 characters, long
+enough that nobody guesses it and still built to be read off a log and typed, with no case or glyph
+ambiguity to get wrong. It is `Secret`, so `GET /api/config` reports only that it is set and the
+audit trail records the mask. It reaches the operator through the container log, printed on every
+start rather than only the one that made it, by a logger call that deliberately does not keep the
+line in the ring the dashboard serves back — otherwise the password would be readable out of the
+very API it protects. For a log that has rolled over there is `jcc-mirror password -data /data`,
+which prints it, with `-reset` to generate a new one and `-set` to take one; it reads sqlite
+directly, so it needs neither the daemon, the tunnel nor the network, which is the same shape as
+every other CLI command here. The password is read per request, so a change made in the Config view
+applies at once — and logs every browser out.
+
+**The session** is one cookie, `jccmirror_session`: `HttpOnly`, `SameSite=Strict`, `Path=/`, thirty
+days, and **no `Secure` flag**, because the dashboard answers on plain HTTP and a `Secure` cookie
+would simply never be stored. Its value is `sha256("jccmirror-session-v1\0" + password)` rather
+than the password, so what sits in the browser cannot be read back out and typed into the prompt.
+`SameSite=Strict` is the CSRF story, and there is no CORS either, so a page on another origin cannot
+drive the API from a browser that can reach it. The derivation is deterministic on purpose: there is
+no session table, and a restart — a self-update in particular (§5) — must not log everyone out. The
+cost is worth stating plainly: nothing but changing the password revokes a cookie.
+
+**What the password does not replace.** The reach is still worth narrowing, because this is plain
+HTTP and defence in depth is free here: **bind explicitly** to the LAN listener and the netstack
+listener rather than `0.0.0.0`, and keep `:8080` on the LAN in compose. And the destructive paths
+stay guarded on their own terms rather than by a login — deletion is thresholded, quarantined and
+needs an explicit approval (§2.5), a DB replace keeps numbered backups it can be rolled back from
+(§3), and every configuration change is written to an audit trail with the caller's address.
+
+**Remote read-only API.** `/api/remote/v1/` answers to a key of its own instead, and it is read-only
+by construction: it answers GET and nothing else, and only with the key stored as `remote_api.key`
 (a secret, set on the System page). No key means the prefix answers 404. It exists so a reverse
-proxy can publish that prefix — and only that prefix — to a monitoring client somewhere else; the
-rest of the port stays exactly as unauthenticated and as unpublishable as above.
+proxy can publish that prefix — and only that prefix — to a monitoring client somewhere else.
+Structurally it is a sibling branch of the root mux, so a request under the prefix never reaches the
+password gate: that key is the only thing in front of it, which is the point.
 
-The dashboard does keep a **read-only mode**, and it is honest about being a guard rail rather than
-a control: it lives entirely in the browser, is remembered in `localStorage`, defaults to locked,
-and is toggled by one Unlock/Lock button in the header. Every mutating control is disabled while it
-is locked. It stops a stray click on a page left open, and it stops nothing else — the daemon does
-not know it exists.
+The dashboard also keeps its **read-only mode**, which is a different thing from the password and
+honest about being a guard rail rather than a control: it lives entirely in the browser, is
+remembered in `localStorage`, defaults to locked, and is toggled by one Unlock/Lock button in the
+header, beside a Log out button. Every mutating control is disabled while it is locked. It stops a
+stray click on a page left open, and it stops nothing else — the daemon does not know it exists,
+which is why the login page's button says "Sign in" and not "Unlock".
 
 ### 4.1 Notifications (SCN)
 
@@ -498,8 +536,9 @@ There is no bootstrap layer. Nothing is read from the environment and no config 
 every setting is either **static** — compiled in, because it does not vary between installs — or
 **runtime**, held in sqlite and edited in the dashboard.
 
-**Static**: the data directory (`/data`, the volume mount) and the two dashboard listen addresses
-(LAN and the netstack listener on the tunnel).
+**Static**: the data directory (`/data`, the volume mount) and the two dashboard listen addresses —
+`:8080` on the host network, and port 80 on the netstack listener, where a privileged port costs
+nothing because that socket is never seen by the kernel (§2.2).
 
 **The WireGuard server's config is the input**, and that direction is the decision. The rootserver
 issues a *finished client config* — it assigns the address, it chooses the private key — and there
@@ -527,8 +566,9 @@ is the server's own idea of this client and is worth being able to check against
 
 That leaves one loop to close, and it closes itself: the LAN listener does not depend on the tunnel,
 so the dashboard answers on `:8080` before any WireGuard setting exists. A first boot against an
-empty database serves a setup view, the config is pasted in, and the tunnel comes up the moment it
-is saved. Nothing has to be known before the process starts.
+empty database serves a setup view — behind the password generated on that same boot and printed to
+the container log (§4) — the config is pasted in, and the tunnel comes up the moment it is saved.
+Nothing has to be known before the process starts.
 
 **Runtime** (sqlite, edited in the dashboard, every change written to an audit table):
 
@@ -562,6 +602,8 @@ is saved. Nothing has to be known before the process starts.
   never handed out by the API. The tunnel-down grace period is the one notification setting left in
   the config table.
 - **Retention**: `events` and `changes` rows, default one year.
+- **Dashboard**: the password of §4 — a secret like any other, and the second setting generated at
+  first start.
 
 **Dry run**: every plan can be computed and displayed — N adds, M deletes, X GB, estimated duration
 at the current cap — without executing. Worth an "approve each plan" mode for the first weeks.
@@ -602,7 +644,8 @@ services:
     image: jcc-mirror:latest
     restart: unless-stopped
     ports: ["8080:8080"]              # LAN dashboard; WG dashboard is on the netstack listener.
-                                      # Do not publish it beyond the LAN: there is no auth (S3, §4)
+                                      # Keep it on the LAN: the password is then not the only thing
+                                      # in front of the dashboard, which talks plain HTTP (S3, §4)
     volumes:
       - /volume1/docker/jcc-mirror:/data          # sqlite, config, wg key, binaries, db backups
       - /volume1/media:/mnt/media
@@ -638,7 +681,7 @@ Setup elsewhere, once:
 | M3 | Scheduler + limiter: 7×24 grid, caps, window boundaries mid-transfer, free-space preflight. | |
 | M4 | Deletion + guards: mirror and guarded modes, threshold, quarantine, retention, non-empty assertion. | Deliberately after M2/M3 — run additive-only until the diff is trusted. |
 | M5 | jCC pair: hard exclusions, lock gate with the re-check, staged rename, numbered backups + rollback. | Small once M2 is solid. |
-| M6 | Dashboard: Angular + embed, SSE, the live views and the settings pages, bandwidth rollups, actions, SCN notifications. | Notifications ship with the dashboard rather than later — until then a stopped sync is invisible. |
+| M6 | Dashboard: Angular + embed, SSE, the live views and the settings pages, bandwidth rollups, actions, the password gate, SCN notifications. | Notifications ship with the dashboard rather than later — until then a stopped sync is invisible. |
 | M7 | Self-update: mtime check, sanity checks, re-exec, supervisor fallback. | Last — a broken updater is the one bug that is hard to recover from remotely. |
 
 ---

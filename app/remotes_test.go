@@ -12,7 +12,7 @@ import (
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
-func postJSON(t *testing.T, h http.Handler, path string, body map[string]any) *httptest.ResponseRecorder {
+func postJSON(t *testing.T, h *dash, path string, body map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -23,7 +23,7 @@ func postJSON(t *testing.T, h http.Handler, path string, body map[string]any) *h
 	return do(t, h, req)
 }
 
-func createRemote(t *testing.T, h http.Handler, fields map[string]any) store.Remote {
+func createRemote(t *testing.T, h *dash, fields map[string]any) store.Remote {
 	t.Helper()
 	rec := postJSON(t, h, "/api/remotes", fields)
 	if rec.Code != http.StatusOK {
@@ -36,7 +36,7 @@ func createRemote(t *testing.T, h http.Handler, fields map[string]any) store.Rem
 	return rem
 }
 
-func getRemotes(t *testing.T, h http.Handler) []RemoteView {
+func getRemotes(t *testing.T, h *dash) []RemoteView {
 	t.Helper()
 	rec := do(t, h, httptest.NewRequest(http.MethodGet, "/api/remotes", nil))
 	if rec.Code != http.StatusOK {

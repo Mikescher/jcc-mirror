@@ -134,7 +134,7 @@ type App struct {
 
 func New(st *store.Store, log *logs.Logger, opts Options) *App {
 	if opts.TunnelPort == 0 {
-		opts.TunnelPort = 8080
+		opts.TunnelPort = 80
 	}
 	a := &App{
 		store: st, log: log, opts: opts, started: time.Now(),
@@ -167,6 +167,19 @@ func (a *App) Start(ctx context.Context) error {
 	for _, k := range created {
 		a.log.Infof("config: generated %s", k)
 	}
+
+	// The password reaches the operator here and nowhere else: GET /api/config
+	// masks it like every secret, and Secretf keeps it out of the log ring the
+	// dashboard serves back, so the one place it can be read is the container log
+	// (DESIGN.md §4). It is reprinted on every start rather than only on the one
+	// that made it, because the alternative to finding it again is `password
+	// -reset`, and an operator who scrolls back is cheaper than one who is locked
+	// out.
+	pw, err := a.store.ConfigGet(ctx, store.KeyDashboardPassword)
+	if err != nil {
+		return err
+	}
+	a.log.Secretf("dashboard: the password is %s", pw)
 
 	if pub, err := a.PublicKey(ctx); err == nil {
 		a.log.Infof("wg: our public key is %s", pub)
@@ -776,6 +789,8 @@ func generateSetting(key string) (string, error) {
 	switch key {
 	case store.KeyWGPrivateKey:
 		return wg.GenerateKey()
+	case store.KeyDashboardPassword:
+		return NewPassword()
 	default:
 		return "", fmt.Errorf("no generator for %q", key)
 	}

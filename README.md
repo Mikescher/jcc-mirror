@@ -20,10 +20,10 @@ copy the per-user databases, a lock gate on the shared one that is re-checked
 after the copy, and a numbered backup of every database it replaces — there is
 now the **dashboard**: an Angular build compiled into the binary, four live views and the settings pages fed
 by one Server-Sent Events stream, a per-minute bandwidth series that rolls
-itself up rather than growing without bound, a read-only mode that one button in
-the header lifts, and push notifications over SCN coalesced hard enough to live
-inside a daily quota. And on top of all of it, M7's **self-update**: a binary
-fetched over plain HTTP(S), checked, smoke-run and
+itself up rather than growing without bound, a password in front of all of it, a
+read-only mode that one button in the header lifts, and push notifications over
+SCN coalesced hard enough to live inside a daily quota. And on top of all of it,
+M7's **self-update**: a binary fetched over plain HTTP(S), checked, smoke-run and
 re-exec'd in place, with a supervisor that puts the old one back if the new one
 will not start.
 
@@ -41,8 +41,13 @@ Nothing has to be known before the process starts. The LAN dashboard does not
 depend on the tunnel, so a first boot against an empty database answers on
 `:8080` with the dashboard and empty settings pages:
 
-1. Open `http://<synology>:8080` and press **Unlock**. Do not publish that port
-   past the LAN: the dashboard has no authentication of its own.
+1. Open `http://<synology>:8080` and sign in. A password is generated at the
+   first start and printed to the container log — it is in the `logs -f` above —
+   and `jcc-mirror password -data /data` prints it again once that log has rolled
+   over. Then press **Unlock** in the header: that is a separate read-only guard
+   rail in the browser, not the login. Publishing that port past the LAN is still
+   worth avoiding — the password would be the only thing left in front of the
+   dashboard, over plain HTTP.
 2. On **Connection**, paste the client config the rootserver generated
    for this container — `[Interface]` private key and all — into the importer. It
    fills every tunnel setting in one go: the private key, the rootserver's public
@@ -52,8 +57,13 @@ depend on the tunnel, so a first boot against an empty database answers on
    Every one of those fields can be typed instead; the importer only saves the
    typing.
 3. Save. The tunnel comes up in place — no restart — and the same dashboard also
-   starts answering on `http://<our-tunnel-address>:8080`, which is how the
-   publisher reaches it with no port forward.
+   starts answering on `http://<our-tunnel-address>`, which is how the
+   publisher reaches it with no port forward. Every other client of the same
+   rootserver can reach it there too, but only if the peer entry's allowed IPs
+   cover those clients' addresses rather than just the rootserver's `/32`:
+   cryptokey routing drops an inbound packet whose source is outside a peer's
+   allowed range, so that one field decides both directions. The rootserver has
+   to forward between its peers as well (`DESIGN.md` §2.2).
 4. On **Remotes**, add the publisher's share: his address inside the tunnel, the
    share, the directory inside it the remote is rooted at, and a read-only
    account on his DSM. One remote per share; add a second for a second share.
@@ -68,28 +78,46 @@ anyone has configured one, and the container log prints the public half of
 whatever is stored. It is worth a glance after an import: it has to match the
 peer entry the rootserver holds for this container.
 
-Every endpoint is open, so a remote can be added from `curl` as easily as from
-the page:
+### Talking to it directly
+
+Every endpoint takes the dashboard's password as a header, so a remote can be
+added from `curl` as easily as from the page:
 
 ```bash
 curl -H 'Content-Type: application/json' \
+     -H 'Authorization: Bearer <password>' \
      -d '{"name":"media","host":"10.13.13.2","share":"media","user":"ro","password":"…"}' \
      http://<synology>:8080/api/remotes
 ```
 
-There is no credential anywhere in this, which cuts both ways: nothing can be
-stolen out of the browser or forged in it, and nothing stands between a request
-and the daemon either. What scopes the dashboard is the network — the compose
-file maps `:8080` onto the LAN, and the other listener is inside the tunnel — so
-whoever can reach it is already on the inside. The Unlock button is a guard rail
-in the browser and nothing the daemon knows about: it is remembered in
-`localStorage`, it defaults to locked, and what it stops is a stray click, not a
-request.
+`X-Api-Key: <password>` does the same job. A browser sends a cookie instead,
+which carries a hash of the password rather than the password itself, so what
+sits in the browser cannot be read back out and typed into the prompt. The
+password is the config key `dashboard.password`, a secret like every other one:
+`GET /api/config` reports only that it is set, the audit trail records the mask,
+and it is read on every request, so changing it on the **System** page applies at
+once and logs every browser out. `jcc-mirror password -data /data` prints the
+stored one, `-reset` generates a new one and `-set` takes one — it reads sqlite
+directly, so it needs neither the daemon, the tunnel nor the network, which is
+what makes it the way back in after a container log has rolled over.
+
+What the password does not replace is the network boundary, and that is still
+where the dashboard answers: the compose file maps `:8080` onto the LAN and the
+other listener is inside the tunnel, so leaving it there costs nothing and is
+worth doing — this is plain HTTP either way. The **Unlock** button is a separate
+thing entirely, a guard rail in the browser and nothing the daemon knows about:
+it is remembered in `localStorage`, it defaults to locked, and what it stops is a
+stray click, not a request.
+
+Everything needs the password except `GET /healthz` — the liveness contract,
+which says nothing that watching the container restart would not — and the three
+routes the login page itself uses:
 
 | Endpoint | |
 |---|---|
-| `GET /` and every route under it | The dashboard. Unknown paths answer with the shell, because the router is on the client |
+| `GET /` and every route under it | The dashboard. Unknown paths answer with the shell, because the router is on the client; a browser without the password is served the login page with a 401 and never the app — no view, no bundle, no state |
 | `GET /healthz` | Status as JSON; 503 only when the database has stopped answering |
+| `POST /api/login` · `/api/logout` · `GET /api/session` | The password exchanged for the session cookie, the cookie dropped again, and whether this browser still carries a valid one |
 | `GET /api/stream` | Server-Sent Events: `state` frames with the status and the running operation, plus `events` and `changes` as they happen, and `log` frames carrying the container's own log |
 | `GET /api/status` · `/api/schedule` · `/api/config` · `/api/config/audit` · `/api/events` · `/api/changes` · `/api/remotes` · `/api/pairs` · `/api/jobs` · `/api/scans` · `/api/trash` · `/api/runs` · `/api/bandwidth` · `/api/diagnostics` · `/api/update` · `/api/remote/list` (optional `remote`) | Read views. Secrets are never returned — a remote says whether it has a password and nothing more; `status` carries the current window and cap, and `remotes` |
 | `POST /api/config` · `/api/remote/probe` (optional `remote`) | A settings save, and one listing of a remote's root to prove the path end to end |
@@ -430,13 +458,18 @@ history view share a schema rather than agreeing by accident.
 | **Pairs** | The pairs, each with the free space of its volume and an "explain plan" button. |
 | **Notifications** | The SCN targets, the tunnel grace period, and the conditions currently raised. |
 | **Update** | The self-update settings and panel: what runs, what the URL has, install, install anyway, roll back. |
-| **System** | Retention and timezone, the remote API key, the live log tail and the data directory. |
+| **System** | Retention and timezone, the password the dashboard asks for, the remote API key, the live log tail and the data directory. |
 | **Audit** | Every configuration change. |
 
 The settings pages sit in the same tab bar as the four live views, each with its own draft and its own save bar at the foot of the viewport. The fields are generated from the key registry, so a key added later costs no HTML; a page-to-group table is the one place a settings group is told which page it belongs on, and a group no page claims lands on **System** rather than disappearing.
 
-Every view is drawn from an open endpoint, the log tail — on
-`GET /api/diagnostics` and as `log` frames on the stream — included; the Unlock
+The password gate sits in front of all of it — the API, the stream and the
+Angular bundle alike — so an unauthenticated browser gets the login page and
+nothing else: no view, no bundle, no state. What the log tail behind it shows —
+on `GET /api/diagnostics` and as `log` frames on the stream — is the container's
+own log minus one line, because the password is printed by a logger that
+deliberately does not keep it in the ring the dashboard serves back; otherwise
+the password would be readable out of the very API it protects. The Unlock
 button is a signal in the browser and nothing the daemon is told about. The
 bandwidth series is sampled off the connection the SMB session runs over rather
 than off the transfer engine, so what the graph shows is what the link actually
@@ -448,7 +481,9 @@ included.
 A key-guarded, read-only view of the same state for a client that is not on the
 LAN — a monitoring dashboard behind a reverse proxy that publishes
 `/api/remote/v1/` and nothing else. It is served by the same handler as the
-dashboard; the LAN routes stay unauthenticated and unchanged.
+dashboard, but as a branch of its own: a request under the prefix never reaches
+the dashboard's password gate, so this key is the only thing in front of it, and
+the dashboard's own routes are unchanged.
 
 **Switching it on.** Set **Remote API → API key** (`remote_api.key`) on the
 **System** page: at least 16 printable ASCII characters without spaces, e.g.
@@ -700,11 +735,17 @@ two listen addresses. Everything else lives in the `config` table, is edited in
 the dashboard, and every change is recorded in `config_audit` — with secrets
 masked, so the trail says that a password changed and never what it changed to.
 
-One setting is generated at first start rather than typed: the WireGuard private
-key, so the tunnel has an identity before anyone has given it one. It is only a
-stand-in — the rootserver issues the key its peer entry knows, and importing that
-config overwrites it — but either way the key exists in exactly one place and
-never passes through a compose file, a shell history or `ps`.
+Two settings are generated at first start rather than typed. The WireGuard
+private key, so the tunnel has an identity before anyone has given it one: it is
+only a stand-in — the rootserver issues the key its peer entry knows, and
+importing that config overwrites it — but either way the key exists in exactly
+one place and never passes through a compose file, a shell history or `ps`. And
+the dashboard's password, 26 base32 characters from `crypto/rand`, which is short
+enough to read off a log and type and carries no case or glyph ambiguity while
+doing it. Both are secrets like any other, so neither is ever handed back by the
+API; the password is printed to the container log on every start, by the one
+logger call that keeps its line out of the tail the dashboard serves, and
+`jcc-mirror password` reads it straight out of sqlite when that log is gone.
 
 The engine's settings live in the same table and appear in the same form, because
 the key registry is what the settings pages are generated from — a setting added in a
@@ -718,7 +759,8 @@ threshold and how many copies to keep under **jCC**; the tunnel-down grace under
 **Notifications**; the `http(s)`
 URL the binary comes from, whether to install it unattended and how often to look
 under **Update**; how long the event log and the per-file history are kept under
-**Retention**, a year each by default, swept once an hour; and the key of the
+**Retention**, a year each by default, swept once an hour; the password the
+dashboard asks for under **Dashboard**; and the key of the
 [remote read-only API](#remote-read-only-api) under **Remote API**. The remotes, the
 pairs and the notification targets are the exception — they are rows of their
 own, one remote per share on the publisher's side with its host, share, path in
@@ -744,6 +786,10 @@ make build
 make web         # build the dashboard into web/dist (the other targets do this too)
 ./jcc-mirror serve -data ./data -lan 127.0.0.1:8080
 ```
+
+A development store is a store like any other, so the first `serve` against a
+fresh `./data` generates a password and prints it — `./jcc-mirror password -data
+./data` prints it again, and `-set` makes it something typable.
 
 `web/dist` is not checked in, but the binary embeds it, so a plain `go build`
 fails until it exists. Every make target that compiles Go builds it first, and

@@ -40,7 +40,11 @@ func TestTunnelEndToEnd(t *testing.T) {
 
 	// A listener on the far side, which is what `serve` relies on: the publisher
 	// reaching the dashboard over the tunnel with nothing configured on his side.
-	ln, err := serverNet.ListenTCP(&net.TCPAddr{Port: 8080})
+	//
+	// Port 80, as the daemon uses it, and this test runs unprivileged: a netstack
+	// listener allocates its port in userspace, so the kernel's privileged-port
+	// check never applies to one.
+	ln, err := serverNet.ListenTCP(&net.TCPAddr{Port: 80})
 	if err != nil {
 		t.Fatalf("listen inside the tunnel: %v", err)
 	}
@@ -91,7 +95,7 @@ func TestTunnelEndToEnd(t *testing.T) {
 	t.Logf("ping rtt over loopback: %v", rtt)
 
 	client := &http.Client{Transport: tun.Transport()}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+serverAddr+":8080/", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+serverAddr+"/", nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}

@@ -182,9 +182,10 @@ func TestDashboardRollsTheDatabaseBack(t *testing.T) {
 	}
 }
 
-// TestDatabaseRollbackIsOpen: the recovery of S5 needs no login either. A pair
-// that is not there is an ordinary mistake, and is answered as one.
-func TestDatabaseRollbackIsOpen(t *testing.T) {
+// TestDatabaseRollbackAnswersAboutThePair: the recovery of S5 is a button like
+// any other. A pair that is not there is an ordinary mistake, and is answered as
+// one.
+func TestDatabaseRollbackAnswersAboutThePair(t *testing.T) {
 	m := newJCCMirror(t)
 
 	rec := postForm(t, m.h, "/api/pairs/database/rollback", url.Values{"id": {"999999"}})

@@ -14,7 +14,7 @@ import (
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
-func createNotifyTarget(t *testing.T, h http.Handler, fields map[string]any) store.NotifyTarget {
+func createNotifyTarget(t *testing.T, h *dash, fields map[string]any) store.NotifyTarget {
 	t.Helper()
 	rec := postJSON(t, h, "/api/notify/targets", fields)
 	if rec.Code != http.StatusOK {
@@ -27,7 +27,7 @@ func createNotifyTarget(t *testing.T, h http.Handler, fields map[string]any) sto
 	return target
 }
 
-func getNotifyTargets(t *testing.T, h http.Handler) (string, []store.NotifyTarget) {
+func getNotifyTargets(t *testing.T, h *dash) (string, []store.NotifyTarget) {
 	t.Helper()
 	rec := do(t, h, httptest.NewRequest(http.MethodGet, "/api/notify/targets", nil))
 	if rec.Code != http.StatusOK {

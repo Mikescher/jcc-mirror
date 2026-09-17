@@ -16,18 +16,20 @@ import (
 
 const remoteTestKey = "0123456789abcdef0123456789abcdef"
 
-func setRemoteKey(t *testing.T, h http.Handler, key string) {
+func setRemoteKey(t *testing.T, h *dash, key string) {
 	t.Helper()
 	if rec := postForm(t, h, "/api/config", url.Values{store.KeyRemoteAPIKey: {key}}); rec.Code != http.StatusOK {
 		t.Fatalf("set the remote API key: %d %s", rec.Code, rec.Body)
 	}
 }
 
+// remoteGet carries the remote key and no dashboard password: what the remote
+// API answers to, it answers to on its own (app/http.go).
 func remoteGet(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	req.Header.Set("Authorization", "Bearer "+remoteTestKey)
-	return do(t, h, req)
+	return send(t, h, req)
 }
 
 func remoteDecode[T any](t *testing.T, h http.Handler, path string) T {
@@ -74,6 +76,22 @@ func TestRemoteAPIIsOffWithoutAKey(t *testing.T) {
 	}
 }
 
+// TestRemoteAPIIsOutsideThePasswordGate: the remote API is a branch of its own
+// on the root mux, so it answers to its key with no dashboard password anywhere
+// near the request - and that key is no way into the dashboard (app/http.go).
+func TestRemoteAPIIsOutsideThePasswordGate(t *testing.T) {
+	_, h := newApp(t)
+	setRemoteKey(t, h, remoteTestKey)
+
+	if rec := remoteGet(t, h, "/api/remote/v1/status"); rec.Code != http.StatusOK {
+		t.Fatalf("with the remote key and nothing else: %d %s", rec.Code, rec.Body)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	req.Header.Set("X-Api-Key", remoteTestKey)
+	wantError(t, send(t, h, req), http.StatusUnauthorized)
+}
+
 func TestRemoteAPIKeyValidation(t *testing.T) {
 	_, h := newApp(t)
 	for _, bad := range []string{"short", "has a space in it somewhere", "tab\tseparated-key-value"} {
@@ -89,7 +107,7 @@ func TestRemoteAPIGuard(t *testing.T) {
 
 	const path = "/api/remote/v1/status"
 
-	missing := do(t, h, httptest.NewRequest(http.MethodGet, path, nil))
+	missing := send(t, h, httptest.NewRequest(http.MethodGet, path, nil))
 	wantError(t, missing, http.StatusUnauthorized)
 	if missing.Header().Get("WWW-Authenticate") == "" {
 		t.Error("a 401 without WWW-Authenticate")
@@ -105,7 +123,7 @@ func TestRemoteAPIGuard(t *testing.T) {
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set(header[0], header[1])
-		if rec := do(t, h, req); rec.Code != http.StatusUnauthorized {
+		if rec := send(t, h, req); rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s: %d, want 401", name, rec.Code)
 		}
 	}
@@ -117,7 +135,7 @@ func TestRemoteAPIGuard(t *testing.T) {
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set(header[0], header[1])
-		rec := do(t, h, req)
+		rec := send(t, h, req)
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s: %d, want 200: %s", name, rec.Code, rec.Body)
 		}
@@ -129,14 +147,14 @@ func TestRemoteAPIGuard(t *testing.T) {
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodHead} {
 		req := httptest.NewRequest(method, path, nil)
 		req.Header.Set("X-Api-Key", remoteTestKey)
-		rec := do(t, h, req)
+		rec := send(t, h, req)
 		if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != http.MethodGet {
 			t.Errorf("%s: %d Allow=%q, want 405 Allow=GET", method, rec.Code, rec.Header().Get("Allow"))
 		}
 	}
 
 	wantError(t, remoteGet(t, h, "/api/remote/v1/nothing"), http.StatusNotFound)
-	if rec := do(t, h, httptest.NewRequest(http.MethodGet, "/api/remote/v1/nothing", nil)); rec.Code != http.StatusUnauthorized {
+	if rec := send(t, h, httptest.NewRequest(http.MethodGet, "/api/remote/v1/nothing", nil)); rec.Code != http.StatusUnauthorized {
 		t.Errorf("an unknown path without a key answered %d, want 401", rec.Code)
 	}
 

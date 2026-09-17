@@ -25,7 +25,7 @@ import (
 // server to stand one up with.
 type mirror struct {
 	app  *App
-	h    http.Handler
+	h    *dash
 	src  string
 	dst  string
 	pair store.Pair
@@ -219,10 +219,10 @@ func TestOnlyOneRunAtATime(t *testing.T) {
 	}
 }
 
-// TestRunAndPairEndpointsAreOpen: every action the dashboard offers is reachable
-// without a login, and a request carrying nothing at all is answered about the
-// request rather than about who is asking.
-func TestRunAndPairEndpointsAreOpen(t *testing.T) {
+// TestRunAndPairEndpointsAnswerAboutTheRequest: past the password, an action
+// posted with nothing in it is answered about what is missing from the request
+// rather than about the caller.
+func TestRunAndPairEndpointsAnswerAboutTheRequest(t *testing.T) {
 	m := newMirror(t)
 	for _, path := range []string{"/api/pairs", "/api/pairs/update", "/api/pairs/delete", "/api/runs", "/api/runs/cancel"} {
 		rec := postForm(t, m.h, path, url.Values{})
@@ -339,6 +339,7 @@ func TestStreamCarriesTheRunningOperation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
+	req.Header.Set("Authorization", "Bearer "+m.h.password)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("open the stream: %v", err)

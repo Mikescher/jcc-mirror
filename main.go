@@ -64,6 +64,7 @@ var commands = []command{
 	{"supervise", groupDaemon, "run the daemon under the supervisor that undoes a bad self-update", cmdSupervise},
 	{"update", groupDaemon, "check the share for a newer binary, install it, or step back off one", cmdUpdate},
 	{"version", groupDaemon, "print the version and build timestamp", cmdVersion},
+	{"password", groupDaemon, "print the dashboard password, or replace it", cmdPassword},
 
 	{"remotes", groupMirror, "list, add, change and remove the publisher's shares the pairs read from", cmdRemotes},
 	{"pairs", groupMirror, "list, add, change and remove the directory pairs", cmdPairs},

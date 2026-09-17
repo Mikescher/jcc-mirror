@@ -182,10 +182,10 @@ func TestRolledBackUpdateIsNotFetchedAgain(t *testing.T) {
 	}
 }
 
-// TestUpdateActionsAreOpen: the update buttons need no login, and on an install
-// that was never told where a binary lives they say so rather than refusing the
+// TestUpdateActionsAnswerAboutTheInstall: on an install that was never told
+// where a binary lives, the update buttons say so rather than refusing the
 // caller.
-func TestUpdateActionsAreOpen(t *testing.T) {
+func TestUpdateActionsAnswerAboutTheInstall(t *testing.T) {
 	_, h := newApp(t)
 	for _, path := range []string{"/api/update/check", "/api/update/apply", "/api/update/rollback"} {
 		rec := postForm(t, h, path, nil)
@@ -201,7 +201,7 @@ func TestUpdateActionsAreOpen(t *testing.T) {
 			t.Errorf("POST %s = %d with nothing to read: %s", path, rec.Code, rec.Body)
 		}
 	}
-	// Reading the panel is open, like every other read view.
+	// Reading the panel answers, like every other read view.
 	if rec := do(t, h, httptest.NewRequest(http.MethodGet, "/api/update", nil)); rec.Code != http.StatusOK {
 		t.Errorf("GET /api/update = %d", rec.Code)
 	}

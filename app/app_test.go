@@ -34,7 +34,7 @@ func TestMain(m *testing.M) {
 }
 
 // newApp starts a daemon against a fresh store and returns it with its handler.
-func newApp(t *testing.T) (*App, http.Handler) {
+func newApp(t *testing.T) (*App, *dash) {
 	t.Helper()
 	return newAppWithRemote(t, "")
 }
@@ -43,7 +43,7 @@ func newApp(t *testing.T) (*App, http.Handler) {
 // publisher's share. There is no in-process SMB server to point the daemon at,
 // so everything that has to reach the publisher - a probe, a scan, a run - is
 // driven off Options.RemoteDir instead (DESIGN.md §2.1).
-func newAppWithRemote(t *testing.T, remoteDir string) (*App, http.Handler) {
+func newAppWithRemote(t *testing.T, remoteDir string) (*App, *dash) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -68,17 +68,41 @@ func newAppWithRemote(t *testing.T, remoteDir string) (*App, http.Handler) {
 		st.Close()
 	})
 
-	return a, h
+	// EnsureSeeded makes the password during Start, so it can only be read after.
+	password, err := st.ConfigGet(ctx, store.KeyDashboardPassword)
+	if err != nil {
+		t.Fatalf("ConfigGet: %v", err)
+	}
+
+	return a, &dash{Handler: h, password: password}
 }
 
-func do(t *testing.T, h http.Handler, req *http.Request) *httptest.ResponseRecorder {
+// dash is the daemon's handler together with the password its gate wants. do()
+// and postForm() carry the password, so a test about anything else need not know
+// the gate is there; the embedded handler is the daemon as the network reaches
+// it, which is what send() sends through.
+type dash struct {
+	http.Handler
+	password string
+}
+
+func do(t *testing.T, h *dash, req *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
+	req.Header.Set("Authorization", "Bearer "+h.password)
+	return send(t, h.Handler, req)
+}
+
+// send answers a request exactly as it was built. It is do() for the two things
+// that have to meet a guard rather than be waved past it: the remote API with
+// its own key, and the password gate itself (app/auth_test.go).
+func send(t *testing.T, h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
 }
 
-func postForm(t *testing.T, h http.Handler, path string, form url.Values) *httptest.ResponseRecorder {
+func postForm(t *testing.T, h *dash, path string, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -110,10 +134,10 @@ func TestHealthOnAFirstBoot(t *testing.T) {
 	}
 }
 
-// TestActionsAndReadsAreBothOpen: the dashboard sits on the LAN or behind the
-// WireGuard tunnel and nowhere else, so nothing on it is behind a login. Reading
-// a view and pressing a button are equally open (DESIGN.md §4).
-func TestActionsAndReadsAreBothOpen(t *testing.T) {
+// TestReadsAndActionsBothAnswerPastTheGate: the password is the whole of the
+// dashboard's access control. Past it there is no second rank of permissions -
+// reading a view and pressing a button are equally available (DESIGN.md §4).
+func TestReadsAndActionsBothAnswerPastTheGate(t *testing.T) {
 	_, h := newApp(t)
 
 	for _, path := range []string{"/healthz", "/api/status", "/api/config", "/api/events", "/api/remotes", "/"} {
@@ -198,12 +222,19 @@ func TestSecretsNeverLeaveTheProcess(t *testing.T) {
 		t.Fatalf("ConfigGet: %v", err)
 	}
 
-	for _, path := range []string{"/api/config", "/api/config/audit", "/api/status", "/healthz", "/"} {
+	// The diagnostics view serves the log ring, and the password is printed into
+	// the container log at every start - through Secretf, which is what keeps it
+	// out of the ring the dashboard hands back.
+	for _, path := range []string{"/api/config", "/api/config/audit", "/api/status", "/api/diagnostics", "/healthz", "/"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Accept", "text/html")
 		body := do(t, h, req).Body.String()
 
-		for name, secret := range map[string]string{"preshared key": testPSK, "private key": priv} {
+		for name, secret := range map[string]string{
+			"preshared key":      testPSK,
+			"private key":        priv,
+			"dashboard password": h.password,
+		} {
 			if strings.Contains(body, secret) {
 				t.Errorf("GET %s leaked the %s", path, name)
 			}

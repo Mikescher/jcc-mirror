@@ -30,8 +30,14 @@ export class Live {
     this.source = source;
 
     source.onopen = () => this.connected.set(true);
-    // EventSource retries by itself; all that is wanted here is to say so.
-    source.onerror = () => this.connected.set(false);
+    // EventSource retries by itself; all that is wanted here is to say so - and
+    // to notice the one error it would otherwise retry forever behind. It cannot
+    // carry a header, so the stream is authenticated by the session cookie, and
+    // an expired one turns every reconnect into a silent 401.
+    source.onerror = () => {
+      this.connected.set(false);
+      void this.reloadIfLoggedOut();
+    };
 
     source.addEventListener('state', (e) => {
       const state = JSON.parse((e as MessageEvent<string>).data) as StreamState;
@@ -53,6 +59,17 @@ export class Live {
     this.source?.close();
     this.source = undefined;
     this.connected.set(false);
+  }
+
+  private async reloadIfLoggedOut(): Promise<void> {
+    try {
+      const res = await fetch('/api/session', { credentials: 'same-origin' });
+      const body = (await res.json()) as { authed?: boolean };
+      if (!body.authed) location.reload();
+    } catch {
+      // The daemon is unreachable rather than saying no, which is what the
+      // reconnecting pill already says. Leave the retrying to EventSource.
+    }
   }
 }
 
