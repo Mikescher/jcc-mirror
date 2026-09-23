@@ -14,9 +14,9 @@ import (
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
-// PairView is a pair plus the numbers that say how far behind it is. The counts
-// are three cheap aggregates rather than a diff: a plan is a join over the whole
-// manifest and is not something to run on every page load.
+// PairView is a pair plus the numbers that say how far behind it is. They are
+// aggregates rather than a plan: a plan streams every row of the diff, Behind
+// only totals it.
 type PairView struct {
 	store.Pair
 	RemoteName  string `json:"remoteName,omitempty"`
@@ -24,6 +24,10 @@ type PairView struct {
 	RemoteBytes int64
 	LocalFiles  int64
 	LocalBytes  int64
+	// BehindFiles and BehindBytes are what the next sync would transfer, queued
+	// or not: new files and changed ones, at their size on the publisher.
+	BehindFiles int64
+	BehindBytes int64
 	Queue       store.JobQueue
 	LastScan    *time.Time
 	Space       engine.Space
@@ -46,16 +50,6 @@ type PairView struct {
 func (p PairView) IncludesText() string { return strings.Join(p.Includes, ", ") }
 func (p PairView) ExcludesText() string { return strings.Join(p.Excludes, ", ") }
 
-// Behind is how many files the publisher has that are not recorded here. It is
-// an estimate from the two totals, not a diff, so it says nothing about files
-// that changed - but it is the number that answers "is this pair keeping up".
-func (p PairView) Behind() int64 {
-	if n := p.RemoteFiles - p.LocalFiles; n > 0 {
-		return n
-	}
-	return 0
-}
-
 // PairViews collects every pair with its state.
 func (a *App) PairViews(ctx context.Context) ([]PairView, error) {
 	pairs, err := a.store.Pairs(ctx)
@@ -63,6 +57,10 @@ func (a *App) PairViews(ctx context.Context) ([]PairView, error) {
 		return nil, err
 	}
 	remotes, err := a.store.Remotes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	eng, err := a.localEngine(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +76,9 @@ func (a *App) PairViews(ctx context.Context) ([]PairView, error) {
 			return nil, err
 		}
 		if v.LocalFiles, v.LocalBytes, err = a.store.FileStats(ctx, p.ID); err != nil {
+			return nil, err
+		}
+		if v.BehindFiles, v.BehindBytes, err = eng.Behind(ctx, p.ID); err != nil {
 			return nil, err
 		}
 		if v.Queue, err = a.store.Queue(ctx, p.ID); err != nil {

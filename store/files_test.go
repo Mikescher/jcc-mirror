@@ -292,6 +292,28 @@ func TestChangedFilesReportsAddsAndReplaces(t *testing.T) {
 	}
 }
 
+func TestBehindStatsTotalsTheChangedFiles(t *testing.T) {
+	s := newStore(t)
+	p := newPair(t, s, "media")
+
+	putManifest(t, s, p.ID,
+		ManifestEntry{Path: "sub", IsDir: true},
+		ManifestEntry{Path: "sub/new.mkv", Size: 10, MTime: manifestTime},
+		ManifestEntry{Path: "old.mkv", Size: 20, MTime: manifestTime},
+		ManifestEntry{Path: "same.mkv", Size: 40, MTime: manifestTime})
+	putLocal(t, s, p.ID, "old.mkv", 5, manifestTime)
+	putLocal(t, s, p.ID, "same.mkv", 40, manifestTime.Add(time.Second))
+	putLocal(t, s, p.ID, "gone.mkv", 80, manifestTime)
+
+	files, bytes, err := s.BehindStats(context.Background(), p.ID, 2*time.Second)
+	if err != nil {
+		t.Fatalf("BehindStats: %v", err)
+	}
+	if files != 2 || bytes != 30 {
+		t.Errorf("behind = %d files, %d bytes; want 2, 30: the add and the replace at the publisher's size", files, bytes)
+	}
+}
+
 func TestChangedFilesSkipsDirectories(t *testing.T) {
 	s := newStore(t)
 	p := newPair(t, s, "media")

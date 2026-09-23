@@ -207,8 +207,10 @@
             @if (!p.remoteId) {
               <span class="pill warn">no remote</span>
             }
-            @if (behind(p) > 0) {
-              <span class="pill warn">{{ fmt.count(behind(p), 'file') }} behind</span>
+            @if (p.BehindFiles > 0) {
+              <span class="pill warn"
+                >{{ fmt.count(p.BehindFiles, 'file') }} ({{ fmt.bytes(p.BehindBytes) }}) behind</span
+              >
             } @else {
               <span class="pill ok">level with the publisher</span>
             }
@@ -241,7 +243,10 @@
                   {{ fmt.comma(p.LocalFiles) }}
                   <div class="dim">{{ fmt.bytes(p.LocalBytes) }}</div>
                 </td>
-                <td class="num">{{ fmt.comma(behind(p)) }}</td>
+                <td class="num">
+                  {{ fmt.comma(p.BehindFiles) }}
+                  <div class="dim">{{ fmt.bytes(p.BehindBytes) }}</div>
+                </td>
                 <td class="num">
                   {{ fmt.bytes(p.Queue.pendingBytes) }}
                   @if (p.Queue.nextAttempt) {

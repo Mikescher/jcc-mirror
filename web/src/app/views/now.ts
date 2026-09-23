@@ -178,11 +178,6 @@ export class NowPage {
     return actions.find((a) => a.kind === kind)?.help ?? '';
   }
 
-  behind(p: PairView): number {
-    const n = p.RemoteFiles - p.LocalFiles;
-    return n > 0 ? n : 0;
-  }
-
   queue(p: PairView): { state: string; count: number }[] {
     const counts = p.Queue?.counts ?? {};
     return queueStates

@@ -191,6 +191,9 @@ export interface PairView extends Pair {
   RemoteBytes: number;
   LocalFiles: number;
   LocalBytes: number;
+  /** What the next sync would transfer, queued or not: new and changed files. */
+  BehindFiles: number;
+  BehindBytes: number;
   Queue: JobQueue;
   LastScan?: string;
   Space: Space;

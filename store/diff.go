@@ -15,6 +15,14 @@ type DiffRow struct {
 	LocalSize int64
 }
 
+// changedFrom selects the manifest rows ChangedFiles reports; BehindStats
+// totals the same rows. It binds the pair id and the tolerance in milliseconds.
+const changedFrom = `
+		 FROM manifest m
+		 LEFT JOIN files f ON f.pair_id = m.pair_id AND f.relpath = m.relpath
+		 WHERE m.pair_id = ? AND m.is_dir = 0
+		   AND (f.relpath IS NULL OR f.size <> m.size OR abs(f.mtime - m.mtime) > ?)`
+
 // ChangedFiles streams every remote file that is new here or differs from what
 // we hold, oldest path first. It is a join rather than two full table reads: the
 // manifest of the real collection is six figures of rows, and the differ has to
@@ -26,11 +34,7 @@ type DiffRow struct {
 // every scan, forever (DESIGN.md §2.3).
 func (s *Store) ChangedFiles(ctx context.Context, pairID int64, tolerance time.Duration, fn func(DiffRow) error) error {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT m.relpath, m.size, m.mtime, f.relpath IS NOT NULL, coalesce(f.size, 0)
-		 FROM manifest m
-		 LEFT JOIN files f ON f.pair_id = m.pair_id AND f.relpath = m.relpath
-		 WHERE m.pair_id = ? AND m.is_dir = 0
-		   AND (f.relpath IS NULL OR f.size <> m.size OR abs(f.mtime - m.mtime) > ?)
+		`SELECT m.relpath, m.size, m.mtime, f.relpath IS NOT NULL, coalesce(f.size, 0)`+changedFrom+`
 		 ORDER BY m.relpath`,
 		pairID, tolerance.Milliseconds())
 	if err != nil {
@@ -52,6 +56,20 @@ func (s *Store) ChangedFiles(ctx context.Context, pairID int64, tolerance time.D
 		}
 	}
 	return rows.Err()
+}
+
+// BehindStats totals what ChangedFiles would stream: the files a sync would
+// transfer and their size on the publisher. It is the pair's diff without the
+// plan's glob filter, which only matters after the globs changed since the last
+// walk - the walk itself already applies them.
+func (s *Store) BehindStats(ctx context.Context, pairID int64, tolerance time.Duration) (files, bytes int64, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT count(*), coalesce(sum(m.size), 0)`+changedFrom,
+		pairID, tolerance.Milliseconds()).Scan(&files, &bytes)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read behind stats of pair %d: %w", pairID, err)
+	}
+	return files, bytes, nil
 }
 
 // VanishedFiles streams the files we hold that the last walk did not find. It is

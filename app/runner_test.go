@@ -311,8 +311,8 @@ func TestPairsViewShowsTheMirror(t *testing.T) {
 	if got.RemoteFiles != 1 || got.RemoteBytes != 1024 {
 		t.Errorf("the walk is reported as %d files (%d bytes), want 1 (1024)", got.RemoteFiles, got.RemoteBytes)
 	}
-	if got.Behind() != 1 {
-		t.Errorf("behind = %d, want 1: nothing has been transferred yet", got.Behind())
+	if got.BehindFiles != 1 || got.BehindBytes != 1024 {
+		t.Errorf("behind = %d files (%d bytes), want 1 (1024): nothing has been transferred yet", got.BehindFiles, got.BehindBytes)
 	}
 	if got.LastScan == nil {
 		t.Error("the completed walk is not reported")

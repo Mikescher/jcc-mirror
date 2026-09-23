@@ -133,6 +133,13 @@ func (e *Engine) Enqueue(ctx context.Context, pair store.Pair) (Plan, error) {
 // plan walks both directions of the diff, calling fn for every entry. Nothing is
 // held in memory but the sample: the manifest of the real collection is six
 // figures of rows.
+// Behind is how many files the next sync of a pair would transfer and how many
+// bytes, from the last walk: a plan's Transfers and TransferBytes as one
+// aggregate query instead of a stream of every row.
+func (e *Engine) Behind(ctx context.Context, pairID int64) (files, bytes int64, err error) {
+	return e.store.BehindStats(ctx, pairID, e.opts.MTimeTolerance)
+}
+
 func (e *Engine) plan(ctx context.Context, pair store.Pair, sample int, fn func(PlanEntry) error) (Plan, error) {
 	scan, ok, err := e.store.LastCompletedScan(ctx, pair.ID)
 	if err != nil {
