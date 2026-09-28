@@ -128,6 +128,47 @@ func TestUpdateInstallsAndAsksForTheRestart(t *testing.T) {
 	}
 }
 
+// TestAutoUpdateWaitsForTheRunToFinish: the restart would stop a run in
+// progress, so an automatic install holds off until the runner is idle and
+// looks again sooner than the check interval.
+func TestAutoUpdateWaitsForTheRunToFinish(t *testing.T) {
+	m := newMirror(t)
+	publishBinary(t, m, nil)
+	if rec := postForm(t, m.h, "/api/config", url.Values{store.KeyUpdateAuto: {"true"}}); rec.Code != http.StatusOK {
+		t.Fatalf("turn auto-update on: %d %s", rec.Code, rec.Body)
+	}
+
+	m.app.runs.mu.Lock()
+	m.app.runs.current = &Run{Kind: RunSync, PairName: "movies", StartedAt: time.Now()}
+	m.app.runs.mu.Unlock()
+
+	if wait := m.app.autoUpdate(context.Background()); wait > busyRetry {
+		t.Errorf("a deferred install looks again in %s, want at most %s", wait, busyRetry)
+	}
+	if m.app.upd.manager.Installed() {
+		t.Fatal("installed while a run was in progress")
+	}
+	select {
+	case <-m.app.Restart():
+		t.Fatal("asked for a restart while a run was in progress")
+	default:
+	}
+
+	m.app.runs.mu.Lock()
+	m.app.runs.current = nil
+	m.app.runs.mu.Unlock()
+
+	m.app.autoUpdate(context.Background())
+	select {
+	case <-m.app.Restart():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the idle runner did not get the update")
+	}
+	if !m.app.upd.manager.Installed() {
+		t.Error("nothing was installed")
+	}
+}
+
 // TestUpdateRefusesWhatIsNotABinary: the checks are aimed at corruption, and an
 // error page saved where the binary should be is the shape it usually takes.
 func TestUpdateRefusesWhatIsNotABinary(t *testing.T) {

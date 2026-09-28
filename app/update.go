@@ -391,29 +391,45 @@ func (a *App) updateLoop(ctx context.Context) {
 			return
 		case <-time.After(wait):
 		}
+		wait = a.autoUpdate(ctx)
+	}
+}
 
-		values, err := a.store.Config(ctx)
-		if err != nil {
+// busyRetry is how soon an automatic install that found a run in progress looks
+// again. The check interval would be too long: a sync that ends five minutes in
+// should not hold the update back for the rest of the six hours.
+const busyRetry = 5 * time.Minute
+
+// autoUpdate is one round of updateLoop, and returns how long to sleep before
+// the next. An automatic install waits for the runner to be idle: the restart
+// would stop the run, and while nothing is lost by that, nobody asked for it
+// either. The dashboard's button installs regardless.
+func (a *App) autoUpdate(ctx context.Context) time.Duration {
+	values, err := a.store.Config(ctx)
+	if err != nil {
+		a.log.Errorf("update: %v", err)
+		return time.Hour
+	}
+	wait := values.Duration(store.KeyUpdateInterval)
+
+	if strings.TrimSpace(values.Get(store.KeyUpdateURL)) == "" {
+		return wait
+	}
+	_, newer, err := a.CheckUpdate(ctx)
+	switch {
+	case err != nil && errors.Is(err, update.ErrNotConfigured):
+	case err != nil:
+		a.log.Warnf("update: %v", err)
+	case newer && values.Bool(store.KeyUpdateAuto):
+		if a.busy() {
+			a.log.Infof("update: a run is in progress, installing once it has finished")
+			return min(wait, busyRetry)
+		}
+		if _, err := a.ApplyUpdate(ctx, false); err != nil {
 			a.log.Errorf("update: %v", err)
-			wait = time.Hour
-			continue
-		}
-		wait = values.Duration(store.KeyUpdateInterval)
-
-		if strings.TrimSpace(values.Get(store.KeyUpdateURL)) == "" {
-			continue
-		}
-		_, newer, err := a.CheckUpdate(ctx)
-		switch {
-		case err != nil && errors.Is(err, update.ErrNotConfigured):
-		case err != nil:
-			a.log.Warnf("update: %v", err)
-		case newer && values.Bool(store.KeyUpdateAuto):
-			if _, err := a.ApplyUpdate(ctx, false); err != nil {
-				a.log.Errorf("update: %v", err)
-			}
 		}
 	}
+	return wait
 }
 
 // ---- the dashboard's three buttons -------------------------------------

@@ -274,7 +274,7 @@ var keyDefs = []KeyDef{
 	},
 	{
 		Name: KeyUpdateAuto, Group: "Update", Label: "Update automatically",
-		Help:     "Whether a newer binary is installed as soon as it is found. Off means the dashboard offers a button instead, which is the right setting until the updater has been watched working once.",
+		Help:     "Whether a newer binary is installed as soon as it is found and no scan or sync is running. Off means the dashboard offers a button instead, which is the right setting until the updater has been watched working once.",
 		Default:  "false",
 		Validate: validateBool,
 	},

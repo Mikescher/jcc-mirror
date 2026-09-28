@@ -534,7 +534,9 @@ fetches it directly over the host's network — not through the tunnel, and with
    is catching a truncated download or an HTML error page saved as a binary, which is a different
    and much more likely failure than a malicious one.
 3. Smoke-test: run `jcc-mirror.new --version` as a subprocess and require a sane exit.
-4. Quiesce — or just stop, since transfers are resumable by construction.
+4. Quiesce: an automatic install waits until no run is in progress and looks again every 5 min
+   until then; the dashboard's button stops the run instead, since transfers are resumable by
+   construction.
 5. `rename(jcc-mirror.new → jcc-mirror)`, keeping the old one as `jcc-mirror.prev`.
 6. `syscall.Exec(self)` — same PID, same container, no Docker restart. That is the whole trick.
 
