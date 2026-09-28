@@ -163,15 +163,19 @@ func (a *App) maintain(ctx context.Context) {
 // BandwidthView is the Bandwidth view's answer: a series at one resolution, plus
 // the 7x24 shape of it in the configured timezone.
 type BandwidthView struct {
-	Span     string            `json:"span"`
-	Timezone string            `json:"timezone"`
-	From     time.Time         `json:"from"`
-	To       time.Time         `json:"to"`
-	Samples  []store.BWSample  `json:"samples"`
-	TotalIn  int64             `json:"totalIn"`
-	TotalOut int64             `json:"totalOut"`
-	Heatmap  [][]int64         `json:"heatmap"` // [weekday][hour] bytes in, Monday first
-	Live     BandwidthLiveRate `json:"live"`
+	Span     string           `json:"span"`
+	Timezone string           `json:"timezone"`
+	From     time.Time        `json:"from"`
+	To       time.Time        `json:"to"`
+	Samples  []store.BWSample `json:"samples"`
+	TotalIn  int64            `json:"totalIn"`
+	TotalOut int64            `json:"totalOut"`
+	Heatmap  [][]int64        `json:"heatmap"` // [weekday][hour] bytes in, Monday first
+	// HeatmapBuckets counts the samples behind each heatmap cell. Only buckets
+	// in which something moved are stored, so bytes over buckets times the
+	// bucket length is the rate while the link was busy, not a long-run average.
+	HeatmapBuckets [][]int64         `json:"heatmapBuckets"`
+	Live           BandwidthLiveRate `json:"live"`
 }
 
 // BandwidthLiveRate is the bucket that just closed, which is as close to "right
@@ -195,7 +199,7 @@ func (a *App) Bandwidth(ctx context.Context, span string, since time.Time) (Band
 	loc := a.location()
 	view := BandwidthView{
 		Span: span, Timezone: loc.String(), From: since, To: time.Now(),
-		Samples: samples, Heatmap: newHeatmap(),
+		Samples: samples, Heatmap: newHeatmap(), HeatmapBuckets: newHeatmap(),
 	}
 	for _, s := range samples {
 		view.TotalIn += s.In
@@ -207,7 +211,9 @@ func (a *App) Bandwidth(ctx context.Context, span string, since time.Time) (Band
 	if span != store.SpanDay {
 		for _, s := range samples {
 			local := s.TS.In(loc)
-			view.Heatmap[mondayFirst(local.Weekday())][local.Hour()] += s.In
+			day, hour := mondayFirst(local.Weekday()), local.Hour()
+			view.Heatmap[day][hour] += s.In
+			view.HeatmapBuckets[day][hour]++
 		}
 	}
 

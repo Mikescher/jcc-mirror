@@ -358,6 +358,8 @@ export interface BandwidthView {
   totalOut: number;
   /** [weekday][hour] bytes in, Monday first. */
   heatmap: number[][];
+  /** [weekday][hour] samples behind each heatmap cell. */
+  heatmapBuckets: number[][];
   live: { in: number; out: number };
 }
 

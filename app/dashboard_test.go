@@ -329,6 +329,9 @@ func TestBandwidthFoldsIntoTheHeatmap(t *testing.T) {
 		t.Errorf("%s %02d:00 = %d, want 4096; the fold ignored the configured zone",
 			local.Weekday(), hour, got)
 	}
+	if got := view.HeatmapBuckets[row][hour]; got != 1 {
+		t.Errorf("%s %02d:00 counts %d buckets, want 1", local.Weekday(), hour, got)
+	}
 }
 
 // TestNotificationsOnlyGoOutOnTheEdge is the discipline the whole notification

@@ -28,6 +28,13 @@ export function rate(bytesMoved: number, seconds: number): string {
   return `${bps.toFixed(0)} bit/s`;
 }
 
+/** speed is bytes per second in binary units, for charts drawn next to byte
+ *  totals; rate stays the one for anything compared against a link speed. */
+export function speed(bytesPerSecond: number): string {
+  if (!bytesPerSecond || bytesPerSecond < 1024) return `${Math.round(bytesPerSecond || 0)} B/s`;
+  return `${bytes(bytesPerSecond)}/s`;
+}
+
 export function comma(n: number | undefined | null): string {
   return (n ?? 0).toLocaleString('en-US');
 }

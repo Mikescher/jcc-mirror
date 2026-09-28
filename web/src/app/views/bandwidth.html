@@ -82,14 +82,15 @@
         />
       </svg>
       @for (g of c.gridlines; track g.y) {
-        <span class="y note" [style.top.%]="g.y">{{ fmt.bytes(g.value) }}</span>
+        <span class="y note" [style.top.%]="g.y">{{ fmt.speed(g.value) }}</span>
       }
     </div>
 
     <p class="note">
-      Bars are bytes in; bytes out are in the totals above rather than the chart, being small by
-      construction - this is a mirror, not a conversation. Hovering a bar gives its time and its
-      bytes.
+      Bars are bytes in per second, taken over the buckets in which something moved, so a bar is the
+      speed while the link was busy rather than an average over idle time. Bytes out are in the
+      totals above rather than the chart, being small by construction - this is a mirror, not a
+      conversation. Hovering a bar gives its time, its speed and its bytes.
       @if (c.fold > 1) {
         {{ fmt.comma(c.buckets) }} buckets are folded {{ c.fold }} to a column to fit the width, so
         a column covers the range its label names.
@@ -110,8 +111,10 @@
 
   @if (hasHeatmap()) {
     <p class="note">
-      Bytes in per weekday and hour across the whole window, so the shape of a week is visible. The
-      hour a sample falls in is decided in the configured timezone, not the container's.
+      Incoming speed per weekday and hour across the whole window, taken over the buckets in which
+      something moved, so the shape of a week is visible. Hovering a cell also gives the bytes it
+      adds up to. The hour a sample falls in is decided in the configured timezone, not the
+      container's.
     </p>
 
     <div class="scroll">
@@ -125,11 +128,11 @@
           </tr>
         </thead>
         <tbody>
-          @for (row of heatmap(); track $index; let d = $index) {
+          @for (row of heatSpeed(); track $index; let d = $index) {
             <tr>
               <th class="day">{{ days[d] }}</th>
               @for (cell of row; track $index; let h = $index) {
-                <td [style.background-color]="shade(cell)" [title]="cellTitle(d, h, cell)"></td>
+                <td [style.background-color]="shade(cell)" [title]="cellTitle(d, h)"></td>
               }
             </tr>
           }
@@ -142,7 +145,7 @@
       @for (step of legendSteps; track step) {
         <i [style.background-color]="legendShade(step)"></i>
       }
-      <span>{{ fmt.bytes(heatMax()) }} in the busiest hour</span>
+      <span>{{ fmt.speed(heatMax()) }} in the fastest hour</span>
     </div>
   } @else if (view()?.span === 'day') {
     <p class="note">

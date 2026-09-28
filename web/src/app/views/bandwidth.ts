@@ -75,15 +75,19 @@ export class BandwidthPage {
   });
 
   /** The series geometry, or undefined when there is nothing to draw. Bars are
-   *  bytes in; out is left to the totals rather than drawn, because asking for a
-   *  file costs three orders of magnitude less than receiving it and a second
-   *  series on the same scale would be a row of invisible marks. */
+   *  bytes in per second; out is left to the totals rather than drawn, because
+   *  asking for a file costs three orders of magnitude less than receiving it
+   *  and a second series on the same scale would be a row of invisible marks.
+   *  A bucket in which nothing moved has no row, so a column's rate is over the
+   *  buckets it holds: the speed while the link was busy. */
   readonly chart = computed(() => {
-    const samples = this.view()?.samples ?? [];
-    if (samples.length === 0) return undefined;
+    const view = this.view();
+    const samples = view?.samples ?? [];
+    if (!view || samples.length === 0) return undefined;
+    const bucket = bucketSeconds[view.span];
 
     const fold = Math.ceil(samples.length / maxColumns);
-    const columns: { from: string; to: string; in: number; out: number }[] = [];
+    const columns: { from: string; to: string; in: number; out: number; speed: number }[] = [];
     for (let i = 0; i < samples.length; i += fold) {
       const group = samples.slice(i, i + fold);
       let bytesIn = 0;
@@ -97,18 +101,19 @@ export class BandwidthPage {
         to: group[group.length - 1].ts,
         in: bytesIn,
         out: bytesOut,
+        speed: bytesIn / (group.length * bucket),
       });
     }
 
-    const max = Math.max(1, ...columns.map((c) => c.in));
+    const max = Math.max(1, ...columns.map((c) => c.speed));
     const bars: Bar[] = columns.map((c, i) => {
-      const h = (c.in / max) * chartHeight;
+      const h = (c.speed / max) * chartHeight;
       const when = fold > 1 ? `${fmt.clock(c.from)} – ${fmt.timeOnly(c.to)}` : fmt.clock(c.from);
       return {
         x: i + (1 - this.barWidth) / 2,
         y: chartHeight - h,
         h,
-        title: `${when} · ${fmt.bytes(c.in)} in · ${fmt.bytes(c.out)} out`,
+        title: `${when} · ${fmt.speed(c.speed)} · ${fmt.bytes(c.in)} in · ${fmt.bytes(c.out)} out`,
       };
     });
 
@@ -121,7 +126,22 @@ export class BandwidthPage {
   });
 
   readonly heatmap = computed(() => this.view()?.heatmap ?? []);
-  readonly heatMax = computed(() => Math.max(0, ...this.heatmap().flat()));
+
+  /** [weekday][hour] bytes in per second while busy, over the samples behind
+   *  each cell. The cells are hours whatever the span, but a sample is one
+   *  bucket of the span it was read at. */
+  readonly heatSpeed = computed(() => {
+    const view = this.view();
+    if (!view) return [];
+    const bucket = bucketSeconds[view.span];
+    return view.heatmap.map((row, d) =>
+      row.map((bytesIn, h) => {
+        const n = view.heatmapBuckets?.[d]?.[h] ?? 0;
+        return n > 0 ? bytesIn / (n * bucket) : 0;
+      }),
+    );
+  });
+  readonly heatMax = computed(() => Math.max(0, ...this.heatSpeed().flat()));
 
   /** The daily series has no hour-of-day left in it, so the daemon sends the grid
    *  empty rather than sending zeroes that would read as an idle week. */
@@ -135,20 +155,22 @@ export class BandwidthPage {
     await this.load(this.span());
   }
 
-  /** The share of the busiest hour, as a shade. A floor of 6%: an hour with
+  /** The share of the fastest hour, as a shade. A floor of 6%: an hour with
    *  something in it must not draw the same as an hour with nothing. */
-  shade(bytesIn: number): string | null {
+  shade(speed: number): string | null {
     const max = this.heatMax();
-    if (bytesIn <= 0 || max <= 0) return null;
-    return mix(Math.max(6, Math.round((bytesIn / max) * 100)));
+    if (speed <= 0 || max <= 0) return null;
+    return mix(Math.max(6, Math.round((speed / max) * 100)));
   }
 
   legendShade(fraction: number): string | null {
     return fraction <= 0 ? null : mix(Math.round(fraction * 100));
   }
 
-  cellTitle(day: number, hour: number, bytesIn: number): string {
-    return `${dayNames[day]} ${String(hour).padStart(2, '0')}:00 · ${fmt.bytes(bytesIn)} in`;
+  cellTitle(day: number, hour: number): string {
+    const when = `${dayNames[day]} ${String(hour).padStart(2, '0')}:00`;
+    const bytesIn = this.heatmap()[day]?.[hour] ?? 0;
+    return `${when} · ${fmt.speed(this.heatSpeed()[day]?.[hour] ?? 0)} · ${fmt.bytes(bytesIn)} in`;
   }
 
   private async load(span: Span): Promise<void> {
