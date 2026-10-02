@@ -334,6 +334,69 @@ func TestBandwidthFoldsIntoTheHeatmap(t *testing.T) {
 	}
 }
 
+// TestTheDailySpanReadsEveryResolution: day rows only exist for what is older
+// than the hour retention, so the daily series and the calendar have to fold the
+// hour and minute rows in too, or the recent months read as empty.
+func TestTheDailySpanReadsEveryResolution(t *testing.T) {
+	a, h := newApp(t)
+	ctx := context.Background()
+
+	// Noon UTC, which is the same date in the configured Berlin zone.
+	noon := func(daysAgo int) time.Time {
+		d := time.Now().UTC().AddDate(0, 0, -daysAgo)
+		return time.Date(d.Year(), d.Month(), d.Day(), 12, 0, 0, 0, time.UTC)
+	}
+	for _, sample := range []struct {
+		daysAgo int
+		in      int64
+	}{{200, 1000}, {30, 200}, {1, 30}} {
+		if err := a.store.AddBandwidth(ctx, noon(sample.daysAgo), sample.in, 1); err != nil {
+			t.Fatalf("AddBandwidth: %v", err)
+		}
+	}
+	now := time.Now()
+	if _, err := a.store.RollupBandwidth(ctx, store.SpanMinute, store.SpanHour, now.Add(-minuteRetention)); err != nil {
+		t.Fatalf("RollupBandwidth: %v", err)
+	}
+	if _, err := a.store.RollupBandwidth(ctx, store.SpanHour, store.SpanDay, now.Add(-hourRetention)); err != nil {
+		t.Fatalf("RollupBandwidth: %v", err)
+	}
+
+	rec := do(t, h, httptest.NewRequest(http.MethodGet, "/api/bandwidth?span=day", nil))
+	var view BandwidthView
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(view.Samples) != 3 || view.TotalIn != 1230 {
+		t.Errorf("day span = %d samples, %d in; want 3 and 1230: %+v", len(view.Samples), view.TotalIn, view.Samples)
+	}
+	if len(view.Days) != 3 {
+		t.Fatalf("days = %+v, want 3", view.Days)
+	}
+	for i, daysAgo := range []int{200, 30, 1} {
+		if want := noon(daysAgo).Format(time.DateOnly); view.Days[i].Date != want {
+			t.Errorf("day %d = %s, want %s", i, view.Days[i].Date, want)
+		}
+	}
+	if view.Live.In != 30 {
+		t.Errorf("last bucket = %d in, want yesterday's 30", view.Live.In)
+	}
+	if view.Today != time.Now().In(a.location()).Format(time.DateOnly) {
+		t.Errorf("today = %q", view.Today)
+	}
+
+	// The calendar does not depend on the span the series was asked for.
+	rec = do(t, h, httptest.NewRequest(http.MethodGet, "/api/bandwidth?span=minute", nil))
+	view = BandwidthView{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(view.Days) != 3 {
+		t.Errorf("minute span carries %d days, want 3", len(view.Days))
+	}
+}
+
 // TestNotificationsOnlyGoOutOnTheEdge is the discipline the whole notification
 // design rests on: SCN's daily quota is finite, so a condition that is true for
 // hours is announced when it starts and when it clears, and never in between

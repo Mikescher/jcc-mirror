@@ -34,3 +34,45 @@
 .legend i {
   outline: 1px solid var(--line);
 }
+
+.months {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+}
+
+.month {
+  width: 12.5rem;
+}
+
+.month .days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+  margin-top: 0.35rem;
+}
+
+.month .wd {
+  font-size: 0.62rem;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* A quiet day is an outline rather than a fill: any grey fill would read as
+   busier than the faintest shade of the accent. */
+.month .days i {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  outline: 1px solid var(--line);
+  outline-offset: -1px;
+}
+
+.month .days i.future {
+  outline-style: dashed;
+  opacity: 0.5;
+}
+
+.month .days i.today {
+  outline: 2px solid var(--warn);
+  outline-offset: -2px;
+}

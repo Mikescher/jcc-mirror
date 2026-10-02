@@ -188,15 +188,3 @@ func (s *Store) RollupBandwidth(ctx context.Context, from, to string, before tim
 	}
 	return folded, nil
 }
-
-// PruneBandwidth drops rows of one span older than the cutoff. Only the daily
-// series is pruned in practice: the other two are emptied by the rollups that
-// fold them, and a day row is 365 a year.
-func (s *Store) PruneBandwidth(ctx context.Context, span string, olderThan time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM bw_samples WHERE span = ? AND ts < ?`,
-		span, olderThan.UnixMilli())
-	if err != nil {
-		return 0, fmt.Errorf("prune bandwidth: %w", err)
-	}
-	return res.RowsAffected()
-}

@@ -361,6 +361,17 @@ export interface BandwidthView {
   /** [weekday][hour] samples behind each heatmap cell. */
   heatmapBuckets: number[][];
   live: { in: number; out: number };
+  /** Every day on which something moved, oldest first, whatever the span. */
+  days: BandwidthDay[];
+  /** YYYY-MM-DD in the configured timezone. */
+  today: string;
+}
+
+export interface BandwidthDay {
+  /** YYYY-MM-DD in the configured timezone. */
+  date: string;
+  in: number;
+  out: number;
 }
 
 export interface LogLine {

@@ -114,26 +114,6 @@ func TestRollupBandwidth(t *testing.T) {
 	}
 }
 
-func TestPruneBandwidth(t *testing.T) {
-	ctx := context.Background()
-	s := newStore(t)
-
-	base := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-	for i := range 3 {
-		if err := s.AddBandwidth(ctx, base.Add(time.Duration(i)*time.Minute), 1, 0); err != nil {
-			t.Fatalf("AddBandwidth: %v", err)
-		}
-	}
-
-	n, err := s.PruneBandwidth(ctx, SpanMinute, base.Add(2*time.Minute))
-	if err != nil {
-		t.Fatalf("PruneBandwidth: %v", err)
-	}
-	if n != 2 {
-		t.Errorf("pruned %d rows, want 2", n)
-	}
-}
-
 func TestBandwidthRejectsUnknownSpan(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)

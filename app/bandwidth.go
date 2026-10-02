@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -11,13 +12,13 @@ import (
 	"blackforestbytes.com/jcc-mirror/store"
 )
 
-// How long each resolution of the bandwidth series is kept before it is folded
-// into the next one. A per-minute series kept forever grows without bound, and
-// nobody reads minutes from last spring (DESIGN.md §4).
+// How long the minute and hour series are kept before they are folded into the
+// next resolution. A per-minute series kept forever grows without bound, and
+// nobody reads minutes from last spring (DESIGN.md §4). Days are never dropped:
+// they are 365 rows a year, and they are what the calendar draws.
 const (
 	minuteRetention = 7 * 24 * time.Hour
 	hourRetention   = 90 * 24 * time.Hour
-	dayRetention    = 3 * 365 * 24 * time.Hour
 )
 
 // maintenanceInterval is how often the rollups and the retention sweep run. They
@@ -127,9 +128,6 @@ func (a *App) maintain(ctx context.Context) {
 	if _, err := a.store.RollupBandwidth(ctx, store.SpanHour, store.SpanDay, now.Add(-hourRetention)); err != nil {
 		a.log.Errorf("bandwidth: %v", err)
 	}
-	if _, err := a.store.PruneBandwidth(ctx, store.SpanDay, now.Add(-dayRetention)); err != nil {
-		a.log.Errorf("bandwidth: %v", err)
-	}
 
 	values, err := a.store.Config(ctx)
 	if err != nil {
@@ -160,8 +158,9 @@ func (a *App) maintain(ctx context.Context) {
 	}
 }
 
-// BandwidthView is the Bandwidth view's answer: a series at one resolution, plus
-// the 7x24 shape of it in the configured timezone.
+// BandwidthView is the Bandwidth view's answer: a series at one resolution, the
+// 7x24 shape of it in the configured timezone, and every day on record for the
+// calendar.
 type BandwidthView struct {
 	Span     string           `json:"span"`
 	Timezone string           `json:"timezone"`
@@ -176,6 +175,10 @@ type BandwidthView struct {
 	// bucket length is the rate while the link was busy, not a long-run average.
 	HeatmapBuckets [][]int64         `json:"heatmapBuckets"`
 	Live           BandwidthLiveRate `json:"live"`
+	// Days is every day on which something moved, oldest first, whatever the
+	// span; the calendar runs from the first of them to Today.
+	Days  []BandwidthDay `json:"days"`
+	Today string         `json:"today"`
 }
 
 // BandwidthLiveRate is the bucket that just closed, which is as close to "right
@@ -187,19 +190,38 @@ type BandwidthLiveRate struct {
 	Out int64 `json:"out"`
 }
 
-// Bandwidth collects the series for the view. The heatmap is built here rather
-// than in SQL because the weekday and the hour depend on the configured
-// timezone, and that must not be decided in two places.
+// BandwidthDay is one calendar day in the configured timezone. The date is sent
+// as YYYY-MM-DD rather than as a timestamp so a browser in another zone cannot
+// move it across midnight.
+type BandwidthDay struct {
+	Date string `json:"date"`
+	In   int64  `json:"in"`
+	Out  int64  `json:"out"`
+}
+
+// Bandwidth collects the series for the view. The heatmap and the days are built
+// here rather than in SQL because the weekday, the hour and the date depend on
+// the configured timezone, and that must not be decided in two places.
 func (a *App) Bandwidth(ctx context.Context, span string, since time.Time) (BandwidthView, error) {
-	samples, err := a.store.Bandwidth(ctx, span, since, time.Time{})
+	loc := a.location()
+	now := time.Now()
+
+	days, err := a.bandwidthDays(ctx, loc)
 	if err != nil {
 		return BandwidthView{}, err
 	}
 
-	loc := a.location()
+	var samples []store.BWSample
+	if span == store.SpanDay {
+		samples = daySamples(days, since, loc)
+	} else if samples, err = a.store.Bandwidth(ctx, span, since, time.Time{}); err != nil {
+		return BandwidthView{}, err
+	}
+
 	view := BandwidthView{
-		Span: span, Timezone: loc.String(), From: since, To: time.Now(),
+		Span: span, Timezone: loc.String(), From: since, To: now,
 		Samples: samples, Heatmap: newHeatmap(), HeatmapBuckets: newHeatmap(),
+		Days: days, Today: now.In(loc).Format(time.DateOnly),
 	}
 	for _, s := range samples {
 		view.TotalIn += s.In
@@ -217,29 +239,90 @@ func (a *App) Bandwidth(ctx context.Context, span string, since time.Time) (Band
 		}
 	}
 
-	if len(samples) > 0 {
-		if last := samples[len(samples)-1]; !last.TS.Before(liveAfter(span, view.To)) {
-			view.Live = BandwidthLiveRate{In: last.In, Out: last.Out}
+	after := liveAfter(span, now, loc)
+	for i := len(samples) - 1; i >= 0; i-- {
+		s := samples[i]
+		if s.TS.Before(after) {
+			break
 		}
+		// The day series ends with today, which is still filling; the closed
+		// bucket is yesterday.
+		if span == store.SpanDay && !s.TS.Equal(after) {
+			continue
+		}
+		view.Live = BandwidthLiveRate{In: s.In, Out: s.Out}
+		break
 	}
 	return view, nil
 }
 
+// bandwidthDays folds all three resolutions into days. The day rows alone are
+// not the daily series: a rollup only writes them once an hour is past the hour
+// retention, so the most recent 90 days are still minutes and hours.
+func (a *App) bandwidthDays(ctx context.Context, loc *time.Location) ([]BandwidthDay, error) {
+	byDate := map[string]BandwidthDay{}
+	for _, span := range []string{store.SpanDay, store.SpanHour, store.SpanMinute} {
+		samples, err := a.store.Bandwidth(ctx, span, time.Time{}, time.Time{})
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range samples {
+			// A day row was cut at midnight UTC, so it is dated in UTC; read in a
+			// zone west of UTC it would land on the day before.
+			at := s.TS.In(loc)
+			if span == store.SpanDay {
+				at = s.TS.UTC()
+			}
+			date := at.Format(time.DateOnly)
+			d := byDate[date]
+			d.Date = date
+			d.In += s.In
+			d.Out += s.Out
+			byDate[date] = d
+		}
+	}
+
+	out := make([]BandwidthDay, 0, len(byDate))
+	for _, d := range byDate {
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date < out[j].Date })
+	return out, nil
+}
+
+// daySamples is the day series as the chart reads it: one bucket per day,
+// starting at local midnight, from the day since falls in.
+func daySamples(days []BandwidthDay, since time.Time, loc *time.Location) []store.BWSample {
+	out := []store.BWSample{}
+	for _, d := range days {
+		start, err := time.ParseInLocation(time.DateOnly, d.Date, loc)
+		if err != nil {
+			continue
+		}
+		if !since.IsZero() && !start.AddDate(0, 0, 1).After(since) {
+			continue
+		}
+		out = append(out, store.BWSample{TS: start, In: d.In, Out: d.Out})
+	}
+	return out
+}
+
 // liveAfter is the oldest bucket start that still counts as the current rate:
-// the one before the bucket that is still filling.
-func liveAfter(span string, now time.Time) time.Time {
+// the one before the bucket that is still filling. Days start at local midnight,
+// the other two at the UTC truncation the store uses.
+func liveAfter(span string, now time.Time, loc *time.Location) time.Time {
+	if span == store.SpanDay {
+		y, m, d := now.In(loc).Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, loc).AddDate(0, 0, -1)
+	}
 	start, err := store.Truncate(span, now)
 	if err != nil {
 		return now
 	}
-	switch span {
-	case store.SpanHour:
+	if span == store.SpanHour {
 		return start.Add(-time.Hour)
-	case store.SpanDay:
-		return start.AddDate(0, 0, -1)
-	default:
-		return start.Add(-time.Minute)
 	}
+	return start.Add(-time.Minute)
 }
 
 func newHeatmap() [][]int64 {

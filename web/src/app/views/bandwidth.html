@@ -16,7 +16,8 @@
   <p class="note">
     What crossed the tunnel, protocol overhead and directory listings included. Minutes are folded
     into hours after a week and into days after 90, because a per-minute series kept forever grows
-    without bound; the three spans below are those three resolutions.
+    without bound; days are kept for good. The daily span adds up all three resolutions, so it
+    reaches from the first day on record to today.
   </p>
 
   <label class="check">
@@ -82,15 +83,20 @@
         />
       </svg>
       @for (g of c.gridlines; track g.y) {
-        <span class="y note" [style.top.%]="g.y">{{ fmt.speed(g.value) }}</span>
+        <span class="y note" [style.top.%]="g.y">{{ g.label }}</span>
       }
     </div>
 
     <p class="note">
-      Bars are bytes in per second, taken over the buckets in which something moved, so a bar is the
-      speed while the link was busy rather than an average over idle time. Bytes out are in the
-      totals above rather than the chart, being small by construction - this is a mirror, not a
-      conversation. Hovering a bar gives its time, its speed and its bytes.
+      @if (c.perDay) {
+        Bars are bytes in per day, cut at midnight in {{ view()?.timezone }}. Days older than 90
+        were folded at midnight UTC, so their edges sit an hour or two off.
+      } @else {
+        Bars are bytes in per second, taken over the buckets in which something moved, so a bar is
+        the speed while the link was busy rather than an average over idle time.
+      }
+      Bytes out are in the totals above rather than the chart, being small by construction - this is
+      a mirror, not a conversation. Hovering a bar gives its time, its value and its bytes.
       @if (c.fold > 1) {
         {{ fmt.comma(c.buckets) }} buckets are folded {{ c.fold }} to a column to fit the width, so
         a column covers the range its label names.
@@ -154,5 +160,58 @@
     </p>
   } @else if (!loading()) {
     <p class="note">Nothing recorded yet at this resolution.</p>
+  }
+</section>
+
+<section class="panel stack">
+  <div class="spread">
+    <h2>Calendar</h2>
+    @if (view(); as v) {
+      <span class="note">days in {{ v.timezone }}</span>
+    }
+  </div>
+
+  @if (calendar().length > 0) {
+    <p class="note">
+      Bytes in per day, every month since the first day on record, whatever the span above. Hovering
+      a day gives its bytes.
+    </p>
+
+    <div class="months">
+      @for (month of calendar(); track month.label) {
+        <div class="month">
+          <div class="spread">
+            <strong>{{ month.label }}</strong>
+            <span class="note">{{ fmt.bytes(month.totalIn) }}</span>
+          </div>
+          <div class="days">
+            @for (w of weekdayInitials; track $index) {
+              <span class="wd">{{ w }}</span>
+            }
+            @for (i of month.lead; track i) {
+              <span></span>
+            }
+            @for (day of month.days; track day.date) {
+              <i
+                [class.future]="day.future"
+                [class.today]="day.today"
+                [style.background-color]="day.shade"
+                [title]="day.title"
+              ></i>
+            }
+          </div>
+        </div>
+      }
+    </div>
+
+    <div class="legend">
+      <span>none</span>
+      @for (step of legendSteps; track step) {
+        <i [style.background-color]="legendShade(step)"></i>
+      }
+      <span>{{ fmt.bytes(calendarMax()) }} on the busiest day</span>
+    </div>
+  } @else if (!loading()) {
+    <p class="note">Nothing recorded yet.</p>
   }
 </section>

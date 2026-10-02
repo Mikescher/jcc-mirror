@@ -83,6 +83,15 @@ export function clock(ts: string | undefined): string {
   });
 }
 
+export function dateOnly(ts: string | undefined): string {
+  if (!ts) return '-';
+  return new Date(ts).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+}
+
 export function timeOnly(ts: string | undefined): string {
   if (!ts) return '-';
   return new Date(ts).toLocaleTimeString(undefined, {

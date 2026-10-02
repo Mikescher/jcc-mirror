@@ -366,7 +366,7 @@ schema.
 | **Dashboard** | Current pair and file, progress, instantaneous and average rate, ETA, queue depth, active window and limit. |
 | **Changes** | Per-file history — added, replaced, deleted, failed — filterable by pair and time. |
 | **Events** | Scan started/finished with duration, sync finished, DB replaced, DB skipped (locked), update applied, restart, error, deletion guard tripped. |
-| **Bandwidth** | Per-minute buckets, rolled up to hourly after ~7 days and daily after ~90 — otherwise the table grows without bound. A time series, plus the hour-of-day cumulative, best drawn as a 7×24 heatmap so the weekday/weekend shape is visible. |
+| **Bandwidth** | Per-minute buckets, rolled up to hourly after ~7 days and daily after ~90 — otherwise the table grows without bound. Days are kept for good. A time series, the hour-of-day cumulative drawn as a 7×24 heatmap so the weekday/weekend shape is visible, and a calendar of bytes per day over every month on record. |
 | **Settings pages** | Everything in §6, with an audit trail, and next to each group of settings the diagnostics that belong to it (below). |
 
 The settings are not one view but ten pages in the same tab bar as the four above — Connection,
