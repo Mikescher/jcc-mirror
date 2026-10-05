@@ -293,7 +293,7 @@ var keyDefs = []KeyDef{
 	},
 	{
 		Name: KeyRetainChanges, Group: "Retention", Label: "Keep per-file changes for",
-		Help:     "How long the per-file history is kept, and with it the finished transfer jobs it duplicates. Failed jobs are never pruned - they are what waits for someone to look at them.",
+		Help:     "How long the per-file history is kept, and with it the finished transfer jobs it duplicates. Failed jobs are not pruned - the next sync queues them again, or drops them once they are no longer needed.",
 		Default:  "8760h",
 		Validate: validateDuration,
 	},

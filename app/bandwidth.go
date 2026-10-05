@@ -150,8 +150,7 @@ func (a *App) maintain(ctx context.Context) {
 			a.log.Infof("retention: %d change(s) past %s dropped", n, d)
 		}
 		// A finished job is the same fact as the change row it produced, so it
-		// goes on the same clock. Failed jobs are never pruned: they are what
-		// waits for someone to look at them.
+		// goes on the same clock. Failed jobs are the next sync's to clear.
 		if _, err := a.store.PruneJobs(ctx, now.Add(-d)); err != nil {
 			a.log.Errorf("retention: %v", err)
 		}

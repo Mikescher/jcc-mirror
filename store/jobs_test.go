@@ -252,6 +252,110 @@ func TestFailJobGivesUpOnTheLastAttempt(t *testing.T) {
 	}
 }
 
+// failForGood runs a job's one and only attempt into a failure.
+func failForGood(t *testing.T, s *Store, pairID, id int64, cause string) {
+	t.Helper()
+	ctx := context.Background()
+
+	if _, ok, err := s.ClaimJob(ctx, pairID, time.Now()); err != nil || !ok {
+		t.Fatalf("ClaimJob: %v (found %v)", err, ok)
+	}
+	if retrying, err := s.FailJob(ctx, id, errors.New(cause), 1, time.Minute); err != nil || retrying {
+		t.Fatalf("FailJob: %v (retrying %v)", err, retrying)
+	}
+}
+
+// A file that failed for good is queued again in the row that failed, with its
+// whole retry budget, rather than in a second row beside a failure that would
+// then outlive the file landing.
+func TestEnqueueJobRequeuesAFailure(t *testing.T) {
+	cases := map[string]struct {
+		size      int64
+		mtime     time.Time
+		bytesDone int64
+		err       string
+	}{
+		"the same copy":    {1000, jobTime, 400, "connection reset by peer"},
+		"a changed copy":   {2000, jobTime, 0, ""},
+		"a rewritten copy": {1000, jobTime.Add(time.Minute), 0, ""},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			s := newStore(t)
+			p := newPair(t, s, "media")
+
+			id := enqueue(t, s, p.ID, "a.mkv", 1000, jobTime)
+			if err := s.JobProgress(ctx, id, 400); err != nil {
+				t.Fatalf("JobProgress: %v", err)
+			}
+			failForGood(t, s, p.ID, id, "connection reset by peer")
+
+			if again := enqueue(t, s, p.ID, "a.mkv", c.size, c.mtime); again != id {
+				t.Fatalf("re-enqueue returned job %d, want the failed %d", again, id)
+			}
+			j := jobByID(t, s, id)
+			if j.State != JobPending || j.Attempts != 0 || !j.NextAttemptAt.IsZero() {
+				t.Errorf("state/attempts/next = %q/%d/%v, want a job ready to run on a fresh budget", j.State, j.Attempts, j.NextAttemptAt)
+			}
+			if j.BytesDone != c.bytesDone {
+				t.Errorf("bytes_done = %d, want %d", j.BytesDone, c.bytesDone)
+			}
+			if j.Error != c.err {
+				t.Errorf("error = %q, want %q", j.Error, c.err)
+			}
+			if j.BytesTotal != c.size || !j.MTime.Equal(c.mtime) {
+				t.Errorf("size/mtime = %d/%v, want %d/%v", j.BytesTotal, j.MTime, c.size, c.mtime)
+			}
+		})
+	}
+}
+
+func TestDropFailedJobs(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	p := newPair(t, s, "media")
+	other := newPair(t, s, "jcc")
+
+	stale := enqueue(t, s, p.ID, "a.mkv", 1000, jobTime)
+	failForGood(t, s, p.ID, stale, "gone")
+	requeued := enqueue(t, s, p.ID, "b.mkv", 1000, jobTime)
+	failForGood(t, s, p.ID, requeued, "gone")
+	elsewhere := enqueue(t, s, other.ID, "c.mkv", 1000, jobTime)
+	failForGood(t, s, other.ID, elsewhere, "gone")
+	pending := enqueue(t, s, p.ID, "d.mkv", 1000, jobTime)
+
+	since := time.Now().Add(time.Millisecond)
+	time.Sleep(2 * time.Millisecond)
+	enqueue(t, s, p.ID, "b.mkv", 1000, jobTime)
+
+	n, err := s.DropFailedJobs(ctx, p.ID, since)
+	if err != nil {
+		t.Fatalf("DropFailedJobs: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("dropped %d jobs, want only the failure nobody queued again", n)
+	}
+
+	jobs, err := s.Jobs(ctx, JobFilter{})
+	if err != nil {
+		t.Fatalf("Jobs: %v", err)
+	}
+	left := map[int64]string{}
+	for _, j := range jobs {
+		left[j.ID] = j.State
+	}
+	want := map[int64]string{requeued: JobPending, elsewhere: JobFailed, pending: JobPending}
+	if len(left) != len(want) {
+		t.Fatalf("left %v, want %v", left, want)
+	}
+	for id, st := range want {
+		if left[id] != st {
+			t.Errorf("job %d is %q, want %q", id, left[id], st)
+		}
+	}
+}
+
 func TestBackoffFor(t *testing.T) {
 	cases := []struct {
 		attempts int
@@ -488,7 +592,7 @@ func TestPruneJobsKeepsFailures(t *testing.T) {
 	if n != 1 {
 		t.Errorf("pruned %d jobs, want only the completed one", n)
 	}
-	// A failed job stays until someone has looked at it.
+	// A failed job is the next sync's to clear, not the retention window's.
 	if j := jobByID(t, s, failed); j.State != JobFailed {
 		t.Errorf("failed job is %q after the prune", j.State)
 	}

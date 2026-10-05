@@ -319,6 +319,85 @@ func TestSyncRetriesThenGivesUp(t *testing.T) {
 	}
 }
 
+// failOnce runs one sync in which every ranged read fails, so each queued file
+// gives up on its single attempt.
+func (h *harness) failOnce() {
+	h.t.Helper()
+
+	w := h.wrap()
+	w.onRange = func(string, int64, int64) error { return errors.New("the publisher went away") }
+	if res := h.sync(); res.Failed == 0 {
+		h.t.Fatalf("sync = %+v, want a file that failed for good", res)
+	}
+	w.onRange = nil
+}
+
+func (h *harness) failedJobs() []store.Job {
+	h.t.Helper()
+
+	var out []store.Job
+	for _, j := range h.jobs() {
+		if j.State == store.JobFailed {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// TestAFailedTransferHealsOnTheNextSync: nobody acknowledges a failure. The next
+// sync queues the file again in the row that failed, and once it lands the queue
+// holds no failure at all.
+func TestAFailedTransferHealsOnTheNextSync(t *testing.T) {
+	h := newHarness(t, func(o *Options) { o.MaxAttempts = 1 })
+	body := h.write("Filme/a.mkv", 1024)
+	h.scan()
+	h.failOnce()
+
+	h.scan()
+	if res := h.sync(); res.Files != 1 {
+		t.Fatalf("the second sync moved %d files, want the one that failed", res.Files)
+	}
+	h.wantFile("Filme/a.mkv", body)
+
+	jobs := h.jobs()
+	if len(jobs) != 1 || jobs[0].State != store.JobDone {
+		t.Fatalf("the queue is %+v, want the one job, done", jobs)
+	}
+}
+
+// TestAFailureNoLongerWantedIsDropped: a file that failed and then landed some
+// other way, or that the publisher dropped, leaves nothing to retry - and nothing
+// that still counts as failed.
+func TestAFailureNoLongerWantedIsDropped(t *testing.T) {
+	cases := map[string]func(h *harness, body []byte){
+		"the publisher dropped it": func(h *harness, _ []byte) { h.drop("Filme/a.mkv") },
+		"it landed meanwhile": func(h *harness, body []byte) {
+			h.local("Filme/a.mkv", body, time.Time{})
+			if _, err := h.engine.Adopt(context.Background(), h.pair); err != nil {
+				h.t.Fatalf("adopt: %v", err)
+			}
+		},
+	}
+	for name, settle := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, func(o *Options) { o.MaxAttempts = 1 })
+			body := h.write("Filme/a.mkv", 1024)
+			// Keeps the walk from finding nothing once a.mkv is dropped.
+			h.write("Filme/b.mkv", 512)
+			h.scan()
+			h.failOnce()
+
+			settle(h, body)
+			h.scan()
+			h.sync()
+
+			if failed := h.failedJobs(); len(failed) != 0 {
+				t.Errorf("%d failure(s) outlived a sync that no longer wanted them: %+v", len(failed), failed)
+			}
+		})
+	}
+}
+
 // TestSyncRequeuesAJobLeftRunning: a crash, a self-update or a closed transfer
 // window leaves rows in 'running'. Requeuing them at the start of the next run
 // is what makes a transfer retriable at all (DESIGN.md §2.4).

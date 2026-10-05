@@ -48,6 +48,10 @@ type Job struct {
 // A second scan must not queue the same file twice, and if the publisher's copy
 // changed since the first scan the watermark has to go back to zero - the .part
 // file holds the prefix of a version that no longer exists.
+//
+// A file that failed for good is queued again in its failed row, with a fresh
+// retry budget: a second row would leave the first one counting as failed long
+// after the file has landed.
 func (s *Store) EnqueueJob(ctx context.Context, j Job) (int64, error) {
 	now := time.Now().UnixMilli()
 
@@ -65,6 +69,15 @@ func (s *Store) EnqueueJob(ctx context.Context, j Job) (int64, error) {
 
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
+			revived, err := reviveFailedJob(ctx, tx, j, now)
+			if err != nil {
+				return err
+			}
+			if revived != 0 {
+				id = revived
+				return nil
+			}
+
 			res, err := tx.ExecContext(ctx,
 				`INSERT INTO jobs (pair_id, relpath, op, bytes_total, bytes_done, mtime, state, created_at, updated_at)
 				 VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)`,
@@ -99,6 +112,54 @@ func (s *Store) EnqueueJob(ctx context.Context, j Job) (int64, error) {
 		return 0, err
 	}
 	return id, nil
+}
+
+// reviveFailedJob puts the newest failed row of a file back to pending, returning
+// 0 when the file has none. The watermark and the last error survive only if the
+// publisher's copy is the one that failed.
+func reviveFailedJob(ctx context.Context, tx *sql.Tx, j Job, now int64) (int64, error) {
+	var (
+		id        int64
+		total, ms int64
+	)
+	err := tx.QueryRowContext(ctx,
+		`SELECT id, bytes_total, mtime FROM jobs
+		 WHERE pair_id = ? AND relpath = ? AND state = ?
+		 ORDER BY id DESC LIMIT 1`,
+		j.PairID, j.Path, JobFailed).Scan(&id, &total, &ms)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("look up failed job for %q: %w", j.Path, err)
+	}
+
+	same := total == j.BytesTotal && ms == j.MTime.UnixMilli()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE jobs SET op = ?, bytes_total = ?, mtime = ?, state = ?, attempts = 0, next_attempt_at = 0,
+		                 bytes_done = CASE WHEN ? THEN bytes_done ELSE 0 END,
+		                 error = CASE WHEN ? THEN error ELSE NULL END,
+		                 updated_at = ?
+		 WHERE id = ?`,
+		j.Op, j.BytesTotal, j.MTime.UnixMilli(), JobPending, same, same, now, id); err != nil {
+		return 0, fmt.Errorf("requeue failed %q: %w", j.Path, err)
+	}
+	return id, nil
+}
+
+// DropFailedJobs removes the failures of a pair that a complete plan, begun at
+// since, did not queue again: the file has landed since, or the publisher no
+// longer has it, or the pair's filters no longer cover it, or an older failure
+// of a file that was queued again. Either way nothing is left to retry.
+func (s *Store) DropFailedJobs(ctx context.Context, pairID int64, since time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM jobs WHERE pair_id = ? AND state = ? AND updated_at < ?`,
+		pairID, JobFailed, since.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("drop stale failed jobs: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 const jobColumns = `id, pair_id, relpath, op, bytes_total, bytes_done, mtime, state,
@@ -335,8 +396,8 @@ func (s *Store) Jobs(ctx context.Context, f JobFilter) ([]Job, error) {
 	return out, rows.Err()
 }
 
-// PruneJobs drops finished jobs older than the retention window. Failed ones stay
-// until they are looked at.
+// PruneJobs drops finished jobs older than the retention window. Failed ones are
+// left to the next sync, which queues them again or drops them (DropFailedJobs).
 func (s *Store) PruneJobs(ctx context.Context, olderThan time.Time) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
 		`DELETE FROM jobs WHERE state = ? AND updated_at < ?`, JobDone, olderThan.UnixMilli())

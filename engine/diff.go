@@ -94,7 +94,10 @@ func (e *Engine) Plan(ctx context.Context, pair store.Pair, sample int) (Plan, e
 // idempotent: a file already queued is refreshed rather than queued twice, and a
 // file whose remote copy changed since it was queued loses its resume watermark,
 // because the bytes in its .part file belong to a version that no longer exists.
+// A file that failed for good is queued again, and a failure the plan no longer
+// wants is dropped, so the queue never holds a failure older than the last sync.
 func (e *Engine) Enqueue(ctx context.Context, pair store.Pair) (Plan, error) {
+	started := time.Now()
 	gated := e.gated(pair)
 
 	var queued int
@@ -127,6 +130,9 @@ func (e *Engine) Enqueue(ctx context.Context, pair store.Pair) (Plan, error) {
 		return p, err
 	}
 	p.Queued = queued
+	if _, err := e.store.DropFailedJobs(ctx, pair.ID, started); err != nil {
+		return p, err
+	}
 	return p, nil
 }
 

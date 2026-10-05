@@ -297,7 +297,8 @@ and 4, `guarded` applies all four, and `additive` never deletes.
 
 1. **Threshold** — refuse a plan that deletes more than *N* files or *X* % of the pair; pause it and
    surface it for one-click approval.
-2. **Delete after, never during** — the tree only shrinks once the additions succeeded.
+2. **Delete after, never during** — the tree only shrinks once the queue has run. A file that failed
+   for good does not block it: the next sync queues it again, so the pair recovers on its own.
 3. **Quarantine** — move to `<destdir>/.jccmirror/trash/<date>/` with a retention (default 7 days)
    rather than unlinking.
 4. **Non-empty assertion** — a pair whose remote root does not exist or lists empty is an error, not

@@ -312,6 +312,28 @@ func TestDeletionWaitsForTheAdditionsToLand(t *testing.T) {
 	}
 }
 
+// TestAFailedTransferDoesNotHoldBackDeletion: a file that never transfers must not
+// stop a mirror from ever deleting again. The next sync retries it regardless.
+func TestAFailedTransferDoesNotHoldBackDeletion(t *testing.T) {
+	h := newHarness(t, func(o *Options) { o.MaxAttempts = 1 })
+	h.setMode(store.ModeMirror, 0)
+	h.write("gone.mkv", 128)
+	h.scan()
+	h.sync()
+
+	h.drop("gone.mkv")
+	h.write("new.mkv", 128)
+	h.scan()
+	h.failOnce()
+
+	if res := h.reap(); res.Deleted != 1 {
+		t.Fatalf("reap after a failed transfer = %+v, want gone.mkv deleted", res)
+	}
+	if h.exists("gone.mkv") {
+		t.Error("gone.mkv is still here")
+	}
+}
+
 // TestDeletionRefusesAnEmptyManifest is the non-empty assertion on the acting
 // side: a publisher whose share is not mounted has not deleted his collection.
 func TestDeletionRefusesAnEmptyManifest(t *testing.T) {

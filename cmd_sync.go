@@ -89,18 +89,21 @@ func cmdSync(ctx context.Context, args []string) error {
 		printDatabaseRun(pair, db)
 	}
 
+	// Only now: the tree shrinks after it has grown, never during (DESIGN.md
+	// §2.5). A file that failed for good does not hold it back - the next sync
+	// queues it again.
+	if !*noDelete {
+		reaped, reapErr := eng.Reap(ctx, pair)
+		printReap(pair, reaped)
+		if reapErr != nil {
+			return reapErr
+		}
+	}
+
 	if res.Failed > 0 {
 		return fmt.Errorf("%s file(s) failed for good; `jcc-mirror jobs -pair %s -state failed` says why", format.Comma(int64(res.Failed)), pair.Name)
 	}
-
-	// Only now, and only because the transfers all landed: the tree shrinks after
-	// it has grown, never during (DESIGN.md §2.5).
-	if *noDelete {
-		return nil
-	}
-	reaped, reapErr := eng.Reap(ctx, pair)
-	printReap(pair, reaped)
-	return reapErr
+	return nil
 }
 
 // reportSync prints where the run is every interval until the returned function

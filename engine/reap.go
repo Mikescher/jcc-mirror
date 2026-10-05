@@ -83,19 +83,17 @@ func (e *Engine) Reap(ctx context.Context, pair store.Pair) (res ReapResult, err
 		return res, fmt.Errorf("pair %q: the manifest holds no files at all, which is a publisher that is not there rather than one who deleted everything", pair.Name)
 	}
 
-	// Delete after, never during. Anything still queued or failed is an addition
-	// that has not landed, and a tree that shrinks before it has grown is a tree
-	// that is briefly missing both.
+	// Delete after, never during. Anything still queued is an addition that has
+	// not landed, and a tree that shrinks before it has grown is a tree that is
+	// briefly missing both. A transfer that failed for good does not hold deletion
+	// back: the next sync queues it again, and a file that never transfers must not
+	// stop the pair from ever deleting anything.
 	queue, err := e.store.Queue(ctx, pair.ID)
 	if err != nil {
 		return res, err
 	}
 	if open := queue.Counts[store.JobPending] + queue.Counts[store.JobRunning] + queue.Counts[store.JobVerifying]; open > 0 {
 		res.Skipped = fmt.Sprintf("%s transfer(s) are still queued: the tree only shrinks once the additions have landed", format.Comma(open))
-		return res, nil
-	}
-	if failed := queue.Counts[store.JobFailed]; failed > 0 {
-		res.Skipped = fmt.Sprintf("%s transfer(s) failed for good: deletion waits until someone has looked at them", format.Comma(failed))
 		return res, nil
 	}
 

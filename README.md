@@ -264,12 +264,17 @@ at all.
 
 Every file is a row in `jobs` with its own state machine and retry budget, which
 is what makes a transfer retriable rather than an in-memory loop that dies with
-the process. Anything a crash left `running` is requeued by the next run.
+the process. Anything a crash left `running` is requeued by the next run, and a
+file that failed for good is queued again by the next sync - or dropped, once it
+has landed after all or the publisher no longer has it. Nothing in the queue
+waits to be acknowledged.
 
 **The deletion** is a phase of its own, not an operation in the queue, and it
 runs after a sync rather than inside one: the tree only ever shrinks once the
-additions have landed. A pair whose queue still holds work, or holds a file that
-failed for good, does not delete anything at all this time round.
+additions have landed. A pair whose queue still holds work does not delete
+anything at all this time round. A file that failed for good does not hold it
+back: the next sync retries it, and one file that never transfers must not stop
+the pair from ever deleting again.
 
 The pair's mode decides what happens. `-mode mirror`, the default, deletes what
 the publisher dropped, with nothing in front of it beyond the two rules above and
